@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tspath"
+# Declaring that the version will be read dynamically.
+# This helps us not having to specify the version twice.
+# We have to specify the version only in schnetpack.__version__
+# see [tool.setuptools.dynamic] below
+dynamic = ["version"]
+authors = [
+    { name = "Samir Darouich" },
+]
+
+description = "TS Physics"
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.8.0",
+    "pytorch-lightning>=2.6.0",
+    "torch_geometric>2.6",
+    "wandb>=0.12.9",
+    "ase>=3.21",
+    "hydra-core>=1.1.0",
+    "rich",
+    "tqdm",
+    "e3nn",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+script-files = [
+    "src/scripts/pfmts_train",
+    "src/scripts/pfmts_sample",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "tspath.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+#[tool.setuptools.package-data]
+#tspath = ["configs/**/*.yaml"]

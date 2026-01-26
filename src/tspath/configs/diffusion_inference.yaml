@@ -1,0 +1,36 @@
+defaults:
+  - /dataset: transition1x
+  - _self_
+
+seed: 42
+
+run:
+  experiment: ts_physics
+  id: ${uuid:1}
+  path: ${run.work_dir}/samples
+  work_dir: ${hydra:runtime.cwd}
+
+diffusion:
+  _target_: ts_physics.trainer.ReactionFlowMatching
+
+  n_sample_steps: 10
+  save_trajectory: false
+  
+  model:
+    _target_: ts_physics.model.CrossMoleculeEquiformer
+    max_radius: 11.0
+    num_layers: 6
+    num_distance_basis: 64
+
+  flow_scheduler:
+    _target_: ts_physics.generative.flow_scheduler.CondOTScheduler
+    sigma: 0.05
+
+  checkpoint_path: ???
+
+hydra:
+    job:
+      chdir: True
+    # output paths for hydra logs
+    run:
+        dir: ${run.path}/${run.id}
