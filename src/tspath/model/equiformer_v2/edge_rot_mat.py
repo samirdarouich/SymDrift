@@ -15,6 +15,7 @@ def init_edge_rot_mat(edge_distance_vec):
             )
         )
 
+
     norm_x = edge_vec_0 / (edge_vec_0_distance.view(-1, 1))
 
     edge_vec_2 = torch.rand_like(edge_vec_0) - 0.5

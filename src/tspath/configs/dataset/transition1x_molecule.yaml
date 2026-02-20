@@ -1,0 +1,70 @@
+# Dataset configuration for Transition1x reaction dataset
+
+# Dataset specific parameters
+name: transition1x
+root: ???
+identifier: rxn
+split_identifier: null # just assume split is called "split_${name}"
+use_torch_geometric_dataloader: true
+
+# Batch sampler configuration for composition-based sampling
+k: 4  # Number of samples per composition
+n: 16  # Number of compositions per batch
+
+# Define training and validation datasets and dataloaders
+train_dataset:
+  _target_: tspath.datasets.molecule.MoleculeDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: train
+  identifier: ${dataset.identifier}
+  split_identifier: ${dataset.split_identifier}
+
+val_dataset:
+  _target_: tspath.datasets.molecule.MoleculeDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: val
+  identifier: ${dataset.identifier}
+  split_identifier: ${dataset.split_identifier}
+
+test_dataset:
+  _target_: tspath.datasets.molecule.MoleculeDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: test
+  identifier: ${dataset.identifier}
+  split_identifier: ${dataset.split_identifier}
+
+train_dataloader:
+  batch_sampler:
+    _target_: tspath.datasets.CompositionBatchSampler
+    k: ${dataset.k}
+    n: ${dataset.n}
+    shuffle: True
+  num_workers: 4
+  persistent_workers: True
+  # batch_size: 32
+  # shuffle: True
+
+val_dataloader:
+  batch_sampler:
+    _target_: tspath.datasets.CompositionBatchSampler
+    k: ${dataset.k}
+    n: ${dataset.n}
+    shuffle: False
+  num_workers: 4
+  persistent_workers: True
+  # batch_size: 32
+  # shuffle: False
+
+test_dataloader:
+  batch_sampler:
+    _target_: tspath.datasets.CompositionBatchSampler
+    k: ${dataset.k}
+    n: ${dataset.n}
+    shuffle: False
+  num_workers: 4
+  persistent_workers: True
+  # batch_size: 32
+  # shuffle: False

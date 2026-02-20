@@ -14,7 +14,46 @@ OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-@hydra.main(config_path='configs',version_base='1.2',config_name='flow_matching')
+def build_pyg_dataloader(dataset, dataloader_cfg):
+    """
+    Build a PyG DataLoader from a Hydra DictConfig, safely instantiating
+    batch_sampler if specified. Handles struct-mode DictConfig.
+    
+    Args:
+        dataset: PyG dataset object
+        dataloader_cfg: Hydra DictConfig containing dataloader args, 
+                        optionally including 'batch_sampler', 'sampler', 'batch_size', 'num_workers'.
+                        
+    Returns:
+        GeometricDataLoader ready for PyTorch Lightning.
+    """
+    # Start with base kwargs
+    loader_kwargs = {}
+
+    # Optional num_workers
+    if "num_workers" in dataloader_cfg:
+        loader_kwargs["num_workers"] = dataloader_cfg.num_workers
+
+    # Optional batch_size
+    if "batch_size" in dataloader_cfg:
+        loader_kwargs["batch_size"] = dataloader_cfg.batch_size
+
+    # Optional sampler
+    if "sampler" in dataloader_cfg:
+        sampler_cfg = dataloader_cfg.sampler
+        loader_kwargs["sampler"] = instantiate(sampler_cfg, dataset=dataset)
+
+    # Optional batch_sampler
+    if "batch_sampler" in dataloader_cfg:
+        batch_sampler_cfg = dataloader_cfg.batch_sampler
+        loader_kwargs["batch_sampler"] = instantiate(batch_sampler_cfg, dataset=dataset)
+        # batch_size and sampler are ignored if batch_sampler is provided
+        loader_kwargs.pop("batch_size", None)
+        loader_kwargs.pop("sampler", None)
+
+    return GeometricDataLoader(dataset=dataset, **loader_kwargs)
+
+@hydra.main(config_path='configs',version_base='1.2',config_name='diffusion')
 def train(cfg):
     
     log.info("Starting training for run: {}".format(cfg.run.id))
@@ -37,10 +76,10 @@ def train(cfg):
     ########## Dataset ##########
     train_dataset = instantiate(cfg.dataset.train_dataset)
     val_dataset = instantiate(cfg.dataset.val_dataset)
-   
-    train_dataloader = GeometricDataLoader(dataset=train_dataset,**cfg.dataset.train_dataloader)
-    val_dataloader = GeometricDataLoader(dataset=val_dataset,**cfg.dataset.val_dataloader)
-
+    
+    train_dataloader = build_pyg_dataloader(train_dataset, cfg.dataset.train_dataloader)
+    val_dataloader = build_pyg_dataloader(val_dataset, cfg.dataset.val_dataloader)
+    
     ########## Callbacks and Logger ##########
     callbacks,loggers = [],[]
     for callback_name, callback in cfg.callbacks.items():
@@ -76,7 +115,7 @@ def train(cfg):
 
 
 @hydra.main(
-    config_path="configs", version_base="1.2", config_name="flow_matching_inference"
+    config_path="configs", version_base="1.2", config_name="diffusion_inference"
 )
 def sample(cfg):
     
@@ -96,9 +135,7 @@ def sample(cfg):
 
     ########## Dataset ##########
     test_dataset = instantiate(cfg.dataset.test_dataset)
-    test_dataloader = GeometricDataLoader(
-        dataset=test_dataset, **cfg.dataset.test_dataloader
-    )
+    test_dataloader = build_pyg_dataloader(test_dataset, cfg.dataset.test_dataloader)
 
     diff_process = instantiate(cfg.diffusion)
     log.info("Loading model checkpoint: <{}>".format(cfg.diffusion.checkpoint_path))
@@ -117,10 +154,10 @@ def sample(cfg):
         f"guidance_scale={guidance_scale}, "
         f"conditioned={conditioned}"
     )
-    rmsds = []
+    metrics = {}
     for batch in tqdm(test_dataloader, desc="Evaluating test dataset"):
         batch = batch.to(device)
-        _, rmsd = diff_process.sample(
+        _, batch_metrics = diff_process.sample(
             batch=batch,
             num_steps=nfe,
             save_folder=f"nfe_{nfe}_gs_{guidance_scale}",
@@ -128,9 +165,13 @@ def sample(cfg):
             conditioned=conditioned,
             guidance_scale=guidance_scale,
         )
-        rmsds.append(rmsd)
-    rmsds = torch.cat(rmsds, dim=0)
-    log.info(
-        f"Final Test RMSD: mean: {rmsds.mean().item():.4f} Å "
-        f"median: {rmsds.median().item():.4f} Å"
-    )
+        for k, v in batch_metrics.items():
+            if k not in metrics:
+                metrics[k] = []
+            metrics[k].append(v)
+    for k, v in metrics.items():
+        metrics[k] = torch.tensor(v)
+        log.info(
+            f"Test {k}: mean: {metrics[k].mean().item():.4f} "
+            f"median: {metrics[k].median().item():.4f}"
+        )

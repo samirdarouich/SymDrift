@@ -5,41 +5,30 @@ from tqdm import tqdm
 import os.path as osp
 from ase.io import read
 from torch_geometric.transforms import BaseTransform, Compose
-from tspath.utils import get_shortest_path_fast_batched_x_1
 import logging
+from collections import defaultdict
+from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-class RemoveCOMReaction(BaseTransform):
+    
+class RemoveCOM(BaseTransform):
     def forward(self, data):
-        for pos_key in ['pos_ts', 'pos_r', 'pos_p']:
+        for pos_key in ['pos']:
             pos = data[pos_key]
             com = pos.mean(dim=0, keepdim=True)
             data[pos_key] = pos - com
         return data
 
-class AlignReaction(BaseTransform):
-    def forward(self, data):
-        pos_r = data.pos_r
-        pos_p = data.pos_p
-
-        # align product to reactant
-        pos_p_aligned = get_shortest_path_fast_batched_x_1(
-            pos_r, pos_p, torch.zeros(pos_r.shape[0], dtype=torch.long)
-        )
-
-        data.pos_p = pos_p_aligned
-        return data
-
-class ReactionDataset(InMemoryDataset):
+class MoleculeDataset(InMemoryDataset):
     def __init__(
         self,
         source,
         root,
         identifier: str = "rxn",
         split=None,              # 'train' | 'val' | 'test'
+        split_identifier: Optional[str] = None,
         transform=None,
-        pre_transform=Compose([RemoveCOMReaction(), AlignReaction()]),
+        pre_transform=Compose([RemoveCOM()]),
         pre_filter=None,
     ):
         self.identifier = identifier
@@ -51,10 +40,19 @@ class ReactionDataset(InMemoryDataset):
         
         # load split if specified
         if split is not None:
-            self._apply_split(split)
+            self._apply_split(split, split_identifier)
+            
+        self.comp_to_indices = defaultdict(list)
+        for idx in range(len(self)):
+            self.comp_to_indices[self.get(idx).formula.item()].append(idx)
+        self.compositions = sorted(list(self.comp_to_indices.keys()))
 
-    def _apply_split(self, split):
-        split_dict = np.load(osp.join(self.raw_dir, f"split_{self.source}.npz"))
+    def _apply_split(self, split, split_identifier=None):
+        if split_identifier is not None:
+            filename = f"split_{self.source}_{split_identifier}.npz"
+        else:
+            filename = f"split_{self.source}.npz"
+        split_dict = np.load(osp.join(self.raw_dir, filename))
 
         assert split in split_dict, f"Split '{split}' not in split file"
 
@@ -64,9 +62,7 @@ class ReactionDataset(InMemoryDataset):
         logger.info(f"Applying split '{split}' with {len(indices)} samples.")
 
         # re-slices data & slices correctly
-        self.data, self.slices = self.collate(
-            [self.get(i) for i in indices]
-        )
+        self.data, self.slices = self.collate([self.get(i) for i in indices])
         
     @property
     def raw_file_names(self):
@@ -79,21 +75,18 @@ class ReactionDataset(InMemoryDataset):
     def process(self):
         data_path = osp.join(self.raw_dir, self.raw_file_names[0])
         molecules = read(data_path, index=':')
-        assert len(molecules) % 3 == 0, "Data size should be multiple of 3 (R, TS, P)"
         
         data_list = []
-        for i in tqdm(range(0, len(molecules), 3), desc="Processing molecules"):
-            mol_r = molecules[i]
-            mol_ts = molecules[i + 1]
-            mol_p = molecules[i + 2]
-            
+        unqiue_conformer_formulas = sorted(list(set(mol.get_chemical_formula() for mol in molecules)))
+        for i in tqdm(range(0, len(molecules)), desc="Processing molecules"):
+            mol = molecules[i]
+            formula = mol.get_chemical_formula()
             data = Data(
-                x = torch.tensor(mol_ts.numbers, dtype=torch.float),
-                num_atoms = torch.tensor(len(mol_ts), dtype=torch.long),
-                pos_r = torch.tensor(mol_r.positions, dtype=torch.float),
-                pos = torch.tensor(mol_ts.positions, dtype=torch.float),
-                pos_p = torch.tensor(mol_p.positions, dtype=torch.float),
-                rxn = torch.tensor(mol_ts.info[self.identifier], dtype=torch.long),
+                x = torch.tensor(mol.numbers, dtype=torch.float),
+                num_atoms = torch.tensor(len(mol), dtype=torch.long),
+                pos = torch.tensor(mol.positions, dtype=torch.float),
+                rxn = torch.tensor(mol.info[self.identifier], dtype=torch.long),
+                formula = torch.tensor(unqiue_conformer_formulas.index(formula), dtype=torch.long),
             )
             
             if self.pre_transform is not None:
@@ -101,10 +94,6 @@ class ReactionDataset(InMemoryDataset):
                 
             data_list.append(data)
         
-        # Assert no duplicate rxn keys
-        rxn_keys = [data.rxn for data in data_list]
-        assert len(rxn_keys) == len(set(rxn_keys)), "Duplicate rxn keys found"
-        
         # Sort data_list by rxn key
-        data_list.sort(key=lambda data: data.rxn)
+        data_list.sort(key=lambda data: data.rxn.item())
         torch.save(self.collate(data_list), self.processed_paths[0])

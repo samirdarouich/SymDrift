@@ -8,21 +8,21 @@ use_torch_geometric_dataloader: true
 
 # Define training and validation datasets and dataloaders
 train_dataset:
-  _target_: ts_physics.datasets.reaction.ReactionDataset
+  _target_: tspath.datasets.reaction.ReactionDataset
   root: ${dataset.root}
   source: ${dataset.name}
   split: train
   identifier: ${dataset.identifier}
 
 val_dataset:
-  _target_: ts_physics.datasets.reaction.ReactionDataset
+  _target_: tspath.datasets.reaction.ReactionDataset
   root: ${dataset.root}
   source: ${dataset.name}
   split: val
   identifier: ${dataset.identifier}
 
 test_dataset:
-  _target_: ts_physics.datasets.reaction.ReactionDataset
+  _target_: tspath.datasets.reaction.ReactionDataset
   root: ${dataset.root}
   source: ${dataset.name}
   split: test

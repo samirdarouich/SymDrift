@@ -11,20 +11,22 @@ run:
   work_dir: ${hydra:runtime.cwd}
 
 diffusion:
-  _target_: ts_physics.trainer.ReactionFlowMatching
+  _target_: tspath.trainer.ReactionPath
 
   n_sample_steps: 10
   save_trajectory: false
   
   model:
-    _target_: ts_physics.model.CrossMoleculeEquiformer
+    _target_: tspath.model.EquiformerV2
     max_radius: 11.0
     num_layers: 6
     num_distance_basis: 64
 
-  flow_scheduler:
-    _target_: ts_physics.generative.flow_scheduler.CondOTScheduler
-    sigma: 0.05
+  generative_scheduler:
+    _target_: tspath.generative.VPGaussianDDPM
+    noise_schedule:
+      _target_: tspath.generative.PolynomialSchedule
+      T: 1000
 
   checkpoint_path: ???
 

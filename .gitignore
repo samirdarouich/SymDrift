@@ -15,6 +15,7 @@ train.sh
 sample.sh
 runs
 samples
+*.ipynb
 
 # C extensions
 *.so

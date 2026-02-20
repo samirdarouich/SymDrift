@@ -1,5 +1,5 @@
 defaults:
-  - /dataset: transition1x
+  - /dataset: transition1x_molecule
   - _self_
 
 seed: 42
@@ -12,21 +12,14 @@ run:
   ckpt_path: null # if training should be continued from a checkpoint
 
 diffusion:
-  _target_: tspath.trainer.ReactionPath
+  _target_: tspath.trainer.Drifting
   sample_every_epoch: 10000
-  n_sample_steps: 10
 
   model:
     _target_: tspath.model.EquiformerV2
     max_radius: 11.0
     num_layers: 6
     num_distance_basis: 64
-    
-  generative_scheduler:
-    _target_: tspath.generative.flow_scheduler.VPGaussianDDPM
-    noise_schedule:
-      _target_: tspath.generative.PolynomialSchedule
-      T: 1000
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -60,11 +53,11 @@ callbacks:
     dirpath: 'checkpoints/'
     filename: "epoch_{epoch}-step_{step}"
 
-  early_stopping:
-    _target_: pytorch_lightning.callbacks.EarlyStopping
-    monitor: "val/loss"
-    patience: 100
-    mode: "min"
+  # early_stopping:
+  #   _target_: pytorch_lightning.callbacks.EarlyStopping
+  #   monitor: "val/loss"
+  #   patience: 100
+  #   mode: "min"
   
   ema_callback:
     _target_ : tspath.model.ema.EMA

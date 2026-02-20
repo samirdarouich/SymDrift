@@ -6,8 +6,7 @@ import logging
 
 import numpy as np
 from torch import nn
-from tspath.utils import batch_center_systems
-from tspath.generative.utils import sample_isotropic_Gaussian
+from tspath.utils import batch_center_systems, sample_isotropic_Gaussian
 
 logger = logging.getLogger(__name__)
 __all__ = [
@@ -588,18 +587,22 @@ class GaussianDDPM:
                 Set to None if one system or no invariance needed.
             kwargs: additional keyword arguments.
         """
+
         # sample random time steps t
         batch_size = batch.max().item() + 1
         t = torch.randint(
             0,
             self.get_T(),
-            size=(batch_size,),
+            size=(batch_size,1),
             dtype=torch.long,
             device=x_0.device,
         )[batch]
 
         # diffuse x_0 to x_t
         x_t, noise = self.diffuse(x_0, batch, t, **kwargs)
+        
+        # normalize t to [0, 1]
+        t = self.normalize_time(t)
 
         return x_t, t, noise
     
@@ -645,11 +648,6 @@ class GaussianDDPM:
         """
         # get the noise prediction from the model output.
         noise = model_out
-
-        # if invariant, center the noise to zero center of geometry.
-        # Safeguard if model prediction was not centered.
-        if batch is not None:
-            noise = batch_center_systems(noise, batch, dim=-2)
 
         # get the mean and std of the reverse transition kernel.
         mean, std = self.reverse_kernel(x_t, noise, t)
@@ -768,3 +766,57 @@ class VPGaussianDDPM(GaussianDDPM):
         mu = inv_sqrt_alpha_t * (x_t - (beta_t * inv_sqrt_beta_t_bar) * noise)
 
         return mu, sigma_t
+    
+    
+    @torch.no_grad()
+    def sample(
+            self, 
+            num_steps, 
+            model, 
+            batch, 
+            conditioned=True, 
+            guidance_scale=0.0,
+            t_start=None,
+            x_start=None
+            ):
+        
+        if x_start is not None:
+            assert t_start is not None, "t_start must be provided if x_start is given."
+            x = x_start.clone()
+        else:
+            x = self.sample_prior(batch.pos, batch=batch.batch)
+            t_start = self.get_T() - 1
+        
+        batch_size = x.size(0)
+        trajectories = [x.clone()]
+        timesteps = torch.linspace(
+            t_start, 0, num_steps, dtype=torch.long, device=x.device
+        )
+
+        for i in timesteps:
+            t = torch.full((batch_size, 1), i, device=x.device) # current timestep in integer
+            batch.pos = x
+            batch.t = self.normalize_time(t) # normalized timestep in [0, 1]
+            eps_pred = self.get_epsilon(
+                model, batch, conditioned=conditioned, guidance_scale=guidance_scale
+            )
+            
+            x = self.reverse_step(x, eps_pred, batch.batch, t)
+            trajectories.append(x.clone())
+
+        return x, trajectories
+    
+    @torch.no_grad()
+    def get_epsilon(self, model, batch, conditioned=True, guidance_scale=0.0):
+        if guidance_scale > 0.0:
+            assert conditioned, "Classifier-free guidance requires conditional model."
+            # Get both conditional and unconditional predictions
+            eps_unconditioned = model(batch, conditioned=False)
+            eps_conditioned = model(batch, conditioned=True)
+            
+            # Combine them using classifier-free guidance
+            eps = eps_unconditioned + guidance_scale * (eps_conditioned - eps_unconditioned)
+        else:
+            eps = model(batch, conditioned=conditioned)
+        
+        return eps

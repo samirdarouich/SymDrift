@@ -18,7 +18,7 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.8.0",
+    "torch>=2.8.0,<2.9",
     "pytorch-lightning>=2.6.0",
     "torch_geometric>2.6",
     "wandb>=0.12.9",
@@ -32,8 +32,8 @@ dependencies = [
 [tool.setuptools]
 package-dir = { "" = "src" }
 script-files = [
-    "src/scripts/pfmts_train",
-    "src/scripts/pfmts_sample",
+    "src/scripts/tspath_train",
+    "src/scripts/tspath_sample",
 ]
 
 [tool.setuptools.dynamic]

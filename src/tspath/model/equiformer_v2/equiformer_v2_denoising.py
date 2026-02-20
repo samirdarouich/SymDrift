@@ -15,7 +15,7 @@ from .transformer_block import (
     SO2EquivariantGraphAttention,
 )
 from .equiformer_v2 import EquiformerV2S_OC20
-
+from tspath.utils import batch_center_systems
 
 # Statistics of IS2RE 100K
 _AVG_NUM_NODES = 77.81317
@@ -252,21 +252,20 @@ class EquiformerV2S_OC20_DenoisingPos(EquiformerV2S_OC20):
 
 
 
-    def forward(self, data):
-        self.batch_size = len(data.natoms)
+    def forward(self, data, conditioned=True):
+        self.batch_size = len(data.num_atoms)
         self.dtype = data.pos.dtype
         self.device = data.pos.device
-        atomic_numbers = data.atomic_numbers.long()
+        atomic_numbers = data.x.long()
         num_atoms = len(atomic_numbers)
-        
+
         edge_index = radius_graph(
             x=data.pos,
-            r=self.cutoff,
+            r=self.max_radius,
             batch=data.batch,
             max_num_neighbors=self.max_neighbors
         )
         
-
         # Get edge distance vectors and distances
         j, i = edge_index
         edge_distance_vec = data.pos[j] - data.pos[i]
@@ -363,5 +362,8 @@ class EquiformerV2S_OC20_DenoisingPos(EquiformerV2S_OC20):
         )
         denoising_pos_vec = denoising_pos_vec.embedding.narrow(1, 1, 3)
         denoising_pos_vec = denoising_pos_vec.view(-1, 3).contiguous()
+        
+        # 4. Remove center of position from predicted velocity
+        denoising_pos_vec = batch_center_systems(denoising_pos_vec, data.batch, dim=0)
         
         return denoising_pos_vec
