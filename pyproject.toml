@@ -27,6 +27,8 @@ dependencies = [
     "rich",
     "tqdm",
     "e3nn",
+    "pymatgen",
+    "py3Dmol",
 ]
 
 [tool.setuptools]

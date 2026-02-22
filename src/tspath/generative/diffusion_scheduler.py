@@ -770,15 +770,15 @@ class VPGaussianDDPM(GaussianDDPM):
     
     @torch.no_grad()
     def sample(
-            self, 
-            num_steps, 
-            model, 
-            batch, 
-            conditioned=True, 
-            guidance_scale=0.0,
-            t_start=None,
-            x_start=None
-            ):
+        self, 
+        num_steps, 
+        model, 
+        batch, 
+        conditioned=True, 
+        guidance_scale=0.0,
+        t_start=None,
+        x_start=None
+        ):
         
         if x_start is not None:
             assert t_start is not None, "t_start must be provided if x_start is given."

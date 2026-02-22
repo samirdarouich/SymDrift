@@ -5,14 +5,10 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from ase.io import write
-from torch_scatter import scatter_mean
-
 from tspath.utils import (
     batch_inputs_to_atoms,
     sample_noise_like,
     get_shortest_path_fast_batched_x_1,
-    get_rmsd_batch,
-    get_rmsd_batch_aligned,
 )
 from tspath.analysis import check_validity
 
@@ -73,10 +69,9 @@ class ReactionPath(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self._step(batch, "train")
-        if (self.current_epoch % self.sample_every_epoch == 0) and batch_idx == 0:
+        if (self.current_epoch % self.sample_every_epoch == 0) and (batch_idx == 0) and (self.current_epoch > 0):
             self.sample(
                 batch, 
-                self.n_sample_steps, 
                 step="train", 
                 guidance_scale=self.guidance_scale
             )
@@ -84,23 +79,18 @@ class ReactionPath(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         loss = self._step(batch, "val")
-        if self.current_epoch % self.sample_every_epoch == 0:
+        if (self.current_epoch % self.sample_every_epoch == 0) and (self.current_epoch > 0):
             self.sample(
                 batch, 
-                self.n_sample_steps, 
                 step="val", 
                 guidance_scale=self.guidance_scale
             )
         return loss
 
-    def sample(self):
-        raise NotImplementedError("Sample method not implemented yet.")
-    
     @torch.no_grad()
     def sample(
         self, 
         batch, 
-        num_steps, 
         save_folder=None, 
         save_trajectory=False, 
         step=None, 
@@ -114,7 +104,7 @@ class ReactionPath(pl.LightningModule):
 
         start_time = time.time()
         x1_pred, trajectory = self.generative_scheduler.sample(
-            num_steps=num_steps, model=self.model, batch=batch.clone(), 
+            num_steps=self.n_sample_steps, model=self.model, batch=batch.clone(), 
             conditioned=conditioned, guidance_scale=guidance_scale
         )
         elapsed_time = time.time() - start_time
@@ -207,76 +197,95 @@ class Drifting(pl.LightningModule):
         scheduler = self.hparams.scheduler(optimizer)
         return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
 
-    def drifting_field(self, x, y_pos, y_neg, sigma, n_atoms):
+    def minimal_distance(self, x, y):
+        """
+        Compute difference between two sets of molecules x and y after optimal alignment.
+        x: (N, n_atoms, 3)
+        y: (M, n_atoms, 3)
+        Returns: diffs matrix of shape (N, M, n_atoms, 3)
+        """
+        N, n_atoms, _ = x.shape
+        M = y.shape[0]
+        batch = torch.arange(M, device=x.device).repeat_interleave(n_atoms)  # (M*n_atoms,)
+        diffs = []
+        for i in range(N):
+            x_i = x[i].repeat(M, 1) # (M*n_atoms, 3)
+            y_i = y.view(-1, 3)   # (M*n_atoms, 3)
+            y_i_aligned = get_shortest_path_fast_batched_x_1(x_i, y_i, batch)
+            diff_i = (y_i_aligned-x_i).view(M, n_atoms, 3)
+            diffs.append(diff_i)
+        diffs = torch.stack(diffs, dim=0) # (N, M, n_atoms, 3)
+        return diffs
+
+    def get_weight(self, x, y, sigma, remove_self=False):
+
+            assert x.shape[1] == y.shape[1], "x and y must have the same number of atoms"
+            assert x.shape[2] == y.shape[2] == 3, "x and y must have shape (B, n_atoms, 3)"
+            n_atoms = x.shape[1]
+            
+            # Compute aligned differences between each molecule in x and each molecule in y
+            diffs = self.minimal_distance(x, y)  # (B, B, n_atoms, 3)
+            
+            # Treat -1/sigma * rmsd as logits and normalize with softmax
+            # this computes the pairwise rmsd between each molecule in x and each
+            # molecule in y (x:dim=0, y:dim=1, n_atoms:dim=2, xyz:dim=3)
+            rmsd = torch.sqrt((diffs**2).sum(dim=(2,3))/n_atoms)
+            logits = -rmsd / sigma
+            
+            # In case x == y, remove self-repulsion by setting diagonal to -inf before softmax
+            if remove_self:
+                logits.fill_diagonal_(float('-inf'))
+            
+            # Normalize weights over y samples for each molecule in x
+            return torch.softmax(logits, dim=1), diffs
         
-        def rbf_kernel(x, y, sigma):
-            diff = x[:, None, :] - y[None, :, :]
-            dist2 = (diff ** 2).mean(dim=-1)
-            return torch.exp(-dist2 / (2 * sigma ** 2))
+    def drifting_field(self, x, y_pos, y_neg, sigma, n_atoms, normalize_over_x=False):
         
-        def kernel(x, y, sigma):
-            diff = x[:, None, :] - y[None, :, :]
-            # dont use the norm but rather the rmsd
-            dist = diff.norm(dim=-1) / torch.sqrt(n_atoms)
-            return torch.exp(-dist / sigma)
+        # reshape to (B, n_atoms, 3) to easily compute drift
+        x_ = x.view(-1, n_atoms, 3)
+        y_pos_ = y_pos.view(-1, n_atoms, 3)
+        y_neg_ = y_neg.view(-1, n_atoms, 3)
         
-        # compute kernel weights per molecule
-        x_ = x.view(-1, n_atoms*3)
-        y_pos_ = y_pos.view(-1, n_atoms*3)
-        y_neg_ = y_neg.view(-1, n_atoms*3)
+        # get noramlized kernel (use the original shaped inputs)
+        w_pos, diffs_pos = self.get_weight(x_, y_pos_, sigma, remove_self=False)
+        w_neg, diffs_neg = self.get_weight(x_, y_neg_, sigma, remove_self=True)
         
-        k_pos = kernel(x_, y_pos_, sigma)
-        k_neg = kernel(x_, y_neg_, sigma)
+        # In addition it can be normalized over x
+        if normalize_over_x:
+            w_pos = torch.softmax(w_pos.fill_diagonal_(float('-inf')),dim=0) 
+            w_neg = torch.softmax(w_neg.fill_diagonal_(float('-inf')),dim=0) 
+
+        # compute drift as weighted average of differences (x is dim=0, y is dim=1).
+        # Aim is compute the drift for each molecule in x as a weighted average of the
+        # differences to all molecules in y.
+        drift_pos = (w_pos[:, :, None, None] * diffs_pos).sum(dim=1)
+        drift_neg = (w_neg[:, :, None, None] * diffs_neg).sum(dim=1)
         
-        # remove self-repulsion
-        k_neg.fill_diagonal_(0.0)
-        
-        # normalize
-        w_pos = k_pos / (k_pos.sum(dim=1, keepdim=True) + 1e-8)
-        w_neg = k_neg / (k_neg.sum(dim=1, keepdim=True) + 1e-8)
-        
-        # compute drift as weighted average of differences
-        drift_pos = (w_pos[:, :, None] * (y_pos_[None] - x_[:, None])).sum(dim=1)
-        drift_neg = (w_neg[:, :, None] * (y_neg_[None] - x_[:, None])).sum(dim=1)
-        
-        # reshape back to original shape
+        # reshape back to (B*n_atoms, 3)
         drift_pos = drift_pos.view_as(x)
         drift_neg = drift_neg.view_as(x)
         
         return drift_pos - drift_neg
-    
+
     def _step(self, batch, step):
         # Target data
         y = batch.pos.clone()
         
-        # class labels (conformers)
-        unique_conformers = batch.formula.unique()
-        expanded_formula = batch.formula[batch.batch]
-        for conf in unique_conformers:
-            mask = expanded_formula == conf
-            
-            # Get sub-batch indices for the current conformer
-            _, sub_batch = torch.unique(batch.batch[mask], return_inverse=True)
-            
-            # Sample prior noise
-            z = sample_noise_like(y[mask], sub_batch)
-            batch.pos[mask] = z.clone()
-            
-            # aligned targets to the noisy input
-            y[mask] = get_shortest_path_fast_batched_x_1(z, y[mask], sub_batch)
-
+        # Sample prior noise
+        z = sample_noise_like(y, batch.batch)
+        batch.pos = z
+        
         # generate samples
         x = self.model(batch)
 
         # drifting field
         v_total = torch.zeros_like(x)
+        unique_conformers = batch.formula.unique()
+        expanded_formula = batch.formula[batch.batch]
         for conf in unique_conformers:
             mask = expanded_formula == conf
             mask_i = batch.formula == conf
-            
-            # Get sub-batch indices for the current conformer
-            _, sub_batch = torch.unique(batch.batch[mask], return_inverse=True)
-            
+
             # compute drifting field for each conformer
             v = self.drifting_field(
                 x=x[mask],

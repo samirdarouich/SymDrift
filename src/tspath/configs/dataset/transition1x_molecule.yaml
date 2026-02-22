@@ -8,8 +8,9 @@ split_identifier: null # just assume split is called "split_${name}"
 use_torch_geometric_dataloader: true
 
 # Batch sampler configuration for composition-based sampling
-k: 4  # Number of samples per composition
-n: 16  # Number of compositions per batch
+k: 2  # Number of samples per composition
+n: 64  # Number of compositions per batch
+resample: true  # Whether to resample molecules for compositions if there are not enough unique molecules
 
 # Define training and validation datasets and dataloaders
 train_dataset:
@@ -41,6 +42,7 @@ train_dataloader:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}
     n: ${dataset.n}
+    resample: ${dataset.resample}
     shuffle: True
   num_workers: 4
   persistent_workers: True
@@ -52,6 +54,7 @@ val_dataloader:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}
     n: ${dataset.n}
+    resample: False
     shuffle: False
   num_workers: 4
   persistent_workers: True
@@ -63,6 +66,7 @@ test_dataloader:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}
     n: ${dataset.n}
+    resample: False
     shuffle: False
   num_workers: 4
   persistent_workers: True

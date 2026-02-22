@@ -1,10 +1,16 @@
 import logging
 import os
 import pickle
-from typing import Optional
+from typing import Optional, List, Dict, Any, Sequence, Union
 from ase.data import chemical_symbols
 import numpy as np
 from tqdm import tqdm
+import math
+from pymatgen.core import Molecule
+from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher, GeneticOrderMatcher, HungarianOrderMatcher, KabschMatcher
+from ase import Atoms
+from ase.io import read
+import py3Dmol
 
 # from https://github.com/ehoogeboom/e3_diffusion_for_molecules
 bonds1 = {
@@ -332,3 +338,162 @@ def check_validity(
     }
 
     return results
+
+def rmsd_core(mol1, mol2, threshold=0.5, same_order=False):
+    _, count = np.unique(mol1.atomic_numbers, return_counts=True)
+    if same_order:
+        bfm = KabschMatcher(mol1)
+        aligned, rmsd = bfm.fit(mol2)
+        return rmsd, aligned
+    total_permutations = 1
+    for c in count:
+        total_permutations *= math.factorial(c)  # type: ignore
+    if total_permutations < 1e4:
+        bfm = BruteForceOrderMatcher(mol1)
+        aligned, rmsd = bfm.fit(mol2)
+    else:
+        bfm = GeneticOrderMatcher(mol1, threshold=threshold)
+        pairs = bfm.fit(mol2)
+        rmsd = threshold
+        aligned = None
+        for pair in pairs:
+            if pair[-1] < rmsd:
+                aligned = pair[0]
+                rmsd = pair[-1]
+        if not len(pairs):
+            bfm = HungarianOrderMatcher(mol1)
+            aligned, rmsd = bfm.fit(mol2)
+    return rmsd, aligned
+
+
+def pymatgen_rmsd(
+    mol1,
+    mol2,
+    ignore_chirality: bool = False,
+    threshold: float = 0.5,
+    same_order: bool = False,
+): 
+    rmsd, aligned = rmsd_core(mol1, mol2, threshold, same_order=same_order)
+    if ignore_chirality:
+        coords = mol2.cart_coords
+        coords[:, -1] = -coords[:, -1]
+        mol2_reflect = Molecule(species=mol2.species, coords=coords)
+        rmsd_reflect, aligned_reflect = rmsd_core(mol1, mol2_reflect, threshold, same_order=same_order)
+        if rmsd_reflect < rmsd:
+            rmsd = rmsd_reflect
+            aligned = aligned_reflect
+    return rmsd, aligned
+
+def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_order=False):
+    mol_pred = Molecule(
+            species=ref.numbers,
+            coords=sample.positions,
+        )
+    mol_ref = Molecule(
+        species=ref.numbers,
+        coords=ref.positions,
+    )
+
+    rmsd, aligned = pymatgen_rmsd(
+        mol_ref,
+        mol_pred,
+        ignore_chirality=ignore_chirality,
+        threshold=threshold,
+        same_order=same_order,
+    )
+    
+    # pymatgen computes rmse instead of rmsd
+    rmsd = rmsd * 3**0.5
+    
+    aligned_sample = sample.copy()
+    aligned_sample.positions = aligned.cart_coords
+    return rmsd, aligned_sample
+
+def atoms_to_xyz_text(atoms: Atoms):
+    xyz_str = f"{len(atoms)}\n\n"
+    for atom, pos in zip(atoms, atoms.positions):
+        xyz_str += f"{atom.symbol} {pos[0]:.4f} {pos[1]:.4f} {pos[2]:.4f}\n"  # type: ignore
+    return xyz_str
+
+
+def visualize_atoms_list(
+    atoms_list: Sequence[Union[Atoms, str]],
+    colors: Optional[List[str]] = None,
+    style_dicts: Optional[List[Dict[str, Any]]] = None,
+) -> py3Dmol.view:
+    """
+    Visualizes a list of atomic structures represented by Atoms objects using py3Dmol.
+
+    Args:
+        atoms_list: List of atoms objects | xyz paths representing atomic structures to
+            visualize.
+        colors: List of colors to assign to each structure.
+        style_dicts: List of style dictionaries to assign to each structure.
+
+    Returns:
+      py3Dmol.view:
+        The html view object of py3Dmol.
+    """
+    xyzs = []
+    for atoms in atoms_list:
+        if isinstance(atoms, Atoms):
+            xyzs.append(atoms_to_xyz_text(atoms))
+        elif isinstance(atoms, str):
+            if ".xyz" not in atoms:
+                raise ValueError("Expected xyz file!.")
+            with open(atoms) as f:
+                xyzs.append(f.read())
+        else:
+            raise ValueError("Either specify atoms object or xyz file")
+
+    view = py3Dmol.view(width=800, height=400)
+
+    default_style = {"stick": {}, "sphere": {"radius": 0.36}}
+    for i, xyz in enumerate(xyzs):
+        view.addModel(xyz, "xyz")
+        if style_dicts is not None:
+            style_dict = style_dicts[i]
+        else:
+            style_dict = default_style
+
+        if colors is not None:
+            if "stick" not in style_dict:
+                style_dict["stick"] = {"color": colors[i]}
+            else:
+                style_dict["stick"].update({"color": colors[i]})
+
+        view.setStyle(
+            {"model": i},
+            style_dict,
+        )
+    view.zoomTo()
+    return view
+
+
+def visualize_reaction(atoms_list: Sequence[Union[Atoms, str]], offset: float = 5.0):
+    """
+    Visualize a chemical reaction given a list of ASE `Atoms` or paths to xyz files.
+
+    This function takes a list of atomic structures (from the ASE `Atoms` class)
+    and shifts each structure along one axis by a specified offset, relative to
+    its index in the list. The function then visualizes the shifted atomic structures.
+
+    Args:
+        atoms_list: A list of atomic structures to visualize. Each element is an ASE
+            `Atoms` object or path to a structure file that ASE can read.
+        offset: The distance to shift each atomic structure. The i-th structure in the
+            list is shifted by `i * offset`.
+
+    Returns:
+        py3Dmol.view:
+          The html view object of py3Dmol.
+    """
+    shifted_atoms = []
+    for i, atoms in enumerate(atoms_list):
+        if isinstance(atoms, Atoms):
+            shifted_atom = atoms.copy()
+        elif isinstance(atoms, str):
+            shifted_atom = read(atoms)
+        shifted_atom.translate(offset * i)  # type: ignore
+        shifted_atoms.append(shifted_atom)
+    return visualize_atoms_list(shifted_atoms)

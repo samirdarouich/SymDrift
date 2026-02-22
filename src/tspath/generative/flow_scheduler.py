@@ -1,5 +1,5 @@
 import torch
-from tspath.generative.utils import sample_noise_like
+from tspath.utils import sample_noise_like
 
 __all__ = [
     "FlowScheduler",

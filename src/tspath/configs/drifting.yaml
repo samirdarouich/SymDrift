@@ -12,22 +12,15 @@ run:
   ckpt_path: null # if training should be continued from a checkpoint
 
 diffusion:
-  _target_: tspath.trainer.ReactionPath
+  _target_: tspath.trainer.Drifting
   sample_every_epoch: 10000
-  n_sample_steps: 10
 
   model:
     _target_: tspath.model.EquiformerV2
     max_radius: 11.0
     num_layers: 6
     num_distance_basis: 64
-    use_noise_schedule_sigma_encoding: true
-
-  generative_scheduler:
-    _target_: tspath.generative.VPGaussianDDPM
-    noise_schedule:
-      _target_: tspath.generative.PolynomialSchedule
-      T: 1000
+    use_noise_schedule_sigma_encoding: false
 
   optimizer:
     _target_: torch.optim.AdamW
