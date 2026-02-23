@@ -38,6 +38,7 @@ test_dataset:
   split_identifier: ${dataset.split_identifier}
 
 train_dataloader:
+  __target__: torch_geometric.loader.DataLoader
   batch_sampler:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}
@@ -50,6 +51,7 @@ train_dataloader:
   # shuffle: True
 
 val_dataloader:
+  __target__: torch_geometric.loader.DataLoader
   batch_sampler:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}
@@ -62,6 +64,7 @@ val_dataloader:
   # shuffle: False
 
 test_dataloader:
+  __target__: torch_geometric.loader.DataLoader
   batch_sampler:
     _target_: tspath.datasets.CompositionBatchSampler
     k: ${dataset.k}

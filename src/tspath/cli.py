@@ -76,9 +76,9 @@ def train(cfg):
     ########## Dataset ##########
     train_dataset = instantiate(cfg.dataset.train_dataset)
     val_dataset = instantiate(cfg.dataset.val_dataset)
-    
-    train_dataloader = build_pyg_dataloader(train_dataset, cfg.dataset.train_dataloader)
-    val_dataloader = build_pyg_dataloader(val_dataset, cfg.dataset.val_dataloader)
+
+    train_dataloader = instantiate(cfg.dataset.train_dataloader, dataset=train_dataset)
+    val_dataloader = instantiate(cfg.dataset.val_dataloader, dataset=val_dataset)
     
     ########## Callbacks and Logger ##########
     callbacks,loggers = [],[]
@@ -105,10 +105,12 @@ def train(cfg):
                 }
         diff_process.model.load_state_dict(state_dict)
             
-    diff_trainer = pl.Trainer(callbacks=callbacks, 
-                              logger=loggers,
-                              default_root_dir=os.path.join(cfg.run.id),
-                              **cfg.trainer) 
+    diff_trainer = pl.Trainer(
+        callbacks=callbacks, 
+        logger=loggers,
+        default_root_dir=os.path.join(cfg.run.id),
+        **cfg.trainer
+    ) 
     diff_trainer.fit(diff_process, train_dataloader, val_dataloader, ckpt_path=cfg.run.ckpt_path)
     
     log.info("Training completed.")

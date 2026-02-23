@@ -14,6 +14,7 @@ run:
 diffusion:
   _target_: tspath.trainer.Drifting
   sample_every_epoch: 10000
+  sigma: 0.15
 
   model:
     _target_: tspath.model.EquiformerV2
@@ -28,10 +29,10 @@ diffusion:
     lr: 3.0e-4
     weight_decay: 1e-2
   
-  scheduler:
-    _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-    _partial_: true
-    T_max: ${trainer.max_epochs}
+  # scheduler:
+  #   _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  #   _partial_: true
+  #   T_max: ${trainer.max_epochs}
 
   pretrained: null # path to pretrained model checkpoint for fine-tuning
 
@@ -60,11 +61,11 @@ callbacks:
   #   patience: 100
   #   mode: "min"
   
-  ema_callback:
-    _target_ : tspath.model.ema.EMA
-    decay: 0.9999
-    validate_original_weights: true
-    every_n_steps: 100
+  # ema_callback:
+  #   _target_ : tspath.model.ema.EMA
+  #   decay: 0.9999
+  #   validate_original_weights: true
+  #   every_n_steps: 100
 
 loggers:
   wandb_logger:

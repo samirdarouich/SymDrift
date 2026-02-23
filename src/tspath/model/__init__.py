@@ -1,1 +1,2 @@
 from .equiformer_v2.equiformer_v2_denoising import EquiformerV2S_OC20_DenoisingPos as EquiformerV2
+from .mlp import MLP
