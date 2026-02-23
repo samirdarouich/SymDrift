@@ -522,15 +522,69 @@ class DriftingDummy(Drifting):
 
         return x
 
+    @torch.no_grad()
+    def visualize(self, y, epoch):
+        """Plot generated samples vs groundtruth and save/log the figure."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        was_training = self.model.training
+        self.model.eval()
+
+        # Generate n_viz samples from fresh noise
+        n_viz = 1000
+        z = torch.randn(n_viz, y.shape[1], device=y.device)
+        x = self.model(z)
+
+        if was_training:
+            self.model.train()
+
+        y_np = y.detach().cpu().numpy()
+        x_np = x.detach().cpu().numpy()
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        axes[0].scatter(y_np[:, 0], y_np[:, 1], s=3, alpha=0.5, color="steelblue")
+        axes[0].set_title("Groundtruth")
+        axes[0].set_aspect("equal")
+
+        axes[1].scatter(x_np[:, 0], x_np[:, 1], s=3, alpha=0.5, color="tomato")
+        axes[1].set_title(f"Generated (epoch {epoch})")
+        axes[1].set_aspect("equal")
+
+        plt.tight_layout()
+
+        os.makedirs("viz", exist_ok=True)
+        fig.savefig(f"viz/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight")
+
+        # Log to WandB if available
+        if self.logger is not None:
+            try:
+                import wandb
+                self.logger.experiment.log(
+                    {"viz/samples": wandb.Image(fig)}, step=epoch
+                )
+            except Exception:
+                pass
+
+        plt.close(fig)
+
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
 
         optimizer.zero_grad()
-    
+
         loss = self._step(batch, "train")
-        
+
         self.manual_backward(loss)
 
         optimizer.step()
+
+        if (
+            (self.current_epoch % self.sample_every_epoch == 0)
+            and (batch_idx == 0)
+            and (self.current_epoch > 0)
+        ):
+            self.visualize(batch, self.current_epoch)
 
         return loss
