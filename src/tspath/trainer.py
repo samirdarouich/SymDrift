@@ -180,7 +180,7 @@ class Drifting(pl.LightningModule):
     def __init__(
         self,
         model,
-        sigma=0.5,
+        drifting_field,
         sample_every_epoch=50,
         p_null_mask=0.0,
         guidance_scale=0.0,
@@ -189,7 +189,7 @@ class Drifting(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
         self.model = model
-        self.sigma = sigma
+        self.drifting_field = drifting_field
         self.sample_every_epoch = sample_every_epoch
         self.p_null_mask = p_null_mask
         self.guidance_scale = guidance_scale
@@ -201,89 +201,6 @@ class Drifting(pl.LightningModule):
             return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
         else:
             return optimizer
-
-    def minimal_distance(self, x, y):
-        """
-        Compute difference between two sets of molecules x and y after optimal alignment.
-        x: (N, n_atoms, 3)
-        y: (M, n_atoms, 3)
-        Returns: diffs matrix of shape (N, M, n_atoms, 3)
-        """
-        N, n_atoms, _ = x.shape
-        M = y.shape[0]
-        batch = torch.arange(M, device=x.device).repeat_interleave(n_atoms)  # (M*n_atoms,)
-        dist = []
-        for i in range(N):
-            x_i = x[i].repeat(M, 1)  # (M*n_atoms, 3)
-            y_i = y.view(-1, 3)  # (M*n_atoms, 3)
-            dist_i = get_rmsd_batch_aligned(x_i, y_i, batch)  # (M,)
-            dist.append(dist_i)
-        dist = torch.stack(dist, dim=0)  # (N, M)
-        return dist
-
-        # Reshape from (N, n_atoms, 3) to (N, n_atoms*3) for distance computation
-
-    def drifting_field(self, x, y_pos, y_neg, T, n_atoms, mask_self=True, normalize_over_x=False):
-        # x: [N*N_atom, 3]
-        # y_pos: [N_pos*N_atom, 3]
-        # y_neg: [N_neg*N_atom, 3]
-
-        # reshape to get (N, D) dimension
-        x_ = x.view(-1, n_atoms * 3)
-        y_pos_ = y_pos.view(-1, n_atoms * 3)
-        y_neg_ = y_neg.view(-1, n_atoms * 3)
-
-        N = x_.shape[0]
-        N_pos = y_pos_.shape[0]
-        N_neg = y_neg_.shape[0]
-        device = x.device
-
-        # 1. Compute alignment-aware pairwise L2 distances (use (N, n_atoms, 3) shape)
-        dist_pos = self.minimal_distance(
-            x.view(-1, n_atoms, 3), y_pos_.view(-1, n_atoms, 3)
-        )  # [N, N_pos] | torch.cdist(x, y_pos) # [N, N_pos]
-        dist_neg = self.minimal_distance(
-            x.view(-1, n_atoms, 3), y_neg_.view(-1, n_atoms, 3)
-        )  # [N, N_neg] | torch.cdist(x, y_neg) # [N, N_neg]
-
-        # 2. Mask self-distances (when y_neg contains x)
-        if mask_self and N == N_neg:
-            mask = torch.eye(N, device=device) * 1e6
-            dist_neg = dist_neg + mask
-
-        # 3. Compute logits
-        logit_pos = -dist_pos / T  # (N, N_pos)
-        logit_neg = -dist_neg / T  # (N, N_neg)
-
-        # 4. Concat for normalization
-        logit = torch.cat([logit_pos, logit_neg], dim=1)  # (N, N_pos + N_neg)
-
-        # 5. Normalize along (BOTH) dimensions (key insight from paper)
-        A_row = torch.softmax(logit, dim=1)  # softmax over y (columns)
-        if normalize_over_x:
-            A_col = torch.softmax(logit, dim=0)  # softmax over x (rows)
-            A = torch.sqrt(A_row * A_col)  # geometric mean
-        else:
-            A = A_row
-
-        # 6. Split back to pos and neg
-        A_pos = A[:, :N_pos]  # (N, N_pos)
-        A_neg = A[:, N_pos:]  # (N, N_neg)
-
-        # 7. Compute weights (cross-weighting from paper eq. 17)
-        W_pos = A_pos * A_neg.sum(dim=1, keepdim=True)  # (N, N_pos)
-        W_neg = A_neg * A_pos.sum(dim=1, keepdim=True)  # (N, N_neg)
-
-        # compute drift as weighted average of y samples. for each molecule in y_pos, weight
-        # the effect is has on each molecule in x (W_pos has shape N, N_pos), hence 
-        # providing for each sample in x an importance weight for each sample in y_pos
-        drift_pos = torch.mm(W_pos, y_pos_)
-        drift_neg = torch.mm(W_neg, y_neg_)
-        V = drift_pos - drift_neg
-
-        # reshape back to (N*N_atom, 3)
-        V = V.view_as(x)
-        return V
 
     def _step(self, batch, step):
         # Target data
@@ -309,7 +226,6 @@ class Drifting(pl.LightningModule):
                 x=x[mask],
                 y_pos=y[mask],
                 y_neg=x.detach()[mask],
-                T=self.sigma,
                 n_atoms=batch.num_atoms[mask_i][0],
             )
             v_total[mask] = v
@@ -440,56 +356,6 @@ class Drifting(pl.LightningModule):
 
 
 class DriftingDummy(Drifting):
-    
-    def drifting_field(self, x, y_pos, y_neg, T, mask_self=True, normalize_over_x=False):
-        # x: [N, D]
-        # y_pos: [N_pos, D]
-        # y_neg: [N_neg, D]
-        # T: temperature
-        N = x.shape[0]
-        N_pos = y_pos.shape[0]
-        N_neg = y_neg.shape[0]
-        device = x.device
-        
-        # 1. Compute pairwise L2 distances
-        dist_pos = torch.cdist(x, y_pos) # [N, N_pos]
-        dist_neg = torch.cdist(x, y_neg) # [N, N_neg]
-
-        # 2. Mask self-distances (when y_neg contains x)
-        if mask_self and N == N_neg:
-            mask = torch.eye(N, device=device) * 1e6
-            dist_neg = dist_neg + mask
-
-        # 3. Compute logits
-        logit_pos = -dist_pos / T  # (N, N_pos)
-        logit_neg = -dist_neg / T  # (N, N_neg)
-        
-        # 4. Concat for normalization
-        logit = torch.cat([logit_pos, logit_neg], dim=1)  # (N, N_pos + N_neg)
-        
-        # 5. Normalize along (BOTH) dimensions (key insight from paper)
-        A_row = torch.softmax(logit, dim=1)   # softmax over y (columns)
-        if normalize_over_x:
-            A_col = torch.softmax(logit, dim=0)   # softmax over x (rows)
-            A = torch.sqrt(A_row * A_col)         # geometric mean
-        else:
-            A = A_row
-        
-        # 6. Split back to pos and neg
-        A_pos = A[:, :N_pos]  # (N, N_pos)
-        A_neg = A[:, N_pos:]  # (N, N_neg)
-        
-        # 7. Compute weights (cross-weighting from paper eq. 17)
-        W_pos = A_pos * A_neg.sum(dim=1, keepdim=True)  # (N, N_pos)
-        W_neg = A_neg * A_pos.sum(dim=1, keepdim=True)  # (N, N_neg)
-        
-        # compute drift as weighted average of differences (x is dim=0, y is dim=1).
-        # Aim is compute the drift for each point in x as a weighted average of the
-        # differences to all points in y.
-        drift_pos = torch.mm(W_pos,y_pos)
-        drift_neg = torch.mm(W_neg,y_neg)
-        V = drift_pos - drift_neg
-        return V
 
     def _step(self, y, step):
 
