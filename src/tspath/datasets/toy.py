@@ -208,4 +208,5 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
             bond_length=torch.tensor([self.bond_lengths[idx]], dtype=torch.float),
             num_atoms=torch.tensor(2, dtype=torch.long)
         )
+        data.pos = data.pos - data.pos.mean(dim=0, keepdim=True)  # Center the molecule
         return data

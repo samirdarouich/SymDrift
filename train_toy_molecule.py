@@ -58,19 +58,20 @@ model = EquiformerV2(
 )
 model.to(device)
 
-outdir = "drifting_samples"
+outdir = "runs/toy_molecule"
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
 
 losses = []
 model.train()
-n_epochs = 6000
-pbar = tqdm(n_epochs, total=n_epochs, desc="Training")
+n_epochs = 1000
+pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
 for epoch in pbar:
     for batch_idx, batch in enumerate(dataloader):
         optimizer.zero_grad()
         batch = batch.to(device)
-        y = batch.pos.clone()
+        y = batch.pos.clone() 
+        breakpoint()
 
         z = sample_noise_like(batch.pos, batch.batch)
         batch.pos = z
@@ -78,7 +79,7 @@ for epoch in pbar:
         x = model(batch)
 
         # Get drifting field
-        V = drifting_field(x, y, x, batch.num_atoms[0], temperature=None, aligned=None)
+        V, *_ = drifting_field(x, y, x, batch.num_atoms[0], temperature=None, aligned=None)
 
         x_drifted = (x + V).detach()
 
