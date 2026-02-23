@@ -95,45 +95,6 @@ def make_swissroll2d(n, noise=0.05, seed=None):
         np.column_stack([t * np.cos(t) / 6, t * np.sin(t) / 6]).astype(np.float32)
         + np.random.randn(n, 2).astype(np.float32) * noise
     )
-    
-def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
-    """
-    Get a dataset by name.
-
-    Args:
-        dataset_name: one of ["spiral", "checkerboard", "pinwheel", "rings", "swissroll"]
-        n_samples: number of samples to generate
-        **kwargs: additional arguments for the dataset function
-
-    Returns:
-        numpy array of shape (n_samples, 2)
-    """
-    if dataset_name == "spiral":
-        n_arms = kwargs.get("n_arms", 2)
-        noise = kwargs.get("noise", 0.001)
-        seed = kwargs.get("seed", None)
-        return make_multi_spiral(n_samples // n_arms, n_arms=n_arms, noise=noise, seed=seed)
-    elif dataset_name == "checkerboard":
-        noise = kwargs.get("noise", 0.05)
-        grid = kwargs.get("grid", 4)
-        seed = kwargs.get("seed", None)
-        return make_checkerboard(n_samples, noise=noise, grid=grid, seed=seed)
-    elif dataset_name == "pinwheel":
-        n_arms = kwargs.get("n_arms", 5)
-        noise = kwargs.get("noise", 0.05)
-        seed = kwargs.get("seed", None)
-        return make_pinwheel(n_samples, n_arms=n_arms, noise=noise, seed=seed)
-    elif dataset_name == "rings":
-        noise = kwargs.get("noise", 0.03)
-        seed = kwargs.get("seed", None)
-        return make_rings(n_samples, noise=noise, seed=seed)
-    elif dataset_name == "swissroll":
-        noise = kwargs.get("noise", 0.05)
-        seed = kwargs.get("seed", None)
-        return make_swissroll2d(n_samples, noise=noise, seed=seed)
-    else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
-    
 
 def generate_cc_harmonic_2d(
     n_samples=1000,
@@ -170,6 +131,52 @@ def generate_cc_harmonic_2d(
 
     return positions, r
     
+    
+def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
+    """
+    Get a dataset by name.
+
+    Args:
+        dataset_name: one of ["spiral", "checkerboard", "pinwheel", "rings", "swissroll", "cc"]
+        n_samples: number of samples to generate
+        **kwargs: additional arguments for the dataset function
+
+    Returns:
+        numpy array of shape (n_samples, 2)
+    """
+    if dataset_name == "spiral":
+        n_arms = kwargs.get("n_arms", 2)
+        noise = kwargs.get("noise", 0.001)
+        seed = kwargs.get("seed", None)
+        return make_multi_spiral(n_samples // n_arms, n_arms=n_arms, noise=noise, seed=seed)
+    elif dataset_name == "checkerboard":
+        noise = kwargs.get("noise", 0.05)
+        grid = kwargs.get("grid", 4)
+        seed = kwargs.get("seed", None)
+        return make_checkerboard(n_samples, noise=noise, grid=grid, seed=seed)
+    elif dataset_name == "pinwheel":
+        n_arms = kwargs.get("n_arms", 5)
+        noise = kwargs.get("noise", 0.05)
+        seed = kwargs.get("seed", None)
+        return make_pinwheel(n_samples, n_arms=n_arms, noise=noise, seed=seed)
+    elif dataset_name == "rings":
+        noise = kwargs.get("noise", 0.03)
+        seed = kwargs.get("seed", None)
+        return make_rings(n_samples, noise=noise, seed=seed)
+    elif dataset_name == "swissroll":
+        noise = kwargs.get("noise", 0.05)
+        seed = kwargs.get("seed", None)
+        return make_swissroll2d(n_samples, noise=noise, seed=seed)
+    elif dataset_name == "cc":
+        r0 = kwargs.get("r0", 1.54)
+        k = kwargs.get("k", 8.0)
+        T = kwargs.get("T", 300.0)
+        seed = kwargs.get("seed", None)
+        positions, bond_lengths = generate_cc_harmonic_2d(n_samples, r0, k, T, seed=seed)
+        return positions.numpy(), bond_lengths.numpy()
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
 class ToyDataset(torch.utils.data.Dataset):
     def __init__(self, name="spiral", n_samples=10000, **kwargs):
         self.data = get_dataset(name, n_samples=n_samples, **kwargs)
@@ -184,12 +191,12 @@ class ToyDataset(torch.utils.data.Dataset):
     
 
 class ToyMoleculeDataset(torch.utils.data.Dataset):
-    def __init__(self, n_samples=1000, r0=1.54, k=8.0, T=500.0, **kwargs):
-        self.positions, self.bond_lengths = generate_cc_harmonic_2d(
-            n_samples, r0, k, T
+    def __init__(self, name="cc", n_samples=1000, r0=1.54, k=8.0, T=500.0, **kwargs):
+        self.positions, self.bond_lengths = get_dataset(
+            name, n_samples=n_samples, r0=r0, k=k, T=T, **kwargs
         )
         
-        logger.info(f"Loaded dataset 'C-C' with {n_samples} samples.")
+        logger.info(f"Loaded dataset '{name}' with {n_samples} samples.")
 
     def __len__(self):
         return len(self.positions)
@@ -197,8 +204,8 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         data = Data(
             x = torch.tensor([6, 6], dtype=torch.float),  # Carbon atomic numbers
-            pos=self.positions[idx],
-            bond_length=torch.tensor([self.bond_lengths[idx]]),
+            pos=torch.tensor(self.positions[idx], dtype=torch.float),
+            bond_length=torch.tensor([self.bond_lengths[idx]], dtype=torch.float),
             num_atoms=torch.tensor(2, dtype=torch.long)
         )
         return data
