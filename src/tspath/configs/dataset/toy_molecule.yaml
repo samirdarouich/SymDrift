@@ -1,0 +1,52 @@
+
+name: spiral
+
+n_samples: 1000
+r0: 1.54
+k: 8.0
+T: 500.0
+seed: null
+batch_size: 256
+
+# Define training and validation datasets and dataloaders
+train_dataset:
+  _target_: tspath.datasets.toy.ToyMoleculeDataset
+  name: ${dataset.name}
+  n_samples: ${dataset.n_samples}
+  r0: ${dataset.r0}
+  k: ${dataset.k}
+  T: ${dataset.T}
+  seed: ${dataset.seed}
+
+val_dataset:
+  _target_: tspath.datasets.toy.ToyMoleculeDataset
+  name: ${dataset.name}
+  n_samples: ${dataset.n_samples}
+  r0: ${dataset.r0}
+  k: ${dataset.k}
+  T: ${dataset.T}
+  seed: ${dataset.seed}
+
+test_dataset:
+  _target_: tspath.datasets.toy.ToyMoleculeDataset
+  name: ${dataset.name}
+  n_samples: ${dataset.n_samples}
+  r0: ${dataset.r0}
+  k: ${dataset.k}
+  T: ${dataset.T}
+  seed: ${dataset.seed}
+
+train_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
+  shuffle: True
+
+val_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
+  shuffle: False
+
+test_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
+  shuffle: False

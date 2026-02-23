@@ -5,11 +5,14 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from ase.io import write
+import wandb
+
+import tempfile
 
 from tspath.analysis import check_validity
 from tspath.utils import (
     batch_inputs_to_atoms,
-    get_shortest_path_fast_batched_x_1,
+    get_rmsd_batch_aligned,
     sample_noise_like,
 )
 
@@ -190,10 +193,9 @@ class Drifting(pl.LightningModule):
         self.sample_every_epoch = sample_every_epoch
         self.p_null_mask = p_null_mask
         self.guidance_scale = guidance_scale
-        self.automatic_optimization = False
 
     def configure_optimizers(self):
-        optimizer = self.hparams.optimizer(self.model.parameters())
+        optimizer = self.hparams.optimizer(self.parameters())
         if self.hparams.get("scheduler") is not None:
             scheduler = self.hparams.scheduler(optimizer)
             return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
@@ -209,68 +211,79 @@ class Drifting(pl.LightningModule):
         """
         N, n_atoms, _ = x.shape
         M = y.shape[0]
-        batch = torch.arange(M, device=x.device).repeat_interleave(
-            n_atoms
-        )  # (M*n_atoms,)
-        diffs = []
+        batch = torch.arange(M, device=x.device).repeat_interleave(n_atoms)  # (M*n_atoms,)
+        dist = []
         for i in range(N):
             x_i = x[i].repeat(M, 1)  # (M*n_atoms, 3)
             y_i = y.view(-1, 3)  # (M*n_atoms, 3)
-            y_i_aligned = get_shortest_path_fast_batched_x_1(x_i, y_i, batch)
-            diff_i = (y_i_aligned - x_i).view(M, n_atoms, 3)
-            diffs.append(diff_i)
-        diffs = torch.stack(diffs, dim=0)  # (N, M, n_atoms, 3)
-        return diffs
+            dist_i = get_rmsd_batch_aligned(x_i, y_i, batch)  # (M,)
+            dist.append(dist_i)
+        dist = torch.stack(dist, dim=0)  # (N, M)
+        return dist
 
-    def get_weight(self, x, y, sigma, remove_self=False):
+        # Reshape from (N, n_atoms, 3) to (N, n_atoms*3) for distance computation
 
-        assert x.shape[1] == y.shape[1], "x and y must have the same number of atoms"
-        assert x.shape[2] == y.shape[2] == 3, "x and y must have shape (B, n_atoms, 3)"
-        n_atoms = x.shape[1]
+    def drifting_field(self, x, y_pos, y_neg, T, n_atoms, mask_self=True, normalize_over_x=False):
+        # x: [N*N_atom, 3]
+        # y_pos: [N_pos*N_atom, 3]
+        # y_neg: [N_neg*N_atom, 3]
 
-        # Compute aligned differences between each molecule in x and each molecule in y
-        diffs = self.minimal_distance(x, y)  # (B, B, n_atoms, 3)
+        # reshape to get (N, D) dimension
+        x_ = x.view(-1, n_atoms * 3)
+        y_pos_ = y_pos.view(-1, n_atoms * 3)
+        y_neg_ = y_neg.view(-1, n_atoms * 3)
 
-        # Treat -1/sigma * rmsd as logits and normalize with softmax
-        # this computes the pairwise rmsd between each molecule in x and each
-        # molecule in y (x:dim=0, y:dim=1, n_atoms:dim=2, xyz:dim=3)
-        rmsd = torch.sqrt((diffs**2).sum(dim=(2, 3)) / n_atoms)
-        logits = -rmsd / sigma
+        N = x_.shape[0]
+        N_pos = y_pos_.shape[0]
+        N_neg = y_neg_.shape[0]
+        device = x.device
 
-        # In case x == y, remove self-repulsion by setting diagonal to -inf before softmax
-        if remove_self:
-            logits.fill_diagonal_(float("-inf"))
+        # 1. Compute alignment-aware pairwise L2 distances (use (N, n_atoms, 3) shape)
+        dist_pos = self.minimal_distance(
+            x.view(-1, n_atoms, 3), y_pos_.view(-1, n_atoms, 3)
+        )  # [N, N_pos] | torch.cdist(x, y_pos) # [N, N_pos]
+        dist_neg = self.minimal_distance(
+            x.view(-1, n_atoms, 3), y_neg_.view(-1, n_atoms, 3)
+        )  # [N, N_neg] | torch.cdist(x, y_neg) # [N, N_neg]
 
-        # Normalize weights over y samples for each molecule in x
-        return torch.softmax(logits, dim=1), diffs
+        # 2. Mask self-distances (when y_neg contains x)
+        if mask_self and N == N_neg:
+            mask = torch.eye(N, device=device) * 1e6
+            dist_neg = dist_neg + mask
 
-    def drifting_field(self, x, y_pos, y_neg, sigma, n_atoms, normalize_over_x=False):
+        # 3. Compute logits
+        logit_pos = -dist_pos / T  # (N, N_pos)
+        logit_neg = -dist_neg / T  # (N, N_neg)
 
-        # reshape to (B, n_atoms, 3) to easily compute drift
-        x_ = x.view(-1, n_atoms, 3)
-        y_pos_ = y_pos.view(-1, n_atoms, 3)
-        y_neg_ = y_neg.view(-1, n_atoms, 3)
+        # 4. Concat for normalization
+        logit = torch.cat([logit_pos, logit_neg], dim=1)  # (N, N_pos + N_neg)
 
-        # get noramlized kernel (use the original shaped inputs)
-        w_pos, diffs_pos = self.get_weight(x_, y_pos_, sigma, remove_self=False)
-        w_neg, diffs_neg = self.get_weight(x_, y_neg_, sigma, remove_self=True)
-
-        # In addition it can be normalized over x
+        # 5. Normalize along (BOTH) dimensions (key insight from paper)
+        A_row = torch.softmax(logit, dim=1)  # softmax over y (columns)
         if normalize_over_x:
-            w_pos = torch.softmax(w_pos.fill_diagonal_(float("-inf")), dim=0)
-            w_neg = torch.softmax(w_neg.fill_diagonal_(float("-inf")), dim=0)
+            A_col = torch.softmax(logit, dim=0)  # softmax over x (rows)
+            A = torch.sqrt(A_row * A_col)  # geometric mean
+        else:
+            A = A_row
 
-        # compute drift as weighted average of differences (x is dim=0, y is dim=1).
-        # Aim is compute the drift for each molecule in x as a weighted average of the
-        # differences to all molecules in y.
-        drift_pos = (w_pos[:, :, None, None] * diffs_pos).sum(dim=1)
-        drift_neg = (w_neg[:, :, None, None] * diffs_neg).sum(dim=1)
+        # 6. Split back to pos and neg
+        A_pos = A[:, :N_pos]  # (N, N_pos)
+        A_neg = A[:, N_pos:]  # (N, N_neg)
 
-        # reshape back to (B*n_atoms, 3)
-        drift_pos = drift_pos.view_as(x)
-        drift_neg = drift_neg.view_as(x)
+        # 7. Compute weights (cross-weighting from paper eq. 17)
+        W_pos = A_pos * A_neg.sum(dim=1, keepdim=True)  # (N, N_pos)
+        W_neg = A_neg * A_pos.sum(dim=1, keepdim=True)  # (N, N_neg)
 
-        return drift_pos - drift_neg
+        # compute drift as weighted average of y samples. for each molecule in y_pos, weight
+        # the effect is has on each molecule in x (W_pos has shape N, N_pos), hence 
+        # providing for each sample in x an importance weight for each sample in y_pos
+        drift_pos = torch.mm(W_pos, y_pos_)
+        drift_neg = torch.mm(W_neg, y_neg_)
+        V = drift_pos - drift_neg
+
+        # reshape back to (N*N_atom, 3)
+        V = V.view_as(x)
+        return V
 
     def _step(self, batch, step):
         # Target data
@@ -296,7 +309,7 @@ class Drifting(pl.LightningModule):
                 x=x[mask],
                 y_pos=y[mask],
                 y_neg=x.detach()[mask],
-                sigma=self.sigma,
+                T=self.sigma,
                 n_atoms=batch.num_atoms[mask_i][0],
             )
             v_total[mask] = v
@@ -328,15 +341,15 @@ class Drifting(pl.LightningModule):
             and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
-            self.sample(batch, step="train", guidance_scale=self.guidance_scale)
+            self.visualize(batch, step="train", outdir="visualizations")
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self._step(batch, "val")
-        if (self.current_epoch % self.sample_every_epoch == 0) and (
-            self.current_epoch > 0
-        ):
-            self.sample(batch, step="val", guidance_scale=self.guidance_scale)
+        # if (self.current_epoch % self.sample_every_epoch == 0) and (
+        #     self.current_epoch > 0
+        # ):
+        #     self.sample(batch, step="val", guidance_scale=self.guidance_scale)
         return loss
 
     @torch.no_grad()
@@ -410,6 +423,20 @@ class Drifting(pl.LightningModule):
             self.model.train()
 
         return atoms_pred, metrics
+    
+    def visualize(self, batch, step, outdir=None):
+        epoch = self.current_epoch
+        atoms_pred, _ = self.sample(batch, step=step)
+        if outdir is not None:
+            os.makedirs(f"{outdir}/{step}", exist_ok=True)
+  
+        # Write atoms as png image using ASE's built-in visualization
+        for i, atoms in enumerate(atoms_pred):
+            sample_path = f"{outdir}/{step}/epoch_{epoch:05d}_sample_{i}.png"
+            write(sample_path, atoms, scale=100)
+            self.logger.experiment.log(
+                {f"{step}/structure_{i}": wandb.Image(sample_path)}
+            )
 
 
 class DriftingDummy(Drifting):
@@ -501,7 +528,7 @@ class DriftingDummy(Drifting):
         return loss
 
     @torch.no_grad()
-    def sample(self, y, step=None, **kwargs):
+    def sample(self, n_samples, y, step=None, **kwargs):
         """Generate samples by integrating the learned flow field."""
 
         was_training = self.model.training
@@ -510,7 +537,7 @@ class DriftingDummy(Drifting):
         start_time = time.time()
 
         # Sample prior noise
-        z = torch.randn_like(y)
+        z = torch.randn(n_samples, *y.shape[1:], device=y.device)
 
         # generate samples
         x = self.model(z)
@@ -522,23 +549,17 @@ class DriftingDummy(Drifting):
 
         return x
 
-    @torch.no_grad()
-    def visualize(self, y, epoch):
+    def visualize(self, y, step, n_samples=1000, outdir=None):
         """Plot generated samples vs groundtruth and save/log the figure."""
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        was_training = self.model.training
-        self.model.eval()
-
-        # Generate n_viz samples from fresh noise
-        n_viz = 1000
-        z = torch.randn(n_viz, y.shape[1], device=y.device)
-        x = self.model(z)
-
-        if was_training:
-            self.model.train()
+        # Get current epoch
+        epoch = self.current_epoch
+        
+        # Generate samples from noise
+        x = self.sample(n_samples, y, step=step)
 
         y_np = y.detach().cpu().numpy()
         x_np = x.detach().cpu().numpy()
@@ -554,15 +575,16 @@ class DriftingDummy(Drifting):
 
         plt.tight_layout()
 
-        os.makedirs("viz", exist_ok=True)
-        fig.savefig(f"viz/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight")
+        if outdir is not None:
+            os.makedirs(f"{outdir}/{step}", exist_ok=True)
+            fig.savefig(f"{outdir}/{step}/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight")
 
         # Log to WandB if available
         if self.logger is not None:
             try:
                 import wandb
                 self.logger.experiment.log(
-                    {"viz/samples": wandb.Image(fig)}, step=epoch
+                    {f"{outdir}/samples_{step}": wandb.Image(fig)}, epoch=epoch
                 )
             except Exception:
                 pass
@@ -570,21 +592,16 @@ class DriftingDummy(Drifting):
         plt.close(fig)
 
     def training_step(self, batch, batch_idx):
-        optimizer = self.optimizers()
-
-        optimizer.zero_grad()
-
         loss = self._step(batch, "train")
-
-        self.manual_backward(loss)
-
-        optimizer.step()
-
         if (
             (self.current_epoch % self.sample_every_epoch == 0)
             and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
-            self.visualize(batch, self.current_epoch)
+            self.visualize(batch, step="train", outdir="visualizations")
 
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        loss = self._step(batch, "val")
         return loss

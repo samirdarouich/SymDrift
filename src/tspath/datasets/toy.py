@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from sklearn.datasets import make_circles
 import logging
+from torch_geometric.data import Data
+
 logger = logging.getLogger(__name__)
 
 def make_spiral(n_samples, noise=0.01, start=0.0, stop=2 * math.pi, seed=None):
@@ -133,6 +135,41 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         raise ValueError(f"Unknown dataset: {dataset_name}")
     
 
+def generate_cc_harmonic_2d(
+    n_samples=1000,
+    r0=1.54,
+    k=8.0,              # softer than realistic
+    T=300.0,
+    kB=8.617333e-5,
+    seed=None
+):
+    """
+    Returns:
+        positions: (n_samples, 2, 3)
+        bond_lengths: (n_samples,)
+        energies: (n_samples,)
+    """
+    if seed is not None:
+        torch.random.manual_seed(seed)
+        
+    # Bond length std from Boltzmann
+    sigma = math.sqrt(kB * T / k)
+
+    # Sample bond lengths
+    r = torch.normal(mean=r0, std=sigma, size=(n_samples,))
+
+    # Sample random 2D angles
+    theta = 2 * math.pi * torch.rand(n_samples)
+
+    # Create positions
+    positions = torch.zeros(n_samples, 2, 3)
+
+    # Second carbon in 2D plane
+    positions[:, 1, 0] = r * torch.cos(theta)
+    positions[:, 1, 1] = r * torch.sin(theta)
+
+    return positions, r
+    
 class ToyDataset(torch.utils.data.Dataset):
     def __init__(self, name="spiral", n_samples=10000, **kwargs):
         self.data = get_dataset(name, n_samples=n_samples, **kwargs)
@@ -144,3 +181,24 @@ class ToyDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return torch.tensor(self.data[idx], dtype=torch.float32)
+    
+
+class ToyMoleculeDataset(torch.utils.data.Dataset):
+    def __init__(self, n_samples=1000, r0=1.54, k=8.0, T=500.0, **kwargs):
+        self.positions, self.bond_lengths = generate_cc_harmonic_2d(
+            n_samples, r0, k, T
+        )
+        
+        logger.info(f"Loaded dataset 'C-C' with {n_samples} samples.")
+
+    def __len__(self):
+        return len(self.positions)
+
+    def __getitem__(self, idx):
+        data = Data(
+            x = torch.tensor([6, 6], dtype=torch.float),  # Carbon atomic numbers
+            pos=self.positions[idx],
+            bond_length=torch.tensor([self.bond_lengths[idx]]),
+            num_atoms=torch.tensor(2, dtype=torch.long)
+        )
+        return data

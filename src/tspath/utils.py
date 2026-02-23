@@ -142,7 +142,7 @@ def get_rmsd_batch_aligned(xi, xj, batch):
     return rmsd
 
 
-def batch_inputs_to_atoms(batch, pos_key='pos'):
+def batch_inputs_to_atoms(batch, pos_key='pos', info_keys=[]):
     """
     Converts a batch of inputs to a list of ASE Atoms objects.
 
@@ -158,7 +158,10 @@ def batch_inputs_to_atoms(batch, pos_key='pos'):
         mask = batch.batch == m
         R = batch[pos_key][mask].detach().cpu().numpy()
         Z = batch.x[mask].detach().cpu().numpy()
-        info = {"reaction_id": batch.rxn[m].item()}
+        info = {}
+        for key in info_keys:
+            if hasattr(batch, key):
+                info[key] = batch[key][m].item()
         atoms = Atoms(positions=R, numbers=Z, info=info)
         atoms_list.append(atoms)
     return atoms_list

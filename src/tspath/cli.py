@@ -3,7 +3,6 @@ import hydra
 from hydra.utils import instantiate
 import pytorch_lightning as pl
 import torch
-from torch_geometric.loader import DataLoader as GeometricDataLoader
 import os
 from omegaconf import OmegaConf
 import uuid
@@ -13,45 +12,6 @@ from tspath.utils import print_config
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-def build_pyg_dataloader(dataset, dataloader_cfg):
-    """
-    Build a PyG DataLoader from a Hydra DictConfig, safely instantiating
-    batch_sampler if specified. Handles struct-mode DictConfig.
-    
-    Args:
-        dataset: PyG dataset object
-        dataloader_cfg: Hydra DictConfig containing dataloader args, 
-                        optionally including 'batch_sampler', 'sampler', 'batch_size', 'num_workers'.
-                        
-    Returns:
-        GeometricDataLoader ready for PyTorch Lightning.
-    """
-    # Start with base kwargs
-    loader_kwargs = {}
-
-    # Optional num_workers
-    if "num_workers" in dataloader_cfg:
-        loader_kwargs["num_workers"] = dataloader_cfg.num_workers
-
-    # Optional batch_size
-    if "batch_size" in dataloader_cfg:
-        loader_kwargs["batch_size"] = dataloader_cfg.batch_size
-
-    # Optional sampler
-    if "sampler" in dataloader_cfg:
-        sampler_cfg = dataloader_cfg.sampler
-        loader_kwargs["sampler"] = instantiate(sampler_cfg, dataset=dataset)
-
-    # Optional batch_sampler
-    if "batch_sampler" in dataloader_cfg:
-        batch_sampler_cfg = dataloader_cfg.batch_sampler
-        loader_kwargs["batch_sampler"] = instantiate(batch_sampler_cfg, dataset=dataset)
-        # batch_size and sampler are ignored if batch_sampler is provided
-        loader_kwargs.pop("batch_size", None)
-        loader_kwargs.pop("sampler", None)
-
-    return GeometricDataLoader(dataset=dataset, **loader_kwargs)
 
 @hydra.main(config_path='configs',version_base='1.2',config_name='diffusion')
 def train(cfg):
@@ -137,7 +97,7 @@ def sample(cfg):
 
     ########## Dataset ##########
     test_dataset = instantiate(cfg.dataset.test_dataset)
-    test_dataloader = build_pyg_dataloader(test_dataset, cfg.dataset.test_dataloader)
+    test_dataloader = instantiate(cfg.dataset.val_dataloader, dataset=test_dataset)
 
     diff_process = instantiate(cfg.diffusion)
     log.info("Loading model checkpoint: <{}>".format(cfg.diffusion.checkpoint_path))
