@@ -7,6 +7,7 @@ k: 8.0
 T: 500.0
 seed: null
 batch_size: 256
+augment_with_rotations: true
 
 # Define training and validation datasets and dataloaders
 train_dataset:
@@ -16,6 +17,7 @@ train_dataset:
   r0: ${dataset.r0}
   k: ${dataset.k}
   T: ${dataset.T}
+  augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}
 
 val_dataset:
@@ -25,6 +27,7 @@ val_dataset:
   r0: ${dataset.r0}
   k: ${dataset.k}
   T: ${dataset.T}
+  augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}
 
 test_dataset:
@@ -34,6 +37,7 @@ test_dataset:
   r0: ${dataset.r0}
   k: ${dataset.k}
   T: ${dataset.T}
+  augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}
 
 train_dataloader:

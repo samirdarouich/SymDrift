@@ -6,13 +6,10 @@ import pytorch_lightning as pl
 import torch
 from ase.io import write
 import wandb
-
-import tempfile
-
 from tspath.analysis import check_validity
 from tspath.utils import (
     batch_inputs_to_atoms,
-    get_rmsd_batch_aligned,
+    sample_noise_like_2d,
     sample_noise_like,
 )
 
@@ -184,6 +181,7 @@ class Drifting(pl.LightningModule):
         sample_every_epoch=50,
         p_null_mask=0.0,
         guidance_scale=0.0,
+        visualize_type="samples",
         **kwargs,
     ):
         super().__init__()
@@ -193,6 +191,7 @@ class Drifting(pl.LightningModule):
         self.sample_every_epoch = sample_every_epoch
         self.p_null_mask = p_null_mask
         self.guidance_scale = guidance_scale
+        self.visualize_type = visualize_type
 
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
@@ -205,9 +204,13 @@ class Drifting(pl.LightningModule):
     def _step(self, batch, step):
         # Target data
         y = batch.pos.clone()
+        batch.pos_orig = y
 
         # Sample prior noise
-        z = sample_noise_like(y, batch.batch)
+        if self.visualize_type == "2d":
+            z = sample_noise_like_2d(y, batch.batch)
+        else:
+            z = sample_noise_like(y, batch.batch)
         batch.pos = z
 
         # generate samples
@@ -222,10 +225,10 @@ class Drifting(pl.LightningModule):
             mask_i = batch.formula == conf
 
             # compute drifting field for each conformer
-            v = self.drifting_field(
+            v, *_ = self.drifting_field(
                 x=x[mask],
                 y_pos=y[mask],
-                y_neg=x.detach()[mask],
+                y_neg=x[mask],
                 n_atoms=batch.num_atoms[mask_i][0],
             )
             v_total[mask] = v
@@ -280,7 +283,10 @@ class Drifting(pl.LightningModule):
         start_time = time.time()
 
         # Sample prior noise
-        z = sample_noise_like(batch.pos, batch.batch)
+        if self.visualize_type == "2d":
+            z = sample_noise_like_2d(batch.pos, batch.batch)
+        else:
+            z = sample_noise_like(batch.pos, batch.batch)
         batch.pos = z
 
         # generate samples
@@ -341,18 +347,31 @@ class Drifting(pl.LightningModule):
         return atoms_pred, metrics
     
     def visualize(self, batch, step, outdir=None):
+        pos_dataset = batch.pos_orig.cpu().numpy()
         epoch = self.current_epoch
         atoms_pred, _ = self.sample(batch, step=step)
+        
         if outdir is not None:
             os.makedirs(f"{outdir}/{step}", exist_ok=True)
-  
-        # Write atoms as png image using ASE's built-in visualization
-        for i, atoms in enumerate(atoms_pred):
-            sample_path = f"{outdir}/{step}/epoch_{epoch:05d}_sample_{i}.png"
-            write(sample_path, atoms, scale=100)
-            self.logger.experiment.log(
-                {f"{step}/structure_{i}": wandb.Image(sample_path)}
-            )
+
+        if self.visualize_type == "samples":
+            # Write atoms as png image using ASE's built-in visualization
+            for i, atoms in enumerate(atoms_pred):
+                sample_path = f"{outdir}/{step}/epoch_{epoch:05d}_sample_{i}.png"
+                write(sample_path, atoms, scale=100)
+                self.logger.experiment.log(
+                    {f"{step}/structure_{i}": wandb.Image(sample_path)}
+                )
+        elif self.visualize_type == "2d":
+            import matplotlib.pyplot as plt
+            x_samples = torch.tensor([atoms.get_positions() for atoms in atoms_pred]).view(-1, 3)
+            plt.scatter(pos_dataset[:, 0], pos_dataset[:, 1], alpha=0.5, color="gray", label="Dataset")
+            plt.scatter(x_samples[:, 0], x_samples[:, 1], alpha=0.5, color="red", label="Samples")
+            plt.legend()
+            plt.xlim(-1.5, 1.5)
+            plt.ylim(-1.5, 1.5)
+            plt.savefig(f"{outdir}/{step}/epoch_{epoch:05d}_samples.png")
+            plt.close()
 
 
 class DriftingDummy(Drifting):
@@ -366,7 +385,7 @@ class DriftingDummy(Drifting):
         x = self.model(z)
 
         # drifting field
-        v_total = self.drifting_field(
+        v_total, *_ = self.drifting_field(
             x=x,
             y_pos=y,
             y_neg=x,

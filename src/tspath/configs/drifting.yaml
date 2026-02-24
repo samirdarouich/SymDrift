@@ -14,14 +14,19 @@ run:
 diffusion:
   _target_: tspath.trainer.Drifting
   sample_every_epoch: 10000
-  sigma: 0.15
+
+  drifting_field:
+    _target_: tspath.generative.EquivariantDriftingField
+    temperature: 0.15
+    normalize_over_x: false
+    aligned: true
 
   model:
     _target_: tspath.model.EquiformerV2
-    max_radius: 11.0
-    num_layers: 6
-    num_distance_basis: 64
-    use_noise_schedule_sigma_encoding: false
+    #max_radius: 11.0
+    #num_layers: 6
+    #num_distance_basis: 64
+    #use_noise_schedule_sigma_encoding: false
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -71,9 +76,10 @@ loggers:
   wandb_logger:
     _target_: pytorch_lightning.loggers.WandbLogger
     save_dir: "."
-    name: ${run.id}
-    id: ${run.id}
+    name: ${replace:${run.id}, "/", "_"}
+    id: ${replace:${run.id}, "/", "_"}
     project: ${run.experiment}
+    offline: false
 
 hydra:
     job:

@@ -236,3 +236,13 @@ def sample_isotropic_Gaussian(
     sample = mean + std * noise
 
     return sample, noise
+
+def sample_noise_like_2d(pos: torch.Tensor, batch: torch.Tensor):
+    """
+    Sample 2d Gaussian noise and add zero z-component. 
+    Center the noise to have zero center of geometry.
+    """
+    z = torch.randn(pos.shape[0], 2, device=pos.device)
+    z = batch_center_systems(z, batch)  # zero center of geometry
+    z = torch.cat([z, torch.zeros(z.shape[0], 1, device=z.device)], dim=1)
+    return z

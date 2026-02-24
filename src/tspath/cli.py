@@ -10,6 +10,11 @@ from tqdm import tqdm
 from tspath.utils import print_config
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
+OmegaConf.register_new_resolver(
+    "replace",
+    lambda s, old, new: s.replace(old, new)
+)
+
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

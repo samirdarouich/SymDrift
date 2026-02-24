@@ -62,7 +62,7 @@ def plot_drifting_field(x, V_pos, V_neg, atom_idx=None):
     plt.close()
 
 
-def plot_aligned_distribution(x, diff_pos, diff_neg, plot="both", atom_idx=None):
+def plot_distribution(x, diff_pos, diff_neg, plot="both", atom_idx=None):
     x_ref = x[:, None, :, :]  # (N, 1, n_atoms, 3)
     coords = [x_ref]
     if plot in ("both", "pos"):
@@ -118,60 +118,64 @@ def plot_aligned_distribution(x, diff_pos, diff_neg, plot="both", atom_idx=None)
     plt.close()
 
 
-dataset = MoleculeDataset(
-    # source="t1x_eq_all_structures",
-    # source="t1x_eq_C5H8O",
-    source="t1x_eq_CHN3O",
-    root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
-    split="train",
-    # split_identifier="debug",
-)
-
-sampler = CompositionBatchSampler(
-    dataset, k=1, n=10, shuffle=True, drop_last=False, resample=False, seed=42
-)
-dataloader = GeometricDataLoader(
-    dataset, batch_sampler=sampler, num_workers=4, persistent_workers=True
-)
-driting_field_equivariant = EquivariantDriftingField(
-    temperature=1.0, mask_self=True, normalize_over_x=False, aligned=True
-)
-
-driting_field_naive = EquivariantDriftingField(
-    temperature=1.0, mask_self=True, normalize_over_x=False, aligned=False
-)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(42)
-for batch in dataloader:
-    batch = batch.to(device)
-    y = batch.pos.clone()
-    z = sample_noise_like(batch.pos, batch.batch)
-
-    y_reshaped = y.view(-1, batch.num_atoms[0], 3)
-    z_reshaped = z.view(-1, batch.num_atoms[0], 3)
-
-    V, V_pos, V_neg, diff_pos, diff_neg = driting_field_equivariant(
-        z,
-        y,
-        z,
-        temperature=1.0,
-        n_atoms=batch.num_atoms[0],
+def main():
+    dataset = MoleculeDataset(
+        # source="t1x_eq_all_structures",
+        # source="t1x_eq_C5H8O",
+        source="t1x_eq_CHN3O",
+        root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
+        split="train",
+        # split_identifier="debug",
     )
 
-    (
-        V_unaligned,
-        V_pos_unaligned,
-        V_neg_unaligned,
-        diff_pos_unaligned,
-        diff_neg_unaligned,
-    ) = driting_field_naive(
-        z,
-        y,
-        z,
-        temperature=1.0,
-        n_atoms=batch.num_atoms[0],
+    sampler = CompositionBatchSampler(
+        dataset, k=1, n=10, shuffle=True, drop_last=False, resample=False, seed=42
+    )
+    dataloader = GeometricDataLoader(
+        dataset, batch_sampler=sampler, num_workers=4, persistent_workers=True
+    )
+    driting_field_equivariant = EquivariantDriftingField(
+        temperature=1.0, mask_self=True, normalize_over_x=False, aligned=True
     )
 
-    atoms = batch_inputs_to_atoms(batch)
-    break
+    driting_field_naive = EquivariantDriftingField(
+        temperature=1.0, mask_self=True, normalize_over_x=False, aligned=False
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(42)
+    for batch in dataloader:
+        batch = batch.to(device)
+        y = batch.pos.clone()
+        z = sample_noise_like(batch.pos, batch.batch)
+
+        y_reshaped = y.view(-1, batch.num_atoms[0], 3)
+        z_reshaped = z.view(-1, batch.num_atoms[0], 3)
+
+        V, V_pos, V_neg, diff_pos, diff_neg = driting_field_equivariant(
+            z,
+            y,
+            z,
+            temperature=1.0,
+            n_atoms=batch.num_atoms[0],
+        )
+
+        (
+            V_unaligned,
+            V_pos_unaligned,
+            V_neg_unaligned,
+            diff_pos_unaligned,
+            diff_neg_unaligned,
+        ) = driting_field_naive(
+            z,
+            y,
+            z,
+            temperature=1.0,
+            n_atoms=batch.num_atoms[0],
+        )
+
+        atoms = batch_inputs_to_atoms(batch)
+        break
+
+if __name__ == "__main__":
+    main()
