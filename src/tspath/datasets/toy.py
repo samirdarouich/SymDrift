@@ -100,9 +100,8 @@ def make_swissroll2d(n, noise=0.05, seed=None):
 def generate_cc_harmonic_2d(
     n_samples=1000,
     r0=1.54,
-    k=8.0,              # softer than realistic
+    bond_k=8.0,
     T=300.0,
-    kB=8.617333e-5,
     augment_with_rotations=False,
     seed=None
 ):
@@ -112,11 +111,12 @@ def generate_cc_harmonic_2d(
         bond_lengths: (n_samples,)
         energies: (n_samples,)
     """
+    kB=8.617333e-5  # eV/K
     if seed is not None:
         torch.random.manual_seed(seed)
         
     # Bond length std from Boltzmann
-    sigma = math.sqrt(kB * T / k)
+    sigma = math.sqrt(kB * T / bond_k)
 
     # Sample bond lengths
     r = torch.normal(mean=r0, std=sigma, size=(n_samples,))
@@ -134,8 +134,63 @@ def generate_cc_harmonic_2d(
     positions[:, 1, 0] = r * torch.cos(theta)
     positions[:, 1, 1] = r * torch.sin(theta)
 
-    return positions, r
+    return positions
+
+def generate_ccc_harmonic_2d(
+    n_samples=1000,
+    r0=1.54,
+    theta0=120.0,
+    bond_k=8.0,
+    angle_k=1.5,
+    T=300.0,
+    augment_with_rotations=False,
+    augment_with_permutations=False,
+    seed=None,
+):
+    """
+    Returns:
+        positions: (n_samples, 3, 3)
+        bond_lengths: (n_samples,)
+        energies: (n_samples,)
+    """
+    kB = 8.617333e-5  # eV/K
+    if seed is not None:
+        torch.random.manual_seed(seed)
+
+    r1 = torch.normal(r0, math.sqrt(kB * T / bond_k), size=(n_samples,))
+    r2 = torch.normal(r0, math.sqrt(kB * T / bond_k), size=(n_samples,))
+
+    # Sample angle and convert to radians
+    theta = torch.normal(
+        theta0 * math.pi / 180.0, math.sqrt(kB * T / angle_k), size=(n_samples,)
+    )
+
+    # Geometry C2 is middle atom and the angle is between C1-C2-C3
+    positions = torch.zeros(n_samples, 3, 3)
+    positions[:, 0, 0] = -r1
+    positions[:, 2, 0] = -r2 * torch.cos(theta)
+    positions[:, 2, 1] = r2 * torch.sin(theta)
     
+    # Apply random rotations to each sample (sample unfiform angle between 0 and 2pi)
+    if augment_with_rotations:
+        angles = torch.rand(n_samples) * 2 * math.pi
+        cos_a, sin_a = angles.cos(), angles.sin()
+        R = torch.stack(
+            [
+                torch.stack([cos_a, -sin_a], dim=1),  # row 0
+                torch.stack([sin_a, cos_a], dim=1),  # row 1
+            ],
+            dim=1,
+        )  # (n_samples, 2, 2)
+        positions[:, :, :2] = torch.matmul(positions[:, :, :2], R.transpose(1, 2))
+
+    # Apply random permutations of the atoms
+    if augment_with_permutations:
+        perms = torch.stack([torch.randperm(3) for _ in range(n_samples)])
+        batch_indices = torch.arange(n_samples)[:, None]
+        positions = positions[batch_indices, perms]
+    
+    return positions
     
 def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
     """
@@ -174,14 +229,31 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         return make_swissroll2d(n_samples, noise=noise, seed=seed)
     elif dataset_name == "cc":
         r0 = kwargs.get("r0", 1.54)
-        k = kwargs.get("k", 8.0)
+        bond_k = kwargs.get("bond_k", 8.0)
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
         seed = kwargs.get("seed", None)
-        positions, bond_lengths = generate_cc_harmonic_2d(
-            n_samples, r0, k, T, augment_with_rotations=augment_with_rotations, seed=seed
+        positions = generate_cc_harmonic_2d(
+            n_samples, r0, bond_k, T, augment_with_rotations=augment_with_rotations, 
+            seed=seed
         )
-        return positions.numpy(), bond_lengths.numpy()
+        return positions.numpy()
+    elif dataset_name == "ccc":
+        r0 = kwargs.get("r0", 1.54)
+        bond_k = kwargs.get("bond_k", 8.0)
+        theta0 = kwargs.get("theta0", 120.0)
+        angle_k = kwargs.get("angle_k", 1.5)
+        T = kwargs.get("T", 300.0)
+        augment_with_rotations = kwargs.get("augment_with_rotations", False)
+        augment_with_permutations = kwargs.get("augment_with_permutations", False)
+        seed = kwargs.get("seed", None)
+        positions = generate_ccc_harmonic_2d(
+            n_samples, r0, theta0, bond_k, angle_k, T, 
+            augment_with_rotations=augment_with_rotations, 
+            augment_with_permutations=augment_with_permutations,
+            seed=seed
+        )
+        return positions.numpy()
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -203,19 +275,22 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
         self, 
         name="cc", 
         n_samples=1000, 
-        r0=1.54, 
-        k=8.0, 
         T=500.0, 
         augment_with_rotations=True, 
+        augment_with_permutations=True,
         **kwargs
     ):
-        self.positions, self.bond_lengths = get_dataset(
-            name, n_samples=n_samples, r0=r0, k=k, T=T, 
-            augment_with_rotations=augment_with_rotations, **kwargs
+        self.positions = get_dataset(
+            name, n_samples=n_samples, T=T, 
+            augment_with_rotations=augment_with_rotations,
+            augment_with_permutations=augment_with_permutations,
+            **kwargs
         )
         logger.info(f"Loaded dataset '{name}' with {n_samples} samples.")
         if augment_with_rotations:
             logger.info("Augmenting dataset with random rotations.")
+        if augment_with_permutations:
+            logger.info("Augmenting dataset with random permutations.")
 
         self.comp_to_indices = defaultdict(list)
         for idx in range(len(self)):
@@ -226,12 +301,11 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
         return len(self.positions)
 
     def __getitem__(self, idx):
+        pos = torch.tensor(self.positions[idx], dtype=torch.float)
+        x = torch.tensor([6]*pos.shape[0], dtype=torch.float)  # Carbon atomic numbers
+        num_atoms = torch.tensor(pos.shape[0], dtype=torch.long)
         data = Data(
-            x = torch.tensor([6, 6], dtype=torch.float),  # Carbon atomic numbers
-            pos=torch.tensor(self.positions[idx], dtype=torch.float),
-            bond_length=torch.tensor([self.bond_lengths[idx]], dtype=torch.float),
-            num_atoms=torch.tensor(2, dtype=torch.long),
-            formula=torch.tensor(0, dtype=torch.long)
+            x=x, pos=pos, num_atoms=num_atoms, formula=torch.tensor(0, dtype=torch.long)
         )
         data.pos = data.pos - data.pos.mean(dim=0, keepdim=True)  # Center the molecule
         return data

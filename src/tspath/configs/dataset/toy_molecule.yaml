@@ -3,8 +3,10 @@ name: cc
 
 n_samples: 1000
 r0: 1.54
-k: 8.0
-T: 500.0
+theta0: 120.0
+bond_k: 8.0
+angle_k: 1.5
+T: 300.0
 seed: null
 batch_size: 256
 augment_with_rotations: true
@@ -15,7 +17,9 @@ train_dataset:
   name: ${dataset.name}
   n_samples: ${dataset.n_samples}
   r0: ${dataset.r0}
-  k: ${dataset.k}
+  theta0: ${dataset.theta0}
+  bond_k: ${dataset.bond_k}
+  angle_k: ${dataset.angle_k}
   T: ${dataset.T}
   augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}
@@ -24,8 +28,11 @@ val_dataset:
   _target_: tspath.datasets.toy.ToyMoleculeDataset
   name: ${dataset.name}
   n_samples: ${dataset.n_samples}
+  n_samples: ${dataset.n_samples}
   r0: ${dataset.r0}
-  k: ${dataset.k}
+  theta0: ${dataset.theta0}
+  bond_k: ${dataset.bond_k}
+  angle_k: ${dataset.angle_k}
   T: ${dataset.T}
   augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}
@@ -34,8 +41,11 @@ test_dataset:
   _target_: tspath.datasets.toy.ToyMoleculeDataset
   name: ${dataset.name}
   n_samples: ${dataset.n_samples}
+  n_samples: ${dataset.n_samples}
   r0: ${dataset.r0}
-  k: ${dataset.k}
+  theta0: ${dataset.theta0}
+  bond_k: ${dataset.bond_k}
+  angle_k: ${dataset.angle_k}
   T: ${dataset.T}
   augment_with_rotations: ${dataset.augment_with_rotations}
   seed: ${dataset.seed}

@@ -196,7 +196,7 @@ class EquivariantBlock(nn.Module):
 class EGNN(nn.Module):
     def __init__(self, sphere_channels=128, in_edge_nf=2, max_radius=5.0, device='cpu', act_fn=nn.SiLU(), num_layers=3, attention=False,
                  norm_diff=True, tanh=False, coords_range=15, norm_constant=1, inv_sublayers=2,
-                 sin_embedding=False, normalization_factor=100, aggregation_method='sum', max_neighbors=32, **kwargs):
+                 sin_embedding=False, normalization_factor=100, aggregation_method='sum', max_neighbors=32, out_node_nf=None,**kwargs):
         super(EGNN, self).__init__()
         self.hidden_nf = sphere_channels
         self.cutoff = max_radius
@@ -224,7 +224,16 @@ class EGNN(nn.Module):
                                                                sin_embedding=self.sin_embedding,
                                                                normalization_factor=self.normalization_factor,
                                                                aggregation_method=self.aggregation_method))
+        self.h_out_mlp = None
+        if out_node_nf is not None:
+            self.h_out_mlp = nn.Sequential(
+                nn.Linear(sphere_channels, sphere_channels),
+                act_fn,
+                nn.Linear(sphere_channels, out_node_nf)
+            )
         self.to(self.device)
+        
+        
 
     def forward(self, data):
         
@@ -252,5 +261,10 @@ class EGNN(nn.Module):
             h, x = self._modules["e_block_%d" % i](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)
 
         x = batch_center_systems(x, data.batch, dim=0)
+        
+        # in case we want to output node features in addition to coordinates
+        if self.h_out_mlp is not None:
+            h = self.h_out_mlp(h)
+            return x, h
         
         return x
