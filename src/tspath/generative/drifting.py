@@ -1,114 +1,6 @@
 import torch
-from torch_linear_assignment import batch_linear_assignment
-
-def get_x_y_pairs(x, y, atomic_numbers=None, d=3):
-    """
-    x: (N, n_atoms, d), 
-    y: (M, n_atoms, d)
-    atomic_numbers: (n_atoms,) atomic numbers of each atom in target structure. Only 
-    permute within same atomic number if provided.
-    
-    returns:
-    x_flat, y_flat of shape (N*M, n_atoms, d) for all pairs
-    """
-    N, n_atoms, _ = x.shape
-    M = y.shape[0]
-    
-    # Create all N x M pairs and flatten to (N*M, n_atoms, d)
-    x_pairs = x[:, None, :, :].expand(N, M, n_atoms, d)
-    y_pairs = y[None, :, :, :].expand(N, M, n_atoms, d)
-    x_flat = x_pairs.reshape(N * M, n_atoms, d)
-    y_flat = y_pairs.reshape(N * M, n_atoms, d)
-    
-    if atomic_numbers is not None:
-        assert atomic_numbers.shape == (M*n_atoms,), "Atomic numbers should have shape (M*n_atoms,)"
-        atomic_numbers_b = atomic_numbers.view(M, n_atoms).repeat(N, 1)  # (N*M, n_atoms)
-        return x_flat, y_flat, atomic_numbers_b
-    
-    return x_flat, y_flat
-
-def kabsch_batched(X, Y):
-    """
-    align y to x
-    X, Y: (B, N, d)
-    """
-
-    centroid_X = X.mean(dim=1, keepdim=True)
-    centroid_Y = Y.mean(dim=1, keepdim=True)
-
-    Xc = X - centroid_X
-    Yc = Y - centroid_Y
-
-    H = torch.matmul(Yc.transpose(1, 2), Xc)  # (B,d,d)
-
-    U, S, Vh = torch.linalg.svd(H)
-    V = Vh.transpose(1, 2)
-
-    R = torch.matmul(V, U.transpose(1, 2))
-
-    # Reflection correction
-    det = torch.det(R)
-    mask = det < 0
-
-    if mask.any():
-        V[mask, :, -1] *= -1
-        R = torch.matmul(V, U.transpose(1, 2))
-
-    # Apply rotation
-    Y_rot = torch.matmul(Yc, R.transpose(1, 2))
-
-    Y_aligned = Y_rot + centroid_X
-
-    return Y_aligned, R
-
-def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2, verbose=False):
-    """ Perform permutations and aligment of y to x using Hungarian and Kabsch algorithm
-    in an iterative manner. 
-    
-    1) Compute optimal permutations according to current cost plan (cdist(x,y_iter))
-    2) Align permuted y_iter to x.
-    3) Start again from 1 until convergence achieved (mean rmsd change is below
-        thresholdplan or maximum number of iterations are achieved)
-
-    Parameters
-    ----------
-    x : array
-        trial structures (B, n_atoms, d)
-    y : array
-        reference structures (B, n_atoms, d)
-    atomic_numbers : array
-        atomic numbers of each atom in target structure, used to only permute within
-        same atomic number (B, n_atoms)
-    max_iter : int
-        maximum number of iterations to perform
-    tol : float
-        convergence threshold for mean change in RMSD between iterations
-    verbose : bool
-        whether to print convergence information at each iteration
-
-    Returns
-    -------
-    y_permuted_aligned: array
-        aligned and permuted reference structures of shape (B, n_atoms, d)
-    """
-    B, n_atoms, d = x.shape
-    batch_indices = torch.arange(B)[:, None]
-    y_aligned = y.clone()
-    converged = False
-    for i in range(max_iter):
-        cost = torch.cdist(x, y_aligned)
-        assignment = batch_linear_assignment(cost)
-        y_new, _ = kabsch_batched(x, y_aligned[batch_indices, assignment])
-        delta_rmsd = (((y_new - y_aligned)**2).sum(dim=(-2,-1))/n_atoms).sqrt().mean()
-        y_aligned = y_new
-        if verbose:
-            print(f"Iteration {i}: delta RMSD = {delta_rmsd:.6f}")
-        if delta_rmsd < tol:
-            if verbose:
-                print(f"Converged after {i} iterations with delta RMSD: {delta_rmsd:.6f}")
-            converged = True
-            break
-    return y_aligned, assignment, converged
+from tspath.utils import kabsch_batched, hungarian_and_kabch_batched, brute_force_and_kabch_batched, get_x_y_pairs
+from functools import partial
 
 def naive_distance(x,y, **kwargs):
     """
@@ -148,7 +40,7 @@ def minimal_distance(x, y, **kwargs):
     M = y.shape[0]
 
     # Create all N x M pairs
-    x_flat, y_flat = get_x_y_pairs(x, y, d=d)
+    x_flat, y_flat = get_x_y_pairs(x, y)
 
     # Get aligned y for all pairs at once
     y_aligned, _ = kabsch_batched(x_flat, y_flat)
@@ -161,7 +53,7 @@ def minimal_distance(x, y, **kwargs):
 
     return rmsd, diff_pos
 
-def minimal_distance_permuted(x, y, atomic_numbers):
+def minimal_distance_permuted(x, y, atomic_numbers, brute_force_permutations=False):
     """ Compute EOT plan for batch of molecules. Reorder and permute y to match x.
 
     Parameters
@@ -186,13 +78,18 @@ def minimal_distance_permuted(x, y, atomic_numbers):
     M = y.shape[0]
     
     # Create all N x M pairs
-    x_flat, y_flat, atomic_numbers_flat = get_x_y_pairs(x, y, atomic_numbers, d)
+    x_flat, y_flat, atomic_numbers_flat = get_x_y_pairs(x, y, atomic_numbers)
     
     # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y 
     # and Kabsch to align)
-    y_aligned_and_permuted, *_ = hungarian_and_kabch_batched(
-        x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
-    )
+    if brute_force_permutations:
+        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
+            x_flat, y_flat, atomic_numbers_flat
+        )
+    else:
+        y_aligned_and_permuted, *_ = hungarian_and_kabch_batched(
+            x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
+        )
     
     # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
     diff_pos = (y_aligned_and_permuted - x_flat).view(N, M, n_atoms, d)
@@ -205,14 +102,14 @@ def minimal_distance_permuted(x, y, atomic_numbers):
 
 class DriftingField(torch.nn.Module):
     
-    def __init__(self, temperature=1.0, mask_self=True, normalize_over_x=False):
+    def __init__(self, temperature=1.0, mask_self=True, normalize_over_x=False, **kwargs):
         super().__init__()
         self.temperature = temperature
 
         self.mask_self = mask_self
         self.normalize_over_x = normalize_over_x
     
-    def forward(self, x, y_pos, y_neg, temperature=None):
+    def forward(self, x, y_pos, y_neg, temperature=None, **kwargs):
         """
         x: [N, D]
         y_pos: [N_pos, D]
@@ -258,23 +155,23 @@ class DriftingField(torch.nn.Module):
         drift_neg = (w_neg[..., None] * diff_neg).sum(dim=1)
         V = drift_pos - drift_neg
         
-        return V, drift_pos, drift_neg, diff_pos, diff_neg, dist_pos, dist_neg
+        return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg
 
 class EquivariantDriftingField(torch.nn.Module):
-    def __init__(self, temperature=1.0, mask_self=True, normalize_over_x=False, aligned=True, permuted=True):
+    def __init__(self, temperature=1.0, mask_self=True, normalize_over_x=False, aligned=True, permuted=True, brute_force_permutations=False):
         super().__init__()
         self.temperature = temperature
-
         self.mask_self = mask_self
         self.normalize_over_x = normalize_over_x
         self.aligned = aligned
         self.permuted = permuted
+        self.brute_force_permutations = brute_force_permutations
         # Initialize distance function based on alignment and permutation settings
         self.get_distance_fn()
 
     def get_distance_fn(self):
         if self.aligned and self.permuted:
-            self.distance_fn = minimal_distance_permuted
+            self.distance_fn = partial(minimal_distance_permuted, brute_force_permutations=self.brute_force_permutations)
         elif self.aligned and not self.permuted:
             self.distance_fn = minimal_distance
         elif not self.aligned and not self.permuted:
@@ -282,7 +179,7 @@ class EquivariantDriftingField(torch.nn.Module):
         else:
             raise ValueError("Permuted but not aligned doesn't make sense since permutation is only meaningful with alignment. Please set permuted=False if aligned=False.")
         
-    def forward(self, x, y_pos, y_neg, n_atoms, atomic_numbers=None, temperature=None, aligned=None, permuted=None):
+    def forward(self, x, y_pos, y_neg, n_atoms, atomic_numbers=None, temperature=None, aligned=None, permuted=None, brute_force_permutations=None):
         """
         x: (N*n_atoms, d)
         y_pos: (M*n_atoms, d)
@@ -291,6 +188,9 @@ class EquivariantDriftingField(torch.nn.Module):
         atomic_numbers: (M*n_atoms,) atomic numbers of each atom in target structure,
             used to only permute within same atomic number (M*n_atoms,)
         temperature: float (optional, if provided overrides self.temperature)
+        aligned: bool (optional, if provided overrides self.aligned and updates distance function)
+        permuted: bool (optional, if provided overrides self.permuted and updates distance function)
+        brute_force_permutations: bool (optional, if provided overrides self.brute_force_permutations and updates distance function)
         returns: (N*n_atoms, d) drifting field for each molecule in x
         """
         _, d = x.shape
@@ -302,6 +202,8 @@ class EquivariantDriftingField(torch.nn.Module):
             self.aligned = aligned
             if permuted is not None:
                 self.permuted = permuted
+            if brute_force_permutations is not None:
+                self.brute_force_permutations = brute_force_permutations
             self.get_distance_fn()
         
         # 0. Reshape to (N, n_atoms, d) and (N_pos/N_neg, n_atoms, d)
@@ -346,4 +248,4 @@ class EquivariantDriftingField(torch.nn.Module):
         # 8. compute V and reshape (N*n_atoms, d)
         V = (drift_pos - drift_neg).view_as(x)
         
-        return V, drift_pos, drift_neg, diff_pos, diff_neg, dist_pos, dist_neg
+        return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg

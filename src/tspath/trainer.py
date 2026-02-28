@@ -389,7 +389,6 @@ class DriftingDummy(Drifting):
             x=x,
             y_pos=y,
             y_neg=x,
-            T=self.sigma,
         )
 
         # stop-gradient target
@@ -421,7 +420,8 @@ class DriftingDummy(Drifting):
 
         start_time = time.time()
 
-        # Sample prior noise
+        # Sample prior noise (always the same)
+        torch.manual_seed(42)
         z = torch.randn(n_samples, *y.shape[1:], device=y.device)
 
         # generate samples

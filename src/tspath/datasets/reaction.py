@@ -5,7 +5,7 @@ from tqdm import tqdm
 import os.path as osp
 from ase.io import read
 from torch_geometric.transforms import BaseTransform, Compose
-from tspath.utils import get_shortest_path_fast_batched_x_1
+from tspath.utils import kabsch_batched_scatter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class AlignReaction(BaseTransform):
         pos_p = data.pos_p
 
         # align product to reactant
-        pos_p_aligned = get_shortest_path_fast_batched_x_1(
+        pos_p_aligned = kabsch_batched_scatter(
             pos_r, pos_p, torch.zeros(pos_r.shape[0], dtype=torch.long)
         )
 

@@ -5,6 +5,10 @@ import torch
 from tspath.datasets import ToyMoleculeDataset
 from tspath.generative.drifting import get_x_y_pairs
 from tspath.utils import sample_noise_like_2d
+import matplotlib.pyplot as plt
+import torch
+from tspath.datasets import ToyMoleculeDataset
+from tspath.utils import get_x_y_pairs, hungarian_and_kabch_batched, kabsch_batched, brute_force_and_kabch_batched
 
 import matplotlib.pyplot as plt
 
@@ -222,8 +226,100 @@ z = torch.randn((*positions.shape[:-1],2))
 z -= z.mean(dim=1, keepdim=True)
 z = torch.cat([z, torch.zeros_like(z[:,:,:1])], dim=-1)
 
+# this is using scipy's linear_sum_assignment and kabsch on CPU, so it's a bit slow but should work for small batches and number of atoms
 x, y = get_x_y_pairs(z, positions)
-
 y_aligned = sample_eot_plan(x, y, atomic_numbers.repeat(positions.shape[0], 1))
 
-plot_aligned_permuted(x[0], y_aligned[0])
+
+# Augment with rotations and test if kabsch can align the samples to the reference
+augment_with_rotations = True
+augment_with_permutations = False
+dataset = ToyMoleculeDataset(
+    name="ccc",
+    n_samples=1000,
+    T=0,
+    seed=42,
+    r0=2.0,
+    theta0=120.0,
+    augment_with_rotations=augment_with_rotations,
+    augment_with_permutations=augment_with_permutations,
+)
+# only take 2d
+pos_dataset = torch.stack([data.pos[:,:2] for data in dataset], dim=0)
+
+
+x = pos_dataset[0].clone().unsqueeze(0)
+y = pos_dataset[1:].clone()
+
+x_flat, y_flat = get_x_y_pairs(x, y)
+y_aligned, _ = kabsch_batched(x_flat, y_flat)
+
+if (x_flat - y_aligned).abs().max() > 1e-5:
+    print("!!! Kabsch alignment failed to align y to x !!!")
+else:
+    print("Kabsch alignment succeeded in aligning y to x")
+
+# Augment with permutations and test if Hungarian + kabsch can align the samples to the reference
+augment_with_rotations = False
+augment_with_permutations = True
+dataset = ToyMoleculeDataset(
+    name="ccc",
+    n_samples=5,
+    T=0,
+    seed=42,
+    r0=2.0,
+    theta0=120.0,
+    augment_with_rotations=augment_with_rotations,
+    augment_with_permutations=augment_with_permutations,
+)
+# only take 2d
+pos_dataset = torch.stack([data.pos[:,:2] for data in dataset], dim=0)
+
+
+x = pos_dataset[0].clone().unsqueeze(0)
+y = pos_dataset[1:].clone()
+
+x_flat, y_flat = get_x_y_pairs(x, y)
+y_aligned, _, converged = hungarian_and_kabch_batched(x_flat, y_flat)
+
+if (x_flat - y_aligned).abs().max() > 1e-5:
+    print("!!! Hungarian and Kabsch alignment failed to align y to x !!!")
+else:
+    print("Hungarian and Kabsch alignment succeeded in aligning y to x")
+
+
+augment_with_rotations = True
+augment_with_permutations = True
+dataset = ToyMoleculeDataset(
+    name="ccc",
+    n_samples=5,
+    T=0,
+    seed=42,
+    r0=2.0,
+    theta0=120.0,
+    augment_with_rotations=augment_with_rotations,
+    augment_with_permutations=augment_with_permutations,
+)
+# only take 2d
+pos_dataset = torch.stack([data.pos[:,:2] for data in dataset], dim=0)
+
+
+x = pos_dataset[0].clone().unsqueeze(0)
+y = pos_dataset[1:].clone()
+
+x_flat, y_flat = get_x_y_pairs(x, y)
+y_aligned, _, converged = hungarian_and_kabch_batched(x_flat, y_flat, verbose=False)
+
+if (x_flat - y_aligned).abs().max() > 1e-5:
+    print("!!! Hungarian and Kabsch alignment failed to align y to x !!!")
+else:
+    print("Hungarian and Kabsch alignment succeeded in aligning y to x")
+    
+    
+y_aligned, _ = brute_force_and_kabch_batched(x_flat, y_flat)
+
+if (x_flat - y_aligned).abs().max() > 1e-5:
+    print("!!! Brute force and Kabsch alignment failed to align y to x !!!")
+else:
+    print("Brute force and Kabsch alignment succeeded in aligning y to x")
+    
