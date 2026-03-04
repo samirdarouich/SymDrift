@@ -4,20 +4,13 @@ import numpy as np
 from tqdm import tqdm
 import os.path as osp
 from ase.io import read
-from torch_geometric.transforms import BaseTransform, Compose
+from torch_geometric.transforms import Compose
 import logging
 from collections import defaultdict
 from typing import Optional
+from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM
 
 logger = logging.getLogger(__name__)
-    
-class RemoveCOM(BaseTransform):
-    def forward(self, data):
-        for pos_key in ['pos']:
-            pos = data[pos_key]
-            com = pos.mean(dim=0, keepdim=True)
-            data[pos_key] = pos - com
-        return data
 
 class MoleculeDataset(InMemoryDataset):
     def __init__(
@@ -30,10 +23,22 @@ class MoleculeDataset(InMemoryDataset):
         transform=None,
         pre_transform=Compose([RemoveCOM()]),
         pre_filter=None,
+        augment_with_rotations=False,
+        augment_with_permutations=False,
     ):
         self.identifier = identifier
         self.source = source
-        super().__init__(root, transform, pre_transform, pre_filter)
+        
+        # Add transforms for data augmentation
+        transforms = Compose([])
+        if transform is not None:
+            transforms.transforms.extend(transform.transforms)
+        if augment_with_rotations:
+            transforms.transforms.append(RandomRotate())
+        if augment_with_permutations:
+            transforms.transforms.append(RandomPermute())
+        
+        super().__init__(root, transforms, pre_transform, pre_filter)
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
         
         logger.info(f"Loaded dataset from {self.processed_paths[0]} with {self.len()} samples.")

@@ -1,41 +1,46 @@
 import os
+from functools import partial
 
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
+from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
+from tspath.analysis import evaluate_toy
 from tspath.datasets import ToyMoleculeDataset
 from tspath.generative import EquivariantDriftingField
 from tspath.model import EGNN, EquiformerV2, PaiNN
 from tspath.utils import sample_noise_like_2d
 
 
-@torch.no_grad()
-def sample(model, batch, n_samples=None):
-    """Generate samples by integrating the learned flow field."""
-    torch.manual_seed(42)
-    was_training = model.training
-    model.eval()
-    batch_sampling = batch.clone()
+def create_batch_object(n_atoms, n_samples):
 
+    batch_sampling = Data()
     # Sample prior noise
-    n_atoms = batch.num_atoms[0].item()
-    if n_samples is not None:
-        batch_ = torch.arange(n_samples, device=device).repeat_interleave(n_atoms)
-        dummy = torch.zeros((n_samples * n_atoms, 2), dtype=torch.float, device=device)
-        x = batch.x[0].repeat(n_samples * n_atoms)
-        num_atoms = batch.num_atoms[0].repeat(n_samples * n_atoms)
-        z = sample_noise_like_2d(dummy, batch_)
-    else:
-        batch_ = batch.batch
-        z = sample_noise_like_2d(batch.pos, batch_)
-        x = batch.x
-        num_atoms = batch.num_atoms
+    x = torch.tensor([6] * n_atoms, device=device)  # C3 molecule
+
+    batch_ = torch.arange(n_samples, device=device).repeat_interleave(n_atoms)
+    dummy = torch.zeros((n_samples * n_atoms), dtype=torch.float, device=device)
+    x = x.repeat(n_samples)
+    num_atoms = torch.tensor(n_atoms, device=device).repeat(n_samples)
+    z = sample_noise_like_2d(dummy, batch_)
+
     batch_sampling.pos = z
     batch_sampling.batch = batch_
     batch_sampling.x = x
     batch_sampling.num_atoms = num_atoms
+    return batch_sampling
+
+
+@torch.no_grad()
+def sample(model, n_atoms, n_samples):
+    """Generate samples by integrating the learned flow field."""
+    torch.manual_seed(42)
+    was_training = model.training
+    model.eval()
+
+    # sample prior noise
+    batch_sampling = create_batch_object(n_atoms, n_samples)
 
     # generate samples
     x = model(batch_sampling)
@@ -46,29 +51,10 @@ def sample(model, batch, n_samples=None):
     return x.cpu().numpy()
 
 
-def evaluate_samples(samples, r0, theta0):
-    samples_ = samples.reshape(-1, 3, 3)
-    dist01 = r0
-    dist12 = r0
-    dist02 = r0 * 2.0 * np.sin(np.radians(theta0) / 2)
-    target, _ = torch.sort(
-        torch.tensor([[dist01, dist12, dist02]], device=samples.device), dim=1
-    )
-
-    # Sort distances for permutation invariance
-    distances = torch.cdist(samples_, samples_)
-    pairwise = distances[
-        :, torch.triu_indices(3, 3, offset=1)[0], torch.triu_indices(3, 3, offset=1)[1]
-    ]
-    pairwise_sorted, _ = torch.sort(pairwise, dim=1)
-    mse = ((target - pairwise_sorted) ** 2).mean()
-    return mse.item()
-
-
-def visualize(model, batch, current_epoch, n_samples=None, outdir=None):
+def visualize(model, n_atoms, current_epoch, n_samples=None, outdir=None):
     epoch = current_epoch
-    x_samples = sample(model, batch, n_samples=n_samples)
-    mse = evaluate_samples(torch.tensor(x_samples), r0, theta0)
+    x_samples = sample(model, n_atoms=n_atoms, n_samples=n_samples)
+    mse = evaluation_function(torch.tensor(x_samples))
     plt.scatter(
         x_samples[:, 0], x_samples[:, 1], alpha=0.5, color="red", label="Samples"
     )
@@ -81,10 +67,10 @@ def visualize(model, batch, current_epoch, n_samples=None, outdir=None):
     )
     plt.legend()
     plt.xlim(
-        pos_dataset[:, :, 0].min().item() - 0.5, pos_dataset[:, :, 0].max().item() + 0.5
+        pos_dataset[:, :, 0].min().item() - 1.0, pos_dataset[:, :, 0].max().item() + 1.0
     )
     plt.ylim(
-        pos_dataset[:, :, 1].min().item() - 0.5, pos_dataset[:, :, 1].max().item() + 0.5
+        pos_dataset[:, :, 1].min().item() - 1.0, pos_dataset[:, :, 1].max().item() + 1.0
     )
     plt.title(f"Epoch {epoch}, MSE: {mse:.4f}")
     if outdir is not None:
@@ -93,7 +79,7 @@ def visualize(model, batch, current_epoch, n_samples=None, outdir=None):
             epoch_str = f"{epoch:04d}"
         else:
             epoch_str = str(epoch)
-        plt.savefig(f"{outdir}/epoch_{epoch_str}.png")
+        plt.savefig(f"{plot_dir}/epoch_{epoch_str}.png")
     plt.close()
 
 
@@ -101,28 +87,54 @@ torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
-dataset_name = "ccc"
+dataset_name = "carbon_chain"
 augment_with_rotations = False
-augment_with_permutations = True
+augment_with_permutations = False
 
+n_atoms = 5
 r0 = 2.0
 theta0 = 120.0
+factor = 1.25
+
+# If no augmentation than its just one molecule
+if augment_with_rotations and augment_with_permutations:
+    n_samples = 1000
+else:
+    n_samples = 1
+
 dataset = ToyMoleculeDataset(
     name=dataset_name,
-    n_samples=1000,
+    n_samples=n_samples,
     T=0,
     seed=42,
     r0=r0,
     theta0=theta0,
+    factor=factor,
+    n_atoms=n_atoms,
     augment_with_rotations=augment_with_rotations,
     augment_with_permutations=augment_with_permutations,
 )
+evaluation_function = partial(
+    evaluate_toy,
+    dataset_name=dataset_name,
+    n_atoms=n_atoms,
+    r0=r0,
+    theta0=theta0,
+    factor=factor,
+)
+
+
+if dataset_name == "carbon_chain":
+    dataset_name += f"_n_atoms_{n_atoms}"
+
 pos_dataset = torch.stack([data.pos for data in dataset])
+n_atoms = pos_dataset.shape[1]
+
 dataloader = GeometricDataLoader(
     dataset, batch_size=64, shuffle=True, generator=torch.Generator().manual_seed(42)
 )
 
-model_type = "painn"
+model_type = "egnn"
 aligned = True
 permuted = True
 brute_force_permutations = True
@@ -142,6 +154,10 @@ model.to(device)
 use_2d_drifting = True
 
 outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+ckpt_dir = f"{outdir}/checkpoints"
+plot_dir = f"{outdir}/plots"
+os.makedirs(ckpt_dir, exist_ok=True)
+os.makedirs(plot_dir, exist_ok=True)
 
 drifting_field = EquivariantDriftingField(
     temperature=0.15,
@@ -154,7 +170,6 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 losses = []
 model.train()
 n_epochs = 500
-n_samples = None  # just sample as many samples as batch size
 n_samples = 1000
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
 for epoch in pbar:
@@ -163,11 +178,16 @@ for epoch in pbar:
         batch = batch.to(device)
         y = batch.pos.clone()
 
-        # Sample noise (2d and add zero z-component)
-        z = sample_noise_like_2d(batch.pos, batch.batch)
-        batch.pos = z
+        if batch.num_graphs == 1:
+            # sample more negative then position
+            batch_neg = create_batch_object(n_atoms=n_atoms, n_samples=64)
+        else:
+            batch_neg = batch.clone()
+            # Sample noise (2d and add zero z-component)
+            z = sample_noise_like_2d(batch.pos, batch.batch)
+            batch_neg.pos = z
 
-        x = model(batch)
+        x = model(batch_neg)
 
         if x[..., 2].abs().max() > 1e-4:
             print(
@@ -181,7 +201,7 @@ for epoch in pbar:
                 y[..., :2],
                 x[..., :2],
                 batch.num_atoms[0],
-                atomic_numbers=batch.x,
+                # atomic_numbers=batch.x, # dont use as we assume always all molecules are the same in this toy example
                 temperature=None,
                 aligned=None,
                 permuted=None,
@@ -218,8 +238,17 @@ for epoch in pbar:
 
         if epoch % (n_epochs // 10) == 0 and batch_idx == 0 and epoch > 0:
             visualize(
-                model, batch, current_epoch=epoch, n_samples=n_samples, outdir=outdir
+                model,
+                current_epoch=epoch,
+                n_atoms=n_atoms,
+                n_samples=n_samples,
+                outdir=outdir,
             )
 
-visualize(model, batch, current_epoch="final", n_samples=n_samples, outdir=outdir)
-torch.save({"state_dict": model.state_dict()}, f"{outdir}/final_model.pt")
+    # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
+    #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
+
+visualize(
+    model, current_epoch="final", n_atoms=n_atoms, n_samples=n_samples, outdir=outdir
+)
+torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")

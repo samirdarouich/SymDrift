@@ -225,6 +225,7 @@ class EGNN(nn.Module):
                                                                normalization_factor=self.normalization_factor,
                                                                aggregation_method=self.aggregation_method))
         self.h_out_mlp = None
+        self.out_node_nf = out_node_nf
         if out_node_nf is not None:
             self.h_out_mlp = nn.Sequential(
                 nn.Linear(sphere_channels, sphere_channels),
@@ -265,6 +266,6 @@ class EGNN(nn.Module):
         # in case we want to output node features in addition to coordinates
         if self.h_out_mlp is not None:
             h = self.h_out_mlp(h)
-            return x, h
+            return h, x
         
         return x

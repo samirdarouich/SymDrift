@@ -4,32 +4,11 @@ import numpy as np
 from tqdm import tqdm
 import os.path as osp
 from ase.io import read
-from torch_geometric.transforms import BaseTransform, Compose
-from tspath.utils import kabsch_batched_scatter
+from torch_geometric.transforms import Compose
+from tspath.datasets.transforms import RemoveCOMReaction, AlignReaction
 import logging
 
 logger = logging.getLogger(__name__)
-
-class RemoveCOMReaction(BaseTransform):
-    def forward(self, data):
-        for pos_key in ['pos_ts', 'pos_r', 'pos_p']:
-            pos = data[pos_key]
-            com = pos.mean(dim=0, keepdim=True)
-            data[pos_key] = pos - com
-        return data
-
-class AlignReaction(BaseTransform):
-    def forward(self, data):
-        pos_r = data.pos_r
-        pos_p = data.pos_p
-
-        # align product to reactant
-        pos_p_aligned = kabsch_batched_scatter(
-            pos_r, pos_p, torch.zeros(pos_r.shape[0], dtype=torch.long)
-        )
-
-        data.pos_p = pos_p_aligned
-        return data
 
 class ReactionDataset(InMemoryDataset):
     def __init__(

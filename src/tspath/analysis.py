@@ -11,6 +11,8 @@ from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher, GeneticOr
 from ase import Atoms
 from ase.io import read
 import py3Dmol
+import torch
+from tspath.datasets import ToyMoleculeDataset
 
 # from https://github.com/ehoogeboom/e3_diffusion_for_molecules
 bonds1 = {
@@ -497,3 +499,35 @@ def visualize_reaction(atoms_list: Sequence[Union[Atoms, str]], offset: float = 
         shifted_atom.translate(offset * i)  # type: ignore
         shifted_atoms.append(shifted_atom)
     return visualize_atoms_list(shifted_atoms)
+
+
+def evaluate_toy(samples, dataset_name, **dataset_kwargs):
+    
+    # Get reference dataset to compute the reference distances
+    dataset = ToyMoleculeDataset(
+        name=dataset_name,
+        n_samples=1,
+        T=0,
+        augment_with_rotations=False,
+        augment_with_permutations=False,
+        seed=42,
+        **dataset_kwargs,
+    )
+    
+    # --- Compute reference distances ---
+    ref_sample = dataset[0].pos.to(samples.device)
+    n_atoms = ref_sample.shape[0]
+    ref_dist = torch.cdist(ref_sample.unsqueeze(0), ref_sample.unsqueeze(0))[0]
+    idx = torch.triu_indices(n_atoms, n_atoms, offset=1)
+    ref_pairwise = ref_dist[idx[0], idx[1]]
+    ref_sorted, _ = torch.sort(ref_pairwise)
+    
+    # --- Sample distances ---
+    samples_ = samples.reshape(-1, n_atoms, 3)
+    distances = torch.cdist(samples_, samples_)
+    pairwise = distances[:, idx[0], idx[1]]
+    pairwise_sorted, _ = torch.sort(pairwise, dim=1)
+
+    mse = ((ref_sorted - pairwise_sorted) ** 2).mean()
+
+    return mse.item()

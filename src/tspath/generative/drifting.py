@@ -1,5 +1,6 @@
 import torch
-from tspath.utils import kabsch_batched, hungarian_and_kabch_batched, brute_force_and_kabch_batched, get_x_y_pairs
+from tspath.utils import get_x_y_pairs
+from tspath.alignment import kabsch_batched, brute_force_and_kabch_batched, hungarian_and_kabch_batched
 from functools import partial
 
 def naive_distance(x,y, **kwargs):
@@ -28,6 +29,7 @@ def minimal_distance(x, y, **kwargs):
     y: array
         (M, n_atoms, d)
     
+    !Assuming x and y are in the same atom ordering
     Returns
     -------
     rmsd: array
@@ -40,7 +42,7 @@ def minimal_distance(x, y, **kwargs):
     M = y.shape[0]
 
     # Create all N x M pairs
-    x_flat, y_flat = get_x_y_pairs(x, y)
+    x_flat, y_flat, _ = get_x_y_pairs(x, y)
 
     # Get aligned y for all pairs at once
     y_aligned, _ = kabsch_batched(x_flat, y_flat)
@@ -53,7 +55,7 @@ def minimal_distance(x, y, **kwargs):
 
     return rmsd, diff_pos
 
-def minimal_distance_permuted(x, y, atomic_numbers, brute_force_permutations=False):
+def minimal_distance_permuted(x, y, atomic_numbers=None, brute_force_permutations=False):
     """ Compute EOT plan for batch of molecules. Reorder and permute y to match x.
 
     Parameters
@@ -83,11 +85,11 @@ def minimal_distance_permuted(x, y, atomic_numbers, brute_force_permutations=Fal
     # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y 
     # and Kabsch to align)
     if brute_force_permutations:
-        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
+        y_aligned_and_permuted = brute_force_and_kabch_batched(
             x_flat, y_flat, atomic_numbers_flat
         )
     else:
-        y_aligned_and_permuted, *_ = hungarian_and_kabch_batched(
+        y_aligned_and_permuted = hungarian_and_kabch_batched(
             x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
         )
     
@@ -205,7 +207,7 @@ class EquivariantDriftingField(torch.nn.Module):
             if brute_force_permutations is not None:
                 self.brute_force_permutations = brute_force_permutations
             self.get_distance_fn()
-        
+
         # 0. Reshape to (N, n_atoms, d) and (N_pos/N_neg, n_atoms, d)
         x_ = x.view(-1, n_atoms, d)  # (N, n_atoms, d)
         y_pos_ = y_pos.view(-1, n_atoms, d)  # (M, n_atoms, d)
@@ -218,8 +220,19 @@ class EquivariantDriftingField(torch.nn.Module):
         
         # 1. Compute alignment-aware pairwise L2 distances and returns (N, N_pos/N_neg) RMSD
         # matrix and aligned difference y-x of shape (N, N_pos/N_neg, n_atoms, d)
+        atomic_numbers_neg = None
+        if atomic_numbers is not None:
+            assert atomic_numbers.shape == (N_pos*n_atoms,), f"Expected atomic_numbers to have shape {(N_pos*n_atoms,)}, got {atomic_numbers.shape}"
+            if N_pos != N_neg:
+                # assume negative samples are just repeated positive samples 
+                # (e.g. for each positive sample we have x negative sample which is 
+                # the same molecule but with different noise)
+                atomic_numbers_neg = atomic_numbers.view(
+                    N_pos, n_atoms
+                ).repeat_interleave(N_neg // N_pos, dim=0).view(-1)
+        
         dist_pos, diff_pos = self.distance_fn(x_, y_pos_, atomic_numbers=atomic_numbers)
-        dist_neg, diff_neg = self.distance_fn(x_, y_neg_, atomic_numbers=atomic_numbers) 
+        dist_neg, diff_neg = self.distance_fn(x_, y_neg_, atomic_numbers=atomic_numbers_neg) 
         
         # 2. Mask self-distances (when y_neg contains x)
         if self.mask_self and N == N_neg:

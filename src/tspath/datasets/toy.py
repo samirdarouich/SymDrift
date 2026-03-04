@@ -191,7 +191,193 @@ def generate_ccc_harmonic_2d(
         positions = positions[batch_indices, perms]
     
     return positions
-    
+
+def generate_cccccc_harmonic_2d(
+    n_samples=1000,
+    r0=1.40,
+    bond_k=8.0,
+    factor=1.25,
+    T=300.0,
+    augment_with_rotations=False,
+    augment_with_permutations=False,
+    seed=None,
+):
+    """
+    Returns:
+        positions: (n_samples, 6, 3)
+    """
+    kB = 8.617333e-5  # eV/K
+
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    # Sample bond fluctuation
+    r = torch.normal(
+        r0,
+        math.sqrt(kB * T / bond_k),
+        size=(n_samples,)
+    )
+
+    positions = torch.zeros(n_samples, 6, 3)
+
+    # Vertical scaling
+    h = factor * r  # top/bottom atoms
+
+    # Precompute constants
+    sqrt3 = math.sqrt(3)
+
+    # Build hexagon explicitly
+    positions[:, 0, 0] = 0.0
+    positions[:, 0, 1] = h                 # top atom
+
+    positions[:, 1, 0] =  sqrt3/2 * r
+    positions[:, 1, 1] =  r/2
+
+    positions[:, 2, 0] =  sqrt3/2 * r
+    positions[:, 2, 1] = -r/2
+
+    positions[:, 3, 0] = 0.0
+    positions[:, 3, 1] = -h                # bottom atom
+
+    positions[:, 4, 0] = -sqrt3/2 * r
+    positions[:, 4, 1] = -r/2
+
+    positions[:, 5, 0] = -sqrt3/2 * r
+    positions[:, 5, 1] =  r/2
+
+    # ---- Rotations ----
+    if augment_with_rotations:
+        angles = torch.rand(n_samples) * 2 * math.pi
+        cos_a, sin_a = angles.cos(), angles.sin()
+
+        R = torch.stack(
+            [
+                torch.stack([cos_a, -sin_a], dim=1),
+                torch.stack([sin_a,  cos_a], dim=1),
+            ],
+            dim=1,
+        )
+
+        positions[:, :, :2] = torch.matmul(
+            positions[:, :, :2],
+            R.transpose(1, 2)
+        )
+
+    # ---- Permutations ----
+    if augment_with_permutations:
+        perms = torch.stack([torch.randperm(6) for _ in range(n_samples)])
+        batch_idx = torch.arange(n_samples)[:, None]
+        positions = positions[batch_idx, perms]
+
+    return positions
+
+
+def generate_carbon_chain_2d(
+    n_samples=1000,
+    n_atoms=8,
+    r0=1.60,
+    theta0=90,
+    bond_k=8.0,
+    angle_k=40.0,
+    T=300.0,
+    augment_with_rotations=False,
+    augment_with_permutations=False,
+    seed=None,
+):
+    """
+    Generates a 2D zig-zag carbon chain with harmonic bond and angle fluctuations.
+
+    Returns:
+        positions: (n_samples, n_atoms, 3)
+    """
+
+    kB = 8.617333e-5  # eV/K
+
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    # --- Sample bond lengths ---
+    r = torch.normal(
+        r0,
+        math.sqrt(kB * T / bond_k),
+        size=(n_samples, n_atoms - 1)
+    )
+
+    # --- Sample angle fluctuations ---
+    theta = torch.normal(
+        math.radians(theta0),
+        math.sqrt(kB * T / angle_k),
+        size=(n_samples, n_atoms - 2)
+    )
+
+    positions = torch.zeros(n_samples, n_atoms, 3)
+
+    # First bond along x-axis
+    positions[:, 1, 0] = r[:, 0]
+
+    # Direction vectors
+    directions = torch.zeros(n_samples, n_atoms - 1, 2)
+    directions[:, 0] = torch.tensor([1.0, 0.0])
+
+    # Build zig-zag by rotating previous bond
+    for i in range(1, n_atoms - 1):
+
+        # Alternate sign for zig-zag
+        sign = -1 if i % 2 == 0 else 1
+
+        angle = sign * theta[:, i - 1]
+
+        cos_a = torch.cos(angle)
+        sin_a = torch.sin(angle)
+
+        R = torch.stack(
+            [
+                torch.stack([cos_a, -sin_a], dim=1),
+                torch.stack([sin_a,  cos_a], dim=1),
+            ],
+            dim=1,
+        )  # (n_samples, 2, 2)
+
+        directions[:, i] = torch.bmm(
+            directions[:, i - 1].unsqueeze(1),
+            R
+        ).squeeze(1)
+
+    # Scale by bond lengths
+    displacements = directions * r.unsqueeze(-1)
+
+    # Integrate positions
+    positions[:, 1:, :2] = torch.cumsum(displacements, dim=1)
+
+    # Center
+    positions[:, :, :2] -= positions[:, :, :2].mean(dim=1, keepdim=True)
+
+    # ---- Rotations ----
+    if augment_with_rotations:
+        angles = torch.rand(n_samples) * 2 * math.pi
+        cos_a, sin_a = angles.cos(), angles.sin()
+
+        R = torch.stack(
+            [
+                torch.stack([cos_a, -sin_a], dim=1),
+                torch.stack([sin_a,  cos_a], dim=1),
+            ],
+            dim=1,
+        )
+
+        positions[:, :, :2] = torch.matmul(
+            positions[:, :, :2],
+            R.transpose(1, 2)
+        )
+
+    # ---- Permutations ----
+    if augment_with_permutations:
+        perms = torch.stack([torch.randperm(n_atoms) for _ in range(n_samples)])
+        batch_idx = torch.arange(n_samples)[:, None]
+        positions = positions[batch_idx, perms]
+
+    return positions
+
 def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
     """
     Get a dataset by name.
@@ -240,8 +426,8 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         return positions.numpy()
     elif dataset_name == "ccc":
         r0 = kwargs.get("r0", 1.54)
-        bond_k = kwargs.get("bond_k", 8.0)
         theta0 = kwargs.get("theta0", 120.0)
+        bond_k = kwargs.get("bond_k", 8.0)
         angle_k = kwargs.get("angle_k", 1.5)
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
@@ -249,6 +435,38 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         seed = kwargs.get("seed", None)
         positions = generate_ccc_harmonic_2d(
             n_samples, r0, theta0, bond_k, angle_k, T, 
+            augment_with_rotations=augment_with_rotations, 
+            augment_with_permutations=augment_with_permutations,
+            seed=seed
+        )
+        return positions.numpy()
+    elif dataset_name == "cccccc":
+        r0 = kwargs.get("r0", 1.54)
+        bond_k = kwargs.get("bond_k", 8.0)
+        factor = kwargs.get("factor", 1.25)
+        T = kwargs.get("T", 300.0)
+        augment_with_rotations = kwargs.get("augment_with_rotations", False)
+        augment_with_permutations = kwargs.get("augment_with_permutations", False)
+        seed = kwargs.get("seed", None)
+        positions = generate_cccccc_harmonic_2d(
+            n_samples, r0, bond_k, factor, T, 
+            augment_with_rotations=augment_with_rotations, 
+            augment_with_permutations=augment_with_permutations,
+            seed=seed
+        )
+        return positions.numpy()
+    elif dataset_name == "carbon_chain":
+        n_atoms = kwargs.get("n_atoms", 8)
+        r0 = kwargs.get("r0", 1.6)
+        theta0 = kwargs.get("theta0", 90.0)
+        bond_k = kwargs.get("bond_k", 8.0)
+        angle_k = kwargs.get("angle_k", 1.5)
+        T = kwargs.get("T", 300.0)
+        augment_with_rotations = kwargs.get("augment_with_rotations", False)
+        augment_with_permutations = kwargs.get("augment_with_permutations", False)
+        seed = kwargs.get("seed", None)
+        positions = generate_carbon_chain_2d(
+            n_samples, n_atoms, r0, theta0, bond_k, angle_k, T,
             augment_with_rotations=augment_with_rotations, 
             augment_with_permutations=augment_with_permutations,
             seed=seed
