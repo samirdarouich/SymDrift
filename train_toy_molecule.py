@@ -51,8 +51,8 @@ def sample(model, n_atoms, n_samples):
     return x.cpu().numpy()
 
 
-def visualize(model, n_atoms, current_epoch, n_samples=None, outdir=None):
-    epoch = current_epoch
+def visualize(model, n_atoms, current_step, n_samples=None, outdir=None):
+    step = current_step
     x_samples = sample(model, n_atoms=n_atoms, n_samples=n_samples)
     mse = evaluation_function(torch.tensor(x_samples))
     plt.scatter(
@@ -72,14 +72,14 @@ def visualize(model, n_atoms, current_epoch, n_samples=None, outdir=None):
     plt.ylim(
         pos_dataset[:, :, 1].min().item() - 1.0, pos_dataset[:, :, 1].max().item() + 1.0
     )
-    plt.title(f"Epoch {epoch}, MSE: {mse:.4f}")
+    plt.title(f"Step {step}, MSE: {mse:.4f}")
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
-        if isinstance(epoch, int):
-            epoch_str = f"{epoch:04d}"
+        if isinstance(step, int):
+            step_str = f"{step:04d}"
         else:
-            epoch_str = str(epoch)
-        plt.savefig(f"{plot_dir}/epoch_{epoch_str}.png")
+            step_str = str(step)
+        plt.savefig(f"{plot_dir}/step_{step_str}.png")
     plt.close()
 
 
@@ -91,7 +91,7 @@ dataset_name = "carbon_chain"
 augment_with_rotations = False
 augment_with_permutations = False
 
-n_atoms = 5
+n_atoms = 3
 r0 = 2.0
 theta0 = 120.0
 factor = 1.25
@@ -123,16 +123,11 @@ evaluation_function = partial(
     factor=factor,
 )
 
-
 if dataset_name == "carbon_chain":
     dataset_name += f"_n_atoms_{n_atoms}"
 
 pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
-
-dataloader = GeometricDataLoader(
-    dataset, batch_size=64, shuffle=True, generator=torch.Generator().manual_seed(42)
-)
 
 model_type = "egnn"
 aligned = True
@@ -140,7 +135,7 @@ permuted = True
 brute_force_permutations = True
 model_dict = {
     "painn": PaiNN(),
-    "egnn": EGNN(),
+    "egnn": EGNN(num_distance_basis=2),
     "equiformerv2": EquiformerV2(
         max_radius=11.0,
         num_distance_basis=64,
@@ -154,24 +149,36 @@ model.to(device)
 use_2d_drifting = True
 
 outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+outdir = f"runs/test/without_norm/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+# outdir = f"runs/test_with_norm/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
 drifting_field = EquivariantDriftingField(
-    temperature=0.15,
+    temperatures=torch.tensor([0.15]),
     aligned=aligned,
     permuted=permuted,
     brute_force_permutations=brute_force_permutations,
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
 
 losses = []
 model.train()
-n_epochs = 500
+
+n_steps = 9000
+batch_size = 64
+dataloader = GeometricDataLoader(
+    dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator().manual_seed(42)
+)
+
+# if just one y is used, then we overall train less steps, as steps = n_epochs * batch size
+# in the augmented case we have more samples and thus more steps, use less epochs
+n_epochs = n_steps // len(dataloader)
 n_samples = 1000
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
+step_count = 0
 for epoch in pbar:
     for batch_idx, batch in enumerate(dataloader):
         optimizer.zero_grad()
@@ -179,8 +186,8 @@ for epoch in pbar:
         y = batch.pos.clone()
 
         if batch.num_graphs == 1:
-            # sample more negative then position
-            batch_neg = create_batch_object(n_atoms=n_atoms, n_samples=64)
+            # sample more negative than positive (save comp. effort for alignment and permutation)
+            batch_neg = create_batch_object(n_atoms=n_atoms, n_samples=batch_size)
         else:
             batch_neg = batch.clone()
             # Sample noise (2d and add zero z-component)
@@ -202,7 +209,7 @@ for epoch in pbar:
                 x[..., :2],
                 batch.num_atoms[0],
                 # atomic_numbers=batch.x, # dont use as we assume always all molecules are the same in this toy example
-                temperature=None,
+                temperatures=None,
                 aligned=None,
                 permuted=None,
                 brute_force_permutations=None,
@@ -215,7 +222,7 @@ for epoch in pbar:
                 x,
                 batch.num_atoms[0],
                 atomic_numbers=batch.x,
-                temperature=None,
+                temperatures=None,
                 aligned=None,
                 permuted=None,
                 brute_force_permutations=None,
@@ -234,12 +241,13 @@ for epoch in pbar:
 
         optimizer.step()
         losses.append(loss.item())
-        pbar.set_postfix({"loss": loss.item()})
+        pbar.set_postfix({"step": step_count, "loss": loss.item()})
+        step_count += 1
 
-        if epoch % (n_epochs // 10) == 0 and batch_idx == 0 and epoch > 0:
+        if step_count % (n_steps // 10) == 0 and step_count > 0:
             visualize(
                 model,
-                current_epoch=epoch,
+                current_step=step_count,
                 n_atoms=n_atoms,
                 n_samples=n_samples,
                 outdir=outdir,
@@ -249,6 +257,6 @@ for epoch in pbar:
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
 visualize(
-    model, current_epoch="final", n_atoms=n_atoms, n_samples=n_samples, outdir=outdir
+    model, current_step="final", n_atoms=n_atoms, n_samples=n_samples, outdir=outdir
 )
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")

@@ -21,12 +21,12 @@ def sample(model, n_samples):
 
     return x
 
-ckpt_dir = "runs/toy_spiral/checkpoints"
+ckpt_dir = "../runs/toy_spiral/normed_training/checkpoints"
 ckpts = sorted([f for f in os.listdir(ckpt_dir) if f.endswith(".ckpt") and "epoch" in f], key=lambda x: int(x.split("epoch=")[1].split("-")[0]))
 
 dataset = ToyDataset(n_samples=500, seed=42, n_arms=2, noise=0.001)
 dataset_samples = torch.stack([dataset[i] for i in range(len(dataset))]).to(device)
-drift = DriftingField(temperature=0.15)
+drift = DriftingField(temperatures=torch.tensor([0.15]))
 
 torch.manual_seed(42)
 model = MLP()
@@ -35,7 +35,7 @@ model.to(device)
 sample_ = sample(model, n_samples=500)
 V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg = drift(sample_, dataset_samples, sample_)
 samples = [sample_]
-drifts = [(V, drift_pos, drift_neg, w_pos, w_neg)]
+drifts = [(V, drift_pos[0], drift_neg[0], w_pos[0], w_neg[0])]
 training_iteration = [0]
 
 for ckpt in ckpts:
@@ -46,7 +46,8 @@ for ckpt in ckpts:
     V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg = drift(sample_, dataset_samples, sample_)
 
     samples.append(sample_)
-    drifts.append((V, drift_pos, drift_neg, w_pos, w_neg))
+    # just keep the first temperature (everything except of V has the T dimension)
+    drifts.append((V, drift_pos[0], drift_neg[0], w_pos[0], w_neg[0]))
     training_iteration.append(ckpt_["epoch"]+1)
 
 dataset_samples = dataset_samples.cpu()
@@ -57,6 +58,7 @@ drift_neg = torch.stack([d[2] for d in drifts]).cpu()
 w_pos = torch.stack([d[3] for d in drifts]).cpu()
 w_neg = torch.stack([d[4] for d in drifts]).cpu()
 
+save_dir = ckpt_dir.replace("checkpoints", "trajectory_plots_normed")
 save_dir = ckpt_dir.replace("checkpoints", "trajectory_plots")
 os.makedirs(save_dir, exist_ok=True)
 for i in range(traj.shape[0]):
@@ -99,7 +101,7 @@ for i in range(traj.shape[0]):
     traj_neg_y = torch.cat([traj[i, :idx_sample, 1], traj[i, (idx_sample+1):, 1]])
     plt.scatter(traj_neg, traj_neg_y, alpha=0.25, color="tab:orange", label="$\mathbf{y}^{-}$", s=10)
     
-    # highlight the 10 most important samples
+    # highlight the 10 most important samples (for the first temperature)
     w_pos_i_sample = w_pos[i][idx_sample]
     w_neg_i_sample = w_neg[i][idx_sample]
     topk_pos = torch.topk(w_pos_i_sample, k=10).indices

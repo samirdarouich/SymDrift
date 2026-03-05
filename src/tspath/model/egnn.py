@@ -1,25 +1,13 @@
 # taken from: https://github.com/ehoogeboom/e3_diffusion_for_molecules/blob/main/egnn/egnn_new.py
 from torch import nn
 import torch
-import math
+
 from torch_geometric.nn import radius_graph
 from tspath.utils import batch_center_systems
- 
+from tspath.model.painn import GaussianRBF
+
 __all__ = ["EGNN"]
  
-class SinusoidsEmbeddingNew(nn.Module):
-    def __init__(self, max_res=15., min_res=15. / 2000., div_factor=4):
-        super().__init__()
-        self.n_frequencies = int(math.log(max_res / min_res, div_factor)) + 1
-        self.frequencies = 2 * math.pi * div_factor ** torch.arange(self.n_frequencies)/max_res
-        self.dim = len(self.frequencies) * 2
-
-    def forward(self, x):
-        x = torch.sqrt(x + 1e-8)
-        emb = x * self.frequencies[None, :].to(x.device)
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb.detach()
-
 
 def coord2diff(x, edge_index, norm_constant=1):
     row, col = edge_index
@@ -152,9 +140,9 @@ class EquivariantUpdate(nn.Module):
 
 
 class EquivariantBlock(nn.Module):
-    def __init__(self, hidden_nf, edge_feat_nf=2, device='cpu', act_fn=nn.SiLU(), n_layers=2, attention=True,
-                 norm_diff=True, tanh=False, coords_range=15, norm_constant=1, sin_embedding=None,
-                 normalization_factor=100, aggregation_method='sum'):
+    def __init__(self, hidden_nf, edge_feat_nf=2*64, device='cpu', act_fn=nn.SiLU(), n_layers=2, attention=True,
+                 norm_diff=True, tanh=False, coords_range=15, norm_constant=1, num_distance_basis=64,
+                 max_radius=5.0, normalization_factor=100, aggregation_method='sum'):
         super(EquivariantBlock, self).__init__()
         self.hidden_nf = hidden_nf
         self.device = device
@@ -162,7 +150,9 @@ class EquivariantBlock(nn.Module):
         self.coords_range_layer = float(coords_range)
         self.norm_diff = norm_diff
         self.norm_constant = norm_constant
-        self.sin_embedding = sin_embedding
+        self.radial_basis = GaussianRBF(
+            n_rbf=num_distance_basis, cutoff=max_radius, trainable=False
+        )
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
 
@@ -180,8 +170,8 @@ class EquivariantBlock(nn.Module):
     def forward(self, h, x, edge_index, node_mask=None, edge_mask=None, edge_attr=None):
         # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
-        if self.sin_embedding is not None:
-            distances = self.sin_embedding(distances)
+        # Embedding of distances
+        distances = self.radial_basis(distances).squeeze(1)
         edge_attr = torch.cat([distances, edge_attr], dim=1)
         for i in range(0, self.n_layers):
             h, _ = self._modules["gcl_%d" % i](h, edge_index, edge_attr=edge_attr, node_mask=node_mask, edge_mask=edge_mask)
@@ -196,7 +186,7 @@ class EquivariantBlock(nn.Module):
 class EGNN(nn.Module):
     def __init__(self, sphere_channels=128, in_edge_nf=2, max_radius=5.0, device='cpu', act_fn=nn.SiLU(), num_layers=3, attention=False,
                  norm_diff=True, tanh=False, coords_range=15, norm_constant=1, inv_sublayers=2,
-                 sin_embedding=False, normalization_factor=100, aggregation_method='sum', max_neighbors=32, out_node_nf=None,**kwargs):
+                 num_distance_basis=64, normalization_factor=100, aggregation_method='sum', max_neighbors=32, out_node_nf=None,**kwargs):
         super(EGNN, self).__init__()
         self.hidden_nf = sphere_channels
         self.cutoff = max_radius
@@ -208,22 +198,23 @@ class EGNN(nn.Module):
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
         
-        if sin_embedding:
-            self.sin_embedding = SinusoidsEmbeddingNew()
-            edge_feat_nf = self.sin_embedding.dim * in_edge_nf
-        else:
-            self.sin_embedding = None
-            edge_feat_nf = in_edge_nf
+        self.radial_basis = GaussianRBF(
+            n_rbf=num_distance_basis, cutoff=self.cutoff, trainable=False
+        )
+        edge_feat_nf = num_distance_basis * in_edge_nf
+        
 
         self.embedding = nn.Embedding(100, sphere_channels)
         for i in range(0, num_layers):
-            self.add_module("e_block_%d" % i, EquivariantBlock(sphere_channels, edge_feat_nf=edge_feat_nf, device=device,
-                                                               act_fn=act_fn, n_layers=inv_sublayers,
-                                                               attention=attention, norm_diff=norm_diff, tanh=tanh,
-                                                               coords_range=coords_range, norm_constant=norm_constant,
-                                                               sin_embedding=self.sin_embedding,
-                                                               normalization_factor=self.normalization_factor,
-                                                               aggregation_method=self.aggregation_method))
+            self.add_module("e_block_%d" % i, EquivariantBlock(
+                sphere_channels, edge_feat_nf=edge_feat_nf, device=device,
+                act_fn=act_fn, n_layers=inv_sublayers,
+                attention=attention, norm_diff=norm_diff, tanh=tanh,
+                coords_range=coords_range, norm_constant=norm_constant,
+                max_radius=max_radius, num_distance_basis=num_distance_basis,
+                normalization_factor=self.normalization_factor,
+                aggregation_method=self.aggregation_method)
+            )
         self.h_out_mlp = None
         self.out_node_nf = out_node_nf
         if out_node_nf is not None:
@@ -233,8 +224,6 @@ class EGNN(nn.Module):
                 nn.Linear(sphere_channels, out_node_nf)
             )
         self.to(self.device)
-        
-        
 
     def forward(self, data):
         
@@ -255,8 +244,10 @@ class EGNN(nn.Module):
         
         # Edit Emiel: Remove velocity as input
         distances, _ = coord2diff(x, edge_index)
-        if self.sin_embedding is not None:
-            distances = self.sin_embedding(distances)
+
+        # Embedding of distances
+        distances = self.radial_basis(distances).squeeze(1)
+        
         h = self.embedding(atomic_numbers)
         for i in range(0, self.n_layers):
             h, x = self._modules["e_block_%d" % i](h, x, edge_index, node_mask=node_mask, edge_mask=edge_mask, edge_attr=distances)

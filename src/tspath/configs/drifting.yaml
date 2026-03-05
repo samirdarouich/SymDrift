@@ -17,7 +17,7 @@ diffusion:
 
   drifting_field:
     _target_: tspath.generative.EquivariantDriftingField
-    temperature: 0.15
+    temperatures: 0.15
     normalize_over_x: false
     aligned: true
 
