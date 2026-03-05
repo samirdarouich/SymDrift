@@ -218,7 +218,7 @@ class EquivariantBlock(nn.Module):
 
         if num_distance_basis > 0:
             self.radial_basis = GaussianRBF(
-                n_rbf=num_distance_basis, cutoff=self.cutoff, trainable=False
+                n_rbf=num_distance_basis, cutoff=max_radius, trainable=False
             )
         else:
             self.radial_basis = None

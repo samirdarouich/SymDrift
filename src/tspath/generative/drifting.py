@@ -96,7 +96,7 @@ def minimal_distance_permuted(
     # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y
     # and Kabsch to align)
     if brute_force_permutations:
-        y_aligned_and_permuted = brute_force_and_kabch_batched(
+        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
             x_flat, y_flat, atomic_numbers_flat
         )
     else:

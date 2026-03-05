@@ -148,8 +148,8 @@ model.to(device)
 
 
 normalize_drift = True
-temperaturs = [0.05]
-temp_str = "_".join([f"{t:.2f}" for t in temperaturs])
+temperatures = [0.05]
+temp_str = "_".join([f"{t:.2f}" for t in temperatures])
 outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
@@ -230,9 +230,9 @@ for epoch in pbar:
         pbar.set_postfix(
             {
                 "step": step_count, 
-                "loss": loss.item(),
-                "pos_drift": torch.sqrt(torch.mean(drift_pos**2)).item(),
-                "neg_drift": torch.sqrt(torch.mean(drift_neg**2)).item(),
+                "mse(V)": loss.item(),
+                "mse(pos_drift)": torch.sqrt(torch.mean(drift_pos**2)).item(),
+                "mse(neg_drift)": torch.sqrt(torch.mean(drift_neg**2)).item(),
             }
         )
 

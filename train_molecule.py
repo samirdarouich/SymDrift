@@ -53,17 +53,17 @@ def sample(model, batch, n_samples):
     return atoms_samples
 
         
-def visualize(model, batch, current_epoch, n_samples=None, outdir=None):
-    epoch = current_epoch
+def visualize(model, batch, current_step, n_samples=None, outdir=None):
+    step = current_step
     atoms_samples = sample(model, batch, n_samples=n_samples)
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
-        if isinstance(epoch, int):
-            epoch_str = f"{epoch:04d}"
+        if isinstance(step, int):
+            step_str = f"{step:04d}"
         else:
-            epoch_str = str(epoch)
-        write(f"{plot_dir}/epoch_{epoch_str}.png", atoms_samples[0])
-        write(f"{plot_dir}/epoch_{epoch_str}.xyz", atoms_samples)
+            step_str = str(step)
+        write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
+        write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
     plt.close()
 
 
@@ -72,8 +72,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
 dataset_name = "t1x_eq_CHN3O" #! just 6 ATOMS
-augment_with_rotations = False
-augment_with_permutations = False
+augment_with_rotations = True
+augment_with_permutations = True
 
 dataset = MoleculeDataset(
     source=dataset_name,
@@ -84,22 +84,9 @@ dataset = MoleculeDataset(
     augment_with_permutations=augment_with_permutations,
 )
 
-batch_sampler = CompositionBatchSampler(
-    dataset,
-    k=1,  # number of chunks per batch
-    n=1,  # chunk size (number of samples per chunk)
-    shuffle=True,
-    drop_last=False,
-    resample=True,
-    seed=42,
-)
-dataloader = GeometricDataLoader(
-    dataset, batch_sampler=batch_sampler, shuffle=False
-)
-
 model_type = "egnn"
 aligned = True
-permuted = False
+permuted = True
 brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(),
@@ -114,25 +101,52 @@ model_dict = {
 model = model_dict[model_type]
 model.to(device)
 
-outdir = f"runs/molecule/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+normalize_drift = True
+temperatures = [0.05]
+temp_str = "_".join([f"{t:.2f}" for t in temperatures])
+outdir = f"runs/molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
 drifting_field = EquivariantDriftingField(
-    temperature=0.15,
+    temperatures=temperatures,
     aligned=aligned,
     permuted=permuted,
     brute_force_permutations=brute_force_permutations,
+    normalize_drift=normalize_drift,
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
+
+# In case of brute-force we just want to sample one target to make the alignment cheaper
+if brute_force_permutations:
+    batch_size = 1
+else:
+    batch_size = 64
+
+batch_sampler = CompositionBatchSampler(
+    dataset,
+    k=1,  # number of chunks per batch
+    n=batch_size,  # chunk size (number of samples per chunk)
+    shuffle=True,
+    drop_last=False,
+    resample=True,
+    seed=42,
+)
+dataloader = GeometricDataLoader(
+    dataset, batch_sampler=batch_sampler, shuffle=False
+)
 
 losses = []
 model.train()
-n_epochs = 500
+
+n_steps = 9000
+n_epochs = n_steps // len(dataloader)
+
 n_samples = 1000
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
+step_count = 0
 for epoch in pbar:
     for batch_idx, batch in enumerate(dataloader):
         optimizer.zero_grad()
@@ -140,17 +154,19 @@ for epoch in pbar:
         y = batch.pos.clone()
 
         # Sample noise
-        # z = sample_noise_like(batch.pos, batch.batch)
-        # batch.pos = z
-        
-        # Sample bz negative samples
-        batch_ = create_batch_object(batch, n_samples=64)
+        if batch.num_graphs == 1:
+            batch_neg = create_batch_object(batch, n_samples=batch_size)
+        else:
+            # Sample bz negative samples
+            batch_neg = batch.clone()
+            z = sample_noise_like(batch.pos, batch.batch)
+            batch_neg.pos = z
 
         # Call the model
-        x = model(batch_)
+        x = model(batch_neg)
         
         # Call the drift
-        V, *_ = drifting_field(
+        V, drift_pos, drift_neg, *_ = drifting_field(
             x,
             y,
             x,
@@ -167,15 +183,23 @@ for epoch in pbar:
 
         optimizer.step()
         losses.append(loss.item())
-        pbar.set_postfix({"loss": loss.item()})
+        pbar.set_postfix(
+            {
+                "step": step_count, 
+                "mse(V)": loss.item(),
+                "mse(pos_drift)": torch.sqrt(torch.mean(drift_pos**2)).item(),
+                "mse(neg_drift)": torch.sqrt(torch.mean(drift_neg**2)).item(),
+            }
+        )
 
-        if epoch % (n_epochs // 10) == 0 and batch_idx == 0 and epoch > 0:
+        if step_count % (n_steps // 10) == 0 and step_count > 0:
             visualize(
-                model, batch, current_epoch=epoch, n_samples=n_samples, outdir=outdir
+                model, batch, current_step=step_count, n_samples=n_samples, outdir=outdir
             )
+        step_count += 1
             
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
-visualize(model, batch, current_epoch="final", n_samples=n_samples, outdir=outdir)
+visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
