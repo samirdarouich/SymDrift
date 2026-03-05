@@ -1,15 +1,22 @@
-import torch
-from tspath.utils import get_x_y_pairs
-from tspath.alignment import kabsch_batched, brute_force_and_kabch_batched, hungarian_and_kabch_batched
 from functools import partial
 
-def naive_distance(x,y, **kwargs):
+import torch
+
+from tspath.alignment import (
+    brute_force_and_kabch_batched,
+    hungarian_and_kabch_batched,
+    kabsch_batched,
+)
+from tspath.utils import get_x_y_pairs
+
+
+def naive_distance(x, y, **kwargs):
     """
     x: array
         (N, n_atoms, d)
     y: array
         (M, n_atoms, d)
-    
+
     Returns
     -------
     rmsd: array
@@ -18,9 +25,10 @@ def naive_distance(x,y, **kwargs):
         directional difference y-x of shape (N, M, n_atoms, d)
     """
     N, n_atoms, d = x.shape
-    diff_pos = (y[None, :, :, :] - x[:, None, :, :]) # (N, M, n_atoms, 3)
-    rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms) # (N, M)
+    diff_pos = y[None, :, :, :] - x[:, None, :, :]  # (N, M, n_atoms, 3)
+    rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)  # (N, M)
     return rmsd, diff_pos
+
 
 def minimal_distance(x, y, **kwargs):
     """
@@ -28,7 +36,7 @@ def minimal_distance(x, y, **kwargs):
         (N, n_atoms, d)
     y: array
         (M, n_atoms, d)
-    
+
     Assuming x and y are in the same atom ordering
     Returns
     -------
@@ -37,7 +45,7 @@ def minimal_distance(x, y, **kwargs):
     diff_pos: array
         aligned directional difference y-x of shape (N, M, n_atoms, d)
     """
-    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"   
+    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
     N, n_atoms, d = x.shape
     M = y.shape[0]
 
@@ -46,17 +54,20 @@ def minimal_distance(x, y, **kwargs):
 
     # Get aligned y for all pairs at once
     y_aligned, _ = kabsch_batched(x_flat, y_flat)
-    
+
     # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
     diff_pos = (y_aligned - x_flat).view(N, M, n_atoms, d)
-    
+
     # Compute RMSD for all pairs at once (N, M)
     rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)
 
     return rmsd, diff_pos
 
-def minimal_distance_permuted(x, y, atomic_numbers=None, brute_force_permutations=False):
-    """ Compute EOT plan for batch of molecules. Reorder and permute y to match x.
+
+def minimal_distance_permuted(
+    x, y, atomic_numbers=None, brute_force_permutations=False
+):
+    """Compute EOT plan for batch of molecules. Reorder and permute y to match x.
 
     Parameters
     ----------
@@ -78,11 +89,11 @@ def minimal_distance_permuted(x, y, atomic_numbers=None, brute_force_permutation
     assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
     N, n_atoms, d = x.shape
     M = y.shape[0]
-    
+
     # Create all N x M pairs
     x_flat, y_flat, atomic_numbers_flat = get_x_y_pairs(x, y, atomic_numbers)
-    
-    # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y 
+
+    # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y
     # and Kabsch to align)
     if brute_force_permutations:
         y_aligned_and_permuted = brute_force_and_kabch_batched(
@@ -92,10 +103,10 @@ def minimal_distance_permuted(x, y, atomic_numbers=None, brute_force_permutation
         y_aligned_and_permuted = hungarian_and_kabch_batched(
             x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
         )
-    
+
     # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
     diff_pos = (y_aligned_and_permuted - x_flat).view(N, M, n_atoms, d)
-    
+
     # Compute RMSD for all pairs at once (N, M)
     rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)
 
@@ -103,22 +114,30 @@ def minimal_distance_permuted(x, y, atomic_numbers=None, brute_force_permutation
 
 
 class DriftingField(torch.nn.Module):
-    
-    def __init__(self, temperatures=None, mask_self=True, normalize_over_x=False, **kwargs):
+    def __init__(
+        self,
+        temperatures=None,
+        mask_self=True,
+        normalize_over_x=False,
+        normalize_drift=True,
+        **kwargs,
+    ):
         super().__init__()
         if temperatures is None:
             temperatures = torch.tensor([1.0])
-        if temperatures is None:
-            temperatures = torch.tensor([1.0])
+        self.set_temperatures(temperatures)
+
+        self.mask_self = mask_self
+        self.normalize_over_x = normalize_over_x
+        self.normalize_drift = normalize_drift
+
+    def set_temperatures(self, temperatures):
         if isinstance(temperatures, (float, int)):
             temperatures = torch.tensor([temperatures])
         if isinstance(temperatures, list):
             temperatures = torch.tensor(temperatures)
         self.temperatures = temperatures
 
-        self.mask_self = mask_self
-        self.normalize_over_x = normalize_over_x
-    
     def forward(self, x, y_pos, y_neg, temperatures=None, **kwargs):
         """
         x: [N, D]
@@ -127,13 +146,14 @@ class DriftingField(torch.nn.Module):
         temperatures: (T,) array of temperatures to use for each drift field (optional, if provided overrides self.temperatures)
         """
         if temperatures is not None:
-            self.temperatures = temperatures
+            self.set_temperatures(temperatures)
         self.temperatures = self.temperatures.to(x.device)
-        N = x.shape[0]
+
+        N, D = x.shape
         N_pos = y_pos.shape[0]
         N_neg = y_neg.shape[0]
         device = x.device
-        
+
         # 1. Compute pairwise L2 distances
         diff_pos = y_pos[None, :, :] - x[:, None, :]  # (N, N_pos, D)
         diff_neg = y_neg[None, :, :] - x[:, None, :]  # (N, N_neg, D)
@@ -146,8 +166,12 @@ class DriftingField(torch.nn.Module):
             dist_neg = dist_neg + mask
 
         # 3. Compute logits
-        logit_pos = -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]  # (Ts, N, N_pos)
-        logit_neg = -dist_neg.unsqueeze(0) / self.temperatures[:, None, None]  # (Ts, N, N_neg)
+        logit_pos = (
+            -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]
+        )  # (Ts, N, N_pos)
+        logit_neg = (
+            -dist_neg.unsqueeze(0) / self.temperatures[:, None, None]
+        )  # (Ts, N, N_neg)
 
         # Compute kernel (normalize over y and optionally over x)
         w_pos = torch.softmax(logit_pos, dim=-1)  # softmax over y (columns)
@@ -157,52 +181,84 @@ class DriftingField(torch.nn.Module):
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
- 
+
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
         # differences to all molecules in y.
         drift_pos = (w_pos[..., None] * diff_pos).sum(dim=2)
         drift_neg = (w_neg[..., None] * diff_neg).sum(dim=2)
         V = drift_pos - drift_neg
-        
+
         # 8. Combine V over different temperatures (T, N, D) to get final V (N, D)
         # The norm here includes the dimension D and the batch size N. This means that
         # v_norm = V.norm(dim=0) / sqrt(N*D)
-        v_norm = torch.sqrt(torch.mean(V**2, dim=(1,2)))  # (T)
-        V = V / (v_norm[..., None] + 1e-8)  # normalize each temperature's V to have same norm
+        if self.normalize_drift:
+            # normalize each temperature's V to have same norm
+            v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2)))  # (T)
+            V = V / (v_norm[..., None] + 1e-8)
         V = V.sum(dim=0)  # sum over temperatures to get final V of shape (N, D)
-        
+
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg
 
+
 class EquivariantDriftingField(torch.nn.Module):
-    def __init__(self, temperatures=None, mask_self=True, normalize_over_x=False, aligned=True, permuted=True, brute_force_permutations=False):
+    def __init__(
+        self,
+        temperatures=None,
+        mask_self=True,
+        normalize_over_x=False,
+        normalize_drift=True,
+        aligned=True,
+        permuted=True,
+        brute_force_permutations=False,
+    ):
         super().__init__()
         if temperatures is None:
             temperatures = torch.tensor([1.0])
-        if isinstance(temperatures, (float, int)):
-            temperatures = torch.tensor([temperatures])
-        if isinstance(temperatures, list):
-            temperatures = torch.tensor(temperatures)
-        self.temperatures = temperatures
+        self.set_temperatures(temperatures)
         self.mask_self = mask_self
         self.normalize_over_x = normalize_over_x
+        self.normalize_drift = normalize_drift
         self.aligned = aligned
         self.permuted = permuted
         self.brute_force_permutations = brute_force_permutations
         # Initialize distance function based on alignment and permutation settings
         self.get_distance_fn()
 
+    def set_temperatures(self, temperatures):
+        if isinstance(temperatures, (float, int)):
+            temperatures = torch.tensor([temperatures])
+        if isinstance(temperatures, list):
+            temperatures = torch.tensor(temperatures)
+        self.temperatures = temperatures
+
     def get_distance_fn(self):
         if self.aligned and self.permuted:
-            self.distance_fn = partial(minimal_distance_permuted, brute_force_permutations=self.brute_force_permutations)
+            self.distance_fn = partial(
+                minimal_distance_permuted,
+                brute_force_permutations=self.brute_force_permutations,
+            )
         elif self.aligned and not self.permuted:
             self.distance_fn = minimal_distance
         elif not self.aligned and not self.permuted:
             self.distance_fn = naive_distance
         else:
-            raise ValueError("Permuted but not aligned doesn't make sense since permutation is only meaningful with alignment. Please set permuted=False if aligned=False.")
-        
-    def forward(self, x, y_pos, y_neg, n_atoms, atomic_numbers=None, temperatures=None, aligned=None, permuted=None, brute_force_permutations=None):
+            raise ValueError(
+                "Permuted but not aligned doesn't make sense since permutation is only meaningful with alignment. Please set permuted=False if aligned=False."
+            )
+
+    def forward(
+        self,
+        x,
+        y_pos,
+        y_neg,
+        n_atoms,
+        atomic_numbers=None,
+        temperatures=None,
+        aligned=None,
+        permuted=None,
+        brute_force_permutations=None,
+    ):
         """
         x: (N*n_atoms, d)
         y_pos: (M*n_atoms, d)
@@ -217,11 +273,14 @@ class EquivariantDriftingField(torch.nn.Module):
         returns: (N*n_atoms, d) drifting field for each molecule in x
         """
         _, d = x.shape
-        assert y_pos.shape[1] == d, f"Expected y_pos to have {d} dimensions, got {y_pos.shape[1]}"
-        
+        assert y_pos.shape[1] == d, (
+            f"Expected y_pos to have {d} dimensions, got {y_pos.shape[1]}"
+        )
+
         if temperatures is not None:
-            self.temperatures = temperatures
+            self.set_temperatures(temperatures)
         self.temperatures = self.temperatures.to(x.device)
+
         if aligned is not None:
             self.aligned = aligned
             if permuted is not None:
@@ -234,36 +293,46 @@ class EquivariantDriftingField(torch.nn.Module):
         x_ = x.view(-1, n_atoms, d)  # (N, n_atoms, d)
         y_pos_ = y_pos.view(-1, n_atoms, d)  # (M, n_atoms, d)
         y_neg_ = y_neg.view(-1, n_atoms, d)  # (M, n_atoms, d)
-        
+
         N = x_.shape[0]
         N_pos = y_pos_.shape[0]
         N_neg = y_neg_.shape[0]
         device = x.device
-        
+
         # 1. Compute alignment-aware pairwise L2 distances and returns (N, N_pos/N_neg) RMSD
         # matrix and aligned difference y-x of shape (N, N_pos/N_neg, n_atoms, d)
         atomic_numbers_neg = None
         if atomic_numbers is not None:
-            assert atomic_numbers.shape == (N_pos*n_atoms,), f"Expected atomic_numbers to have shape {(N_pos*n_atoms,)}, got {atomic_numbers.shape}"
+            assert atomic_numbers.shape == (N_pos * n_atoms,), (
+                f"Expected atomic_numbers to have shape {(N_pos * n_atoms,)}, got {atomic_numbers.shape}"
+            )
             if N_pos != N_neg:
-                # assume negative samples are just repeated positive samples 
-                # (e.g. for each positive sample we have x negative sample which is 
+                # assume negative samples are just repeated positive samples
+                # (e.g. for each positive sample we have x negative sample which is
                 # the same molecule but with different noise)
-                atomic_numbers_neg = atomic_numbers.view(
-                    N_pos, n_atoms
-                ).repeat_interleave(N_neg // N_pos, dim=0).view(-1)
-        
+                atomic_numbers_neg = (
+                    atomic_numbers.view(N_pos, n_atoms)
+                    .repeat_interleave(N_neg // N_pos, dim=0)
+                    .view(-1)
+                )
+
         dist_pos, diff_pos = self.distance_fn(x_, y_pos_, atomic_numbers=atomic_numbers)
-        dist_neg, diff_neg = self.distance_fn(x_, y_neg_, atomic_numbers=atomic_numbers_neg) 
-        
+        dist_neg, diff_neg = self.distance_fn(
+            x_, y_neg_, atomic_numbers=atomic_numbers_neg
+        )
+
         # 2. Mask self-distances (when y_neg contains x)
         if self.mask_self and N == N_neg:
             mask = torch.eye(N, device=device) * 1e6
             dist_neg = dist_neg + mask
 
         # 3. Compute logits
-        logit_pos = -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]  # (Ts, N, N_pos)
-        logit_neg = -dist_neg.unsqueeze(0) / self.temperatures[:, None, None]  # (Ts, N, N_neg)
+        logit_pos = (
+            -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]
+        )  # (Ts, N, N_pos)
+        logit_neg = (
+            -dist_neg.unsqueeze(0) / self.temperatures[:, None, None]
+        )  # (Ts, N, N_neg)
 
         # Compute kernel (normalize over y and optionally over x) (T, N, N_pos/N_neg)
         w_pos = torch.softmax(logit_pos, dim=-1)  # softmax over y (columns)
@@ -273,20 +342,30 @@ class EquivariantDriftingField(torch.nn.Module):
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
- 
+
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
         # differences to all molecules in y.
         drift_pos = (w_pos[..., None, None] * diff_pos.unsqueeze(0)).sum(dim=2)
         drift_neg = (w_neg[..., None, None] * diff_neg.unsqueeze(0)).sum(dim=2)
-        
-        # 8. Combine V over different temperatures (T, N, n_atoms, d) to get final V (N, n_atoms, d)
         V = drift_pos - drift_neg
-        # v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2, 3)))  # (T)
-        # V = V / (v_norm[..., None, None, None] + 1e-8)  # normalize each temperature's V to have same norm
-        V = V.sum(dim=0)  # sum over temperatures to get final V of shape (N, n_atoms, d)
-             
+
+        # 8. Combine V over different temperatures (T, N, n_atoms, d) to get final V (N, n_atoms, d)
+        # The norm here includes the dimension D (n_atoms*d) and the batch size N. This means that
+        # v_norm = V.norm(dim=0) / sqrt(N*D)
+        if self.normalize_drift:
+            # normalize each temperature's V to have same norm
+            v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2, 3)))  # (T)
+            V = V / (v_norm[..., None, None] + 1e-8)
+        # sum over temperatures to get final V of shape (N, n_atoms, d)
+        V = V.sum(dim=0)
+
+        # Norming each V before combining equally weights each temperature's contribution
+        # to the final drift. This also means, that the overall drift direction is different
+        # if the norms between the different drifs is very different. This is a design
+        # choice.
+
         # 9. reshape V to (N*n_atoms, d)
         V = V.view_as(x)
-        
+
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg

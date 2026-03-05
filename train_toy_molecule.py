@@ -88,10 +88,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
 dataset_name = "carbon_chain"
-augment_with_rotations = False
-augment_with_permutations = False
+augment_with_rotations = True
+augment_with_permutations = True
 
-n_atoms = 3
+n_atoms = 8
 r0 = 2.0
 theta0 = 120.0
 factor = 1.25
@@ -132,10 +132,10 @@ n_atoms = pos_dataset.shape[1]
 model_type = "egnn"
 aligned = True
 permuted = True
-brute_force_permutations = True
+brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(),
-    "egnn": EGNN(num_distance_basis=2),
+    "egnn": EGNN(num_distance_basis=0),
     "equiformerv2": EquiformerV2(
         max_radius=11.0,
         num_distance_basis=64,
@@ -146,18 +146,19 @@ model_dict = {
 model = model_dict[model_type]
 model.to(device)
 
-use_2d_drifting = True
 
-outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
-outdir = f"runs/test/without_norm/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
-# outdir = f"runs/test_with_norm/dataset_{dataset_name}/{model_type}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+normalize_drift = True
+temperaturs = [0.05]
+temp_str = "_".join([f"{t:.2f}" for t in temperaturs])
+outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
 drifting_field = EquivariantDriftingField(
-    temperatures=torch.tensor([0.15]),
+    temperatures=0.05,
+    normalize_drift=normalize_drift,
     aligned=aligned,
     permuted=permuted,
     brute_force_permutations=brute_force_permutations,
@@ -202,37 +203,22 @@ for epoch in pbar:
             )
 
         # Get drifting field in 2D as 3D rotations could include reflections in 2D which are not valid
-        if use_2d_drifting:
-            V, *_ = drifting_field(
-                x[..., :2],
-                y[..., :2],
-                x[..., :2],
-                batch.num_atoms[0],
-                # atomic_numbers=batch.x, # dont use as we assume always all molecules are the same in this toy example
-                temperatures=None,
-                aligned=None,
-                permuted=None,
-                brute_force_permutations=None,
-            )
-            V = torch.cat([V, torch.zeros_like(V[..., :1])], dim=-1)
-        else:
-            V, *_ = drifting_field(
-                x,
-                y,
-                x,
-                batch.num_atoms[0],
-                atomic_numbers=batch.x,
-                temperatures=None,
-                aligned=None,
-                permuted=None,
-                brute_force_permutations=None,
-            )
-            if V[..., 2].abs().max() > 1e-4:
-                print(
-                    "Warning: Non-zero z-component in drift field, which should be zero for 2D data."
-                )
+        V, drift_pos, drift_neg, *_ = drifting_field(
+            x[..., :2],
+            y[..., :2],
+            x[..., :2],
+            batch.num_atoms[0],
+            # atomic_numbers=batch.x, # dont use as we assume always all molecules are the same in this toy example
+            temperatures=None,
+            aligned=None,
+            permuted=None,
+            brute_force_permutations=None,
+        )
+        V = torch.cat([V, torch.zeros_like(V[..., :1])], dim=-1)
 
         x_drifted = (x + V).detach()
+        
+        drift_pos_ = torch.sqrt(torch.mean(drift_pos**2))
 
         loss = torch.nn.functional.mse_loss(x, x_drifted)
         loss.backward()
@@ -241,8 +227,14 @@ for epoch in pbar:
 
         optimizer.step()
         losses.append(loss.item())
-        pbar.set_postfix({"step": step_count, "loss": loss.item()})
-        step_count += 1
+        pbar.set_postfix(
+            {
+                "step": step_count, 
+                "loss": loss.item(),
+                "pos_drift": torch.sqrt(torch.mean(drift_pos**2)).item(),
+                "neg_drift": torch.sqrt(torch.mean(drift_neg**2)).item(),
+            }
+        )
 
         if step_count % (n_steps // 10) == 0 and step_count > 0:
             visualize(
@@ -253,6 +245,8 @@ for epoch in pbar:
                 outdir=outdir,
             )
 
+        step_count += 1
+        
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 

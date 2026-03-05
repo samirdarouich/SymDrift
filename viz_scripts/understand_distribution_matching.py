@@ -15,7 +15,7 @@ drift = DriftingField(temperatures=torch.tensor([0.05]))
 #! This script explains why the drift is not pushing the sample it self towards the 
 #! closest target, but instead, it pushes the cloesest by sample to the closest target
 z[0] = y[2] # own sample is a target samlple --> Drift is not zero for sample 0
-z[1] = y[2] # another sample is a target sample --> Drift is zero for sample 1 
+# z[1] = y[2] # another sample is a target sample --> Drift is zero for sample 1 
 # (y[2] is the closest target for sample 0)
 V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg = drift(z, y, z)
 
@@ -86,3 +86,4 @@ plt.xticks([])
 plt.yticks([])
 plt.legend(ncol=3, loc="upper center")
 plt.tight_layout()
+plt.savefig("distribution_matching.png", dpi=300)

@@ -185,7 +185,7 @@ class Drifting(pl.LightningModule):
         **kwargs,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["model"])
+        self.save_hyperparameters(ignore=["model", "drifting_field"])
         self.model = model
         self.drifting_field = drifting_field
         self.sample_every_epoch = sample_every_epoch

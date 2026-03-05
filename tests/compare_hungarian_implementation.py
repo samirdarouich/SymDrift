@@ -6,13 +6,14 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation
 from torch_linear_assignment import batch_linear_assignment
-from tspath.utils import kabsch_batched, hungarian_and_kabch_batched
+from tspath.alignment import kabsch_batched, hungarian_and_kabch_batched, get_rmsd_batched
+from tspath.utils import get_composition
 
 
-def permute_by_atom_type(x, y, atom_types):
+def permute_by_atom_type(x, y, atomic_numbers):
     """
     x, y: (B, N, d)
-    atom_types: (B, N)  integer labels
+    atomic_numbers: (B, N)  integer labels
     """
     B, N, d = x.shape
     device = x.device
@@ -20,55 +21,48 @@ def permute_by_atom_type(x, y, atom_types):
     y_permuted = torch.zeros_like(y)
 
     for b in range(B):
-        types = atom_types[b]
+        types = atomic_numbers[b]
         unique_types = torch.unique(types)
 
         perm_indices = torch.empty(N, dtype=torch.long, device=device)
 
         for t in unique_types:
-            mask = types == t
+            mask = (types == t)
 
             idx = mask.nonzero(as_tuple=False).squeeze(-1)
 
-            x_t = x[b, idx]  # (n_t, d)
-            y_t = y[b, idx]  # (n_t, d)
+            x_t = x[b, idx]           # (n_t, d)
+            y_t = y[b, idx]           # (n_t, d)
 
             cost = torch.cdist(x_t, y_t)
-            assignment = batch_linear_assignment(cost.unsqueeze(0)).squeeze(
-                0
-            )  # Hungarian (n_t,)
-
-            # _a_inds, b_inds = linear_sum_assignment(cost.numpy())
-
-            # assert all(b_inds==assignment.numpy()), "difference"
-
+            assignment = batch_linear_assignment(cost.unsqueeze(0)).squeeze(0)  # Hungarian (n_t,)
             perm_indices[idx] = idx[assignment]
 
         y_permuted[b] = y[b, perm_indices]
+    return y_permuted
 
-    y_permuted_aligned, R = kabsch_batched(x, y_permuted)
-    return y_permuted_aligned, R
-
-
-def permute_by_atom_type_parallel(x, y, atom_types):
+def permute_by_atom_type_parallel(x, y, atomic_numbers):
+    """
+    x, y: (B, N, d)
+    atomic_numbers: (B, N)  integer labels
+    ! This assumes that the number of atoms of each type is the same across the batch.
+    """
     B, N, d = x.shape
     device = x.device
 
     y_permuted = torch.zeros_like(y)
 
-    unique_types = torch.unique(atom_types)
+    unique_types = torch.unique(atomic_numbers)
 
     for t in unique_types:
         # mask: (B, N)
-        mask = atom_types == t
+        mask = (atomic_numbers == t)
 
         # number of atoms of this type (assume constant per batch)
         n_t = mask.sum(dim=1)
 
         # if variable per batch → more complex handling required
-        assert torch.all(n_t == n_t[0]), (
-            "Different counts per batch not supported in this simple version"
-        )
+        assert torch.all(n_t == n_t[0]), "Different counts per batch not supported in this simple version"
         n_t = n_t[0].item()
 
         # Gather atoms of type t
@@ -79,7 +73,7 @@ def permute_by_atom_type_parallel(x, y, atom_types):
         y_t = torch.zeros(B, n_t, d, device=device, dtype=y.dtype)
 
         for b in range(B):
-            atom_idx = idx[idx[:, 0] == b][:, 1]
+            atom_idx = idx[idx[:,0] == b][:,1]
             x_t[b] = x[b, atom_idx]
             y_t[b] = y[b, atom_idx]
 
@@ -91,12 +85,88 @@ def permute_by_atom_type_parallel(x, y, atom_types):
 
         # Scatter back
         for b in range(B):
-            atom_idx = idx[idx[:, 0] == b][:, 1]
+            atom_idx = idx[idx[:,0] == b][:,1]
             y_permuted[b, atom_idx] = y_t[b, assignment[b]]
+    return y_permuted
 
-    y_permuted_aligned, R = kabsch_batched(x, y_permuted)
-    return y_permuted_aligned, R
 
+def hungarian_batched_deprecated(x, y, atomic_numbers=None):
+    B, n_atoms, d = x.shape
+    batch_indices = torch.arange(B)[:, None]
+    
+    # assume that all atoms are of the same species if atomic_numbers is None
+    if atomic_numbers is None:
+        atomic_numbers = torch.zeros((B, n_atoms), dtype=torch.long, device=x.device)
+    
+    # Get composition of each system in the batch and check if all systems have the same
+    # composition.
+    comp = get_composition(atomic_numbers.long())
+    all_equal = torch.all(comp == comp[0], dim=1).all()
+    
+    if all_equal and (comp[0]>0).sum().item() == 1:
+        # or if only one type of atom is present.
+        cost = torch.cdist(x, y)
+        assignment = batch_linear_assignment(cost)
+        y_permuted = y[batch_indices, assignment]
+    else:
+        # Check if composition is the same across the batch, then do parallelized 
+        # version if so, otherwise do looped version
+        if all_equal:
+            y_permuted = permute_by_atom_type_parallel(x, y, atomic_numbers)
+        else:
+            y_permuted = permute_by_atom_type(x, y, atomic_numbers)
+    return y_permuted
+
+def hungarian_and_kabch_batched_deprecated(x, y, atomic_numbers=None, max_iter=3, tol=1e-2, verbose=False):
+    """ Perform permutations and aligment of y to x using Hungarian and Kabsch algorithm
+    in an iterative manner. 
+    
+    1) Compute optimal permutations according to current cost plan (cdist(x,y_iter))
+    2) Align permuted y_iter to x.
+    3) Start again from 1 until convergence achieved (mean rmsd change is below
+        thresholdplan or maximum number of iterations are achieved)
+
+    Parameters
+    ----------
+    x : array
+        trial structures (B, n_atoms, d)
+    y : array
+        reference structures (B, n_atoms, d)
+    atomic_numbers : array
+        atomic numbers of each atom in target structure, used to only permute within
+        same atomic number (B, n_atoms)
+    max_iter : int
+        maximum number of iterations to perform
+    tol : float
+        convergence threshold for mean change in RMSD between iterations
+    verbose : bool
+        whether to print convergence information at each iteration
+
+    Returns
+    -------
+    y_permuted_aligned: array
+        aligned and permuted reference structures of shape (B, n_atoms, d)
+    """
+    B, n_atoms, d = x.shape
+    y_aligned = y.clone()
+    rmsds = [get_rmsd_batched(x, y_aligned).max().item()]
+    if verbose:
+        print(f"Initial RMSD: {rmsds[-1]:.6f}")
+    for i in range(max_iter):
+        # find permutation that minimizes RMSD to x (if specified respect atomic numbers)
+        y_permuted = hungarian_batched_deprecated(x, y_aligned, atomic_numbers)
+        y_new, _ = kabsch_batched(x, y_permuted)
+        rmsd = get_rmsd_batched(x, y_new).max().item()
+        y_aligned = y_new
+        rmsds.append(rmsd)
+        delta_rmsd = abs(rmsds[-1] - rmsds[-2])
+        if verbose:
+            print(f"Iteration {i}: RMSD: {rmsds[-1]:.6f}, delta RMSD = {delta_rmsd:.6f}")
+        if delta_rmsd < tol or rmsd < tol:
+            if verbose:
+                print(f"Converged after {i} iterations with delta RMSD: {rmsds[-1]:.6f}")
+            break
+    return y_aligned
 
 def random_permute_within_atom_types(atomic_numbers, seed=None):
     n_atoms = atomic_numbers.numel()
@@ -248,6 +318,7 @@ def permute_atom(atom, seed=None):
         torch.tensor(atom.get_atomic_numbers()), seed=seed
     )
     permuted_atom = atom.copy()[perm]
+    print(f"Permutation: {perm}")
     return permuted_atom
 
 
@@ -257,18 +328,19 @@ def pytorch_rotate_align(target, source):
     atomic_numbers = torch.tensor(target.get_atomic_numbers()).unsqueeze(0)
 
     # pymatgen does this
-    y_permuted_aligned, R = permute_by_atom_type(x, y, atomic_numbers)
+    y_permuted = permute_by_atom_type(x, y, atomic_numbers)
+    y_permuted_aligned, R = kabsch_batched(x, y_permuted)
     rmse = torch.sqrt(torch.mean(torch.square(y_permuted_aligned - x), dim=[-1, -2]))[0]
 
     return y_permuted_aligned.squeeze(0).numpy(), rmse.item()
-
 
 def pytorch_rotate_align_parallel(target, source):
     x = torch.tensor(target.get_positions()).unsqueeze(0)
     y = torch.tensor(source.get_positions()).unsqueeze(0)
     atomic_numbers = torch.tensor(target.get_atomic_numbers()).unsqueeze(0)
 
-    y_permuted_aligned, R = permute_by_atom_type_parallel(x, y, atomic_numbers)
+    y_permuted = permute_by_atom_type_parallel(x, y, atomic_numbers)
+    y_permuted_aligned, R = kabsch_batched(x, y_permuted)
     rmse = torch.sqrt(torch.mean(torch.square(y_permuted_aligned - x), dim=[-1, -2]))[0]
 
     return y_permuted_aligned.squeeze(0).numpy(), rmse.item()
@@ -323,11 +395,19 @@ for theta in theta_values:
 # Check batched versions as well
 aligned = torch.cat(aligned, dim=0)
 ys = torch.cat(ys, dim=0)
-y_permuted_aligned, R = permute_by_atom_type_parallel(x, ys, atomic_numbers)
-y_permuted_aligned_parallel, R_parallel = permute_by_atom_type_parallel(
+y_permuted = permute_by_atom_type_parallel(x, ys, atomic_numbers)
+y_permuted_aligned, R = kabsch_batched(x, y_permuted)
+
+y_permuted_parallel = permute_by_atom_type_parallel(
     x, ys, atomic_numbers
 )
-y_permuted_aligend_codebase, *_ = hungarian_and_kabch_batched(
+y_permuted_aligned_parallel, R_parallel = kabsch_batched(x, y_permuted_parallel)
+
+y_permuted_aligend_codebase = hungarian_and_kabch_batched(
+    x, ys, atomic_numbers, max_iter=1
+)
+
+y_permuted_aligend_codebase_deprecated = hungarian_and_kabch_batched_deprecated(
     x, ys, atomic_numbers, max_iter=1
 )
 
@@ -343,3 +423,8 @@ assert torch.allclose(y_permuted_aligned_parallel, aligned), (
 assert torch.allclose(y_permuted_aligend_codebase, aligned), (
     "Aligned structures differ between implementations"
 )
+assert torch.allclose(y_permuted_aligend_codebase_deprecated, aligned), (
+    "Aligned structures differ between implementations"
+)
+
+print("All implementations give the same aligned structure, test passed!")

@@ -149,7 +149,7 @@ def get_brute_force_permutations(x, y, atomic_numbers=None):
     if atomic_numbers is not None:
         comp = get_composition(atomic_numbers.long())
         all_equal = torch.all(comp == comp[0], dim=1).all()
-        assert all_equal, "Different composition across batch not supported in this simple version"
+        assert all_equal, "Different composition across batch not supported in this version"
         perms = get_elementwise_permutations(atomic_numbers[0]) 
     else:
         perms = torch.tensor(list(itertools.permutations(range(n))), device=device)

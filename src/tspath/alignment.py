@@ -4,8 +4,6 @@ from tspath.utils import get_composition, get_brute_force_permutations
 from torch_scatter import scatter_mean
 
 __all__ = [
-    "permute_by_atom_type", 
-    "permute_by_atom_type_parallel",
     "kabsch_batched_scatter",
     "kabsch_batched",
     "hungarian_batched",
@@ -14,87 +12,6 @@ __all__ = [
     "get_rmsd_batched_scatter",
     "get_rmsd_batched",
 ]
-
-def permute_by_atom_type(x, y, atomic_numbers):
-    """
-    x, y: (B, N, d)
-    atomic_numbers: (B, N)  integer labels
-    """
-    B, N, d = x.shape
-    device = x.device
-
-    y_permuted = torch.zeros_like(y)
-
-    for b in range(B):
-        types = atomic_numbers[b]
-        unique_types = torch.unique(types)
-
-        perm_indices = torch.empty(N, dtype=torch.long, device=device)
-
-        for t in unique_types:
-            mask = (types == t)
-
-            idx = mask.nonzero(as_tuple=False).squeeze(-1)
-
-            x_t = x[b, idx]           # (n_t, d)
-            y_t = y[b, idx]           # (n_t, d)
-
-            cost = torch.cdist(x_t, y_t)
-            assignment = batch_linear_assignment(cost.unsqueeze(0)).squeeze(0)  # Hungarian (n_t,)
-            perm_indices[idx] = idx[assignment]
-
-        y_permuted[b] = y[b, perm_indices]
-    return y_permuted
-
-def permute_by_atom_type_parallel(x, y, atomic_numbers):
-    """
-    x, y: (B, N, d)
-    atomic_numbers: (B, N)  integer labels
-    ! This assumes that the number of atoms of each type is the same across the batch.
-    """
-    B, N, d = x.shape
-    device = x.device
-
-    y_permuted = torch.zeros_like(y)
-
-    unique_types = torch.unique(atomic_numbers)
-
-    for t in unique_types:
-        # mask: (B, N)
-        mask = (atomic_numbers == t)
-
-        # number of atoms of this type (assume constant per batch)
-        n_t = mask.sum(dim=1)
-
-        # if variable per batch → more complex handling required
-        assert torch.all(n_t == n_t[0]), "Different counts per batch not supported in this simple version"
-        n_t = n_t[0].item()
-
-        # Gather atoms of type t
-        idx = mask.nonzero(as_tuple=False)
-        # idx: (B*n_t, 2) → (batch_idx, atom_idx)
-
-        x_t = torch.zeros(B, n_t, d, device=device, dtype=x.dtype)
-        y_t = torch.zeros(B, n_t, d, device=device, dtype=y.dtype)
-
-        for b in range(B):
-            atom_idx = idx[idx[:,0] == b][:,1]
-            x_t[b] = x[b, atom_idx]
-            y_t[b] = y[b, atom_idx]
-
-        # Compute batched cost
-        cost = torch.cdist(x_t, y_t)  # (B, n_t, n_t)
-
-        # Solve Hungarian in batch
-        assignment = batch_linear_assignment(cost)  # (B, n_t)
-
-        # Scatter back
-        for b in range(B):
-            atom_idx = idx[idx[:,0] == b][:,1]
-            y_permuted[b, atom_idx] = y_t[b, assignment[b]]
-    return y_permuted
-
-
 
 def kabsch_batched_scatter(x_0_N_3, x_1_N_3, batch):
     """
@@ -153,7 +70,6 @@ def kabsch_batched_scatter(x_0_N_3, x_1_N_3, batch):
 
     return x_1_rotated_N_3 + centers_x0_Nm_3[batch]
 
-
 def kabsch_batched(X, Y):
     """
     align y to x
@@ -201,19 +117,20 @@ def hungarian_batched(x, y, atomic_numbers=None):
     comp = get_composition(atomic_numbers.long())
     all_equal = torch.all(comp == comp[0], dim=1).all()
     
-    if all_equal and (comp[0]>0).sum().item() == 1:
-        # or if only one type of atom is present.
-        cost = torch.cdist(x, y)
-        assignment = batch_linear_assignment(cost)
-        y_permuted = y[batch_indices, assignment]
-    else:
-        # Check if composition is the same across the batch, then do parallelized 
-        # version if so, otherwise do looped version
-        if all_equal:
-            y_permuted = permute_by_atom_type_parallel(x, y, atomic_numbers)
-        else:
-            y_permuted = permute_by_atom_type(x, y, atomic_numbers)
-    return y_permuted
+    assert all_equal, "Different composition across batch not supported in this version"
+    
+    # Compute the Cost matrix
+    cost = torch.cdist(x, y)  # (B, N, N)
+
+    # Mask out costs between different atomic numbers by setting them to a large value
+    mask = atomic_numbers.unsqueeze(-1) != atomic_numbers.unsqueeze(-2)  # (B, N, N)
+    cost = cost.masked_fill(mask, cost.max()*100)
+
+    # Get optimal assignment using Hungarian algorithm in batch
+    assignment = batch_linear_assignment(cost)
+    y_permuted = y[batch_indices, assignment]
+    
+    return y_permuted, assignment
 
 def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2, verbose=False):
     """ Perform permutations and aligment of y to x using Hungarian and Kabsch algorithm
@@ -252,7 +169,7 @@ def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2,
         print(f"Initial RMSD: {rmsds[-1]:.6f}")
     for i in range(max_iter):
         # find permutation that minimizes RMSD to x (if specified respect atomic numbers)
-        y_permuted = hungarian_batched(x, y_aligned, atomic_numbers)
+        y_permuted, _ = hungarian_batched(x, y_aligned, atomic_numbers)
         y_new, _ = kabsch_batched(x, y_permuted)
         rmsd = get_rmsd_batched(x, y_new).max().item()
         y_aligned = y_new
@@ -317,7 +234,7 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
     y_aligned = y_aligned_flat.view(P, B, n_atoms, d)
     y_best_aligned = y_aligned[best_idx, torch.arange(B)]
     
-    return y_best_aligned
+    return y_best_aligned, best_perm
 
 def get_rmsd_batched_scatter(xi, xj, batch, align=False):
     if align:

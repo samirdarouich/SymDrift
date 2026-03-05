@@ -67,7 +67,7 @@ def pytorch_rotate_align_parallel(target, source):
     y = torch.tensor(source.get_positions()).unsqueeze(0)
     atomic_numbers = torch.tensor(target.get_atomic_numbers()).unsqueeze(0)
 
-    y_permuted_aligned = brute_force_and_kabch_batched(x, y, atomic_numbers)
+    y_permuted_aligned, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
     rmse = torch.sqrt(torch.mean(torch.square(y_permuted_aligned - x), dim=[-1, -2]))[0]
 
     return y_permuted_aligned.squeeze(0).numpy(), rmse.item()
@@ -121,8 +121,10 @@ assert max(rmsds_torch) < 1e-5, "Brute force matching from package failed to fin
 # Check batched versions as well
 aligned = torch.cat(aligned, dim=0)
 ys = torch.cat(ys, dim=0)
-y_permuted_aligned = brute_force_and_kabch_batched(x, ys, atomic_numbers)
+y_permuted_aligned, _ = brute_force_and_kabch_batched(x, ys, atomic_numbers)
 
 assert torch.allclose(y_permuted_aligned, aligned), (
     "Aligned structures differ between implementations"
 )
+
+print("All tests passed successfully!")
