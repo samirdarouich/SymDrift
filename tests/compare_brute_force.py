@@ -1,9 +1,9 @@
-from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher
-from ase.io import read
-from scipy.spatial.transform import Rotation
-import torch
-from tspath.alignment import brute_force_and_kabch_batched
 import numpy as np
+import torch
+from ase.io import read
+from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher
+from scipy.spatial.transform import Rotation
+from tspath.alignment import brute_force_and_kabch_batched
 
 
 def random_permute_within_atom_types(atomic_numbers, seed=None):
@@ -23,17 +23,22 @@ def random_permute_within_atom_types(atomic_numbers, seed=None):
 
     return perm
 
+
 def get_pymatgen_molecule_from_ase_atoms(atoms):
     from pymatgen.core import Molecule
+
     symbols = atoms.get_chemical_symbols()
     coords = atoms.get_positions()
     return Molecule(symbols, coords)
 
+
 def get_ase_atoms_from_pymatgen_molecule(molecule):
     from ase import Atoms
+
     atomic_numbers = molecule.atomic_numbers
     coords = molecule.cart_coords
     return Atoms(atomic_numbers, positions=coords)
+
 
 class NaiveBruteForceOrderMatcher(BruteForceOrderMatcher):
     def __init__(self, target):
@@ -45,6 +50,7 @@ class NaiveBruteForceOrderMatcher(BruteForceOrderMatcher):
         p_prime, rmsd = super().fit(p_)
         p_prime_ase = get_ase_atoms_from_pymatgen_molecule(p_prime)
         return p_prime_ase, rmsd
+
 
 def rotate_atom(atom, theta, phi, tau):
     rotated_atom = atom.copy()
@@ -71,6 +77,7 @@ def pytorch_rotate_align_parallel(target, source):
     rmse = torch.sqrt(torch.mean(torch.square(y_permuted_aligned - x), dim=[-1, -2]))[0]
 
     return y_permuted_aligned.squeeze(0).numpy(), rmse.item()
+
 
 # get original atom
 atom = read(
@@ -115,8 +122,12 @@ for theta in theta_values:
                 np.abs(rotated_aligned.positions - rotated_aligend_torch).max() < 1e-8
             ), "Something wrong with own implementation"
 
-assert max(rmsds) < 1e-5, "Brute force matcher from pymatgen failed to find correct alignment"
-assert max(rmsds_torch) < 1e-5, "Brute force matching from package failed to find correct alignment"
+assert max(rmsds) < 1e-5, (
+    "Brute force matcher from pymatgen failed to find correct alignment"
+)
+assert max(rmsds_torch) < 1e-5, (
+    "Brute force matching from package failed to find correct alignment"
+)
 
 # Check batched versions as well
 aligned = torch.cat(aligned, dim=0)

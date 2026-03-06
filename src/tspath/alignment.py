@@ -243,7 +243,7 @@ def get_rmsd_batched_scatter(xi, xj, batch, align=False):
     rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
     return rmsd
 
-def get_rmsd_batched(x, y, align=False):
+def get_rmsd_batched(x, y, align=False, permuted=False, atomic_numbers=None, brute_force_permutations=False):
     """
     Compute RMSD between two batches of structures x and y, where x and y are of shape
     (B, N, d). The RMSD is computed for each pair of structures in the batch.
@@ -251,6 +251,11 @@ def get_rmsd_batched(x, y, align=False):
     """
     assert x.shape == y.shape, "X and Y must have same shape"
     if align:
+        if permuted:
+            if brute_force_permutations:
+                y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
+            else:
+                y = hungarian_and_kabch_batched(x, y, atomic_numbers)
         y, _ = kabsch_batched(x, y)
     B, n_atoms, d = x.shape
     rmsd = (((x - y)**2).sum(dim=(-2,-1))/n_atoms).sqrt()

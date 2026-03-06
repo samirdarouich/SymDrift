@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch_geometric.nn import radius_graph
 
-from tspath.model.painn import GaussianRBF
+from tspath.model.painn import GaussianRBF, TimestepEmbedder
 from tspath.utils import batch_center_systems
 
 __all__ = ["EGNN"]
@@ -299,6 +299,7 @@ class EGNN(nn.Module):
         aggregation_method="sum",
         max_neighbors=32,
         out_node_nf=None,
+        use_noise_schedule_sigma_encoding=False,
         **kwargs,
     ):
         super(EGNN, self).__init__()
@@ -311,6 +312,7 @@ class EGNN(nn.Module):
         self.norm_diff = norm_diff
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
+        self.use_noise_schedule_sigma_encoding = use_noise_schedule_sigma_encoding
 
         if num_distance_basis > 0:
             self.radial_basis = GaussianRBF(
@@ -350,9 +352,16 @@ class EGNN(nn.Module):
                 act_fn,
                 nn.Linear(sphere_channels, out_node_nf),
             )
+            
+        if self.use_noise_schedule_sigma_encoding:
+            self.noise_schedule_sigma_embedding = TimestepEmbedder(
+                hidden_size=self.hidden_nf,
+                frequency_embedding_size=256,
+            )
+        
         self.to(self.device)
 
-    def forward(self, data):
+    def forward(self, data, **kwargs):
 
         node_mask = getattr(data, "node_mask", None)
         edge_mask = getattr(data, "edge_mask", None)
@@ -377,6 +386,12 @@ class EGNN(nn.Module):
             distances = self.radial_basis(distances).squeeze(1)
 
         h = self.embedding(atomic_numbers)
+        
+        # noise schedule sigma encoding
+        if self.use_noise_schedule_sigma_encoding:
+            noise_schedule_sigma_enbedding = self.noise_schedule_sigma_embedding(data.t)
+            h = h + noise_schedule_sigma_enbedding
+            
         for i in range(0, self.n_layers):
             h, x = self._modules["e_block_%d" % i](
                 h,

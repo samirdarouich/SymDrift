@@ -546,7 +546,7 @@ class PaiNN(nn.Module):
                 sactivation=activation,
             )
 
-    def forward(self, data):
+    def forward(self, data, **kwargs):
         """
         Compute atomic representations/embeddings.
 
