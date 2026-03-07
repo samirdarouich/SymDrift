@@ -138,4 +138,63 @@ assert torch.allclose(y_permuted_aligned, aligned), (
     "Aligned structures differ between implementations"
 )
 
+# Test if we can handle batch with variing atom ordering
+
+# 1) create random permutations of the aligned and target structures, but keep the same 
+# permutation across aligned and target to make sure we can still find the correct alignment
+atomic_numbers_reordered = atomic_numbers.clone()
+aligned_reordered = aligned.clone()
+x_reordered = x.clone()
+ys_reordered = ys.clone()
+for i in range(bz):
+    perm = torch.randperm(atomic_numbers.shape[1])
+    atomic_numbers_reordered[i] = atomic_numbers[i][perm]
+    aligned_reordered[i] = aligned[i][perm]
+    x_reordered[i] = x[i][perm]
+    ys_reordered[i] = ys[i][perm]
+    
+y_permuted_aligned, _ = brute_force_and_kabch_batched(
+    x_reordered, ys_reordered, atomic_numbers_reordered
+)
+
+assert torch.allclose(y_permuted_aligned, aligned_reordered), (
+    "Aligned structures differ between implementations"
+)
+
+# Read in molecules of same composition but different ordering and test on real data as well
+atoms = read(
+    "/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq/raw/t1x_eq_CHN3O.xyz",
+    ":",
+)
+xs = []
+ys = []
+atomic_numbers = []
+aligned = []
+rmsds = []
+for atom in atoms:
+    # take original atom as source
+    ys.append(torch.tensor(atom.get_positions()))
+    atomic_numbers.append(torch.tensor(atom.get_atomic_numbers()))
+    # create a rotated and permuted version of the original atom
+    rotated_atom = rotate_atom(atom, theta=70, phi=30, tau=20)
+    rotated_atom = permute_atom(rotated_atom, seed=42)
+
+    # take rotated and permuted atom as target
+    matcher = NaiveBruteForceOrderMatcher(rotated_atom)
+    xs.append(torch.tensor(rotated_atom.get_positions()))
+    
+    rotated_aligned, rmsd = matcher.fit(atom)
+    aligned.append(torch.tensor(rotated_aligned.positions))
+    rmsds.append(rmsd)
+xs = torch.stack(xs)
+ys = torch.stack(ys)
+atomic_numbers = torch.stack(atomic_numbers)
+aligned = torch.stack(aligned)
+
+y_permuted_aligned, _ = brute_force_and_kabch_batched(xs, ys, atomic_numbers)
+
+assert torch.allclose(y_permuted_aligned, aligned), (
+    "Aligned structures differ between implementations"
+)
+
 print("All tests passed successfully!")
