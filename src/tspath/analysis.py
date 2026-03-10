@@ -341,6 +341,32 @@ def check_validity(
 
     return results
 
+def get_validity(atoms, progress_bar=False):
+    """
+    Get the validity of molecules in a batch, including mol connectivity.
+
+    Args:
+        atoms: batch of ase atoms
+        progress_bar: show tqdm progress bar
+    """
+    validity_res = check_validity(atoms, progress_bar=progress_bar)
+    stable_ats = np.concatenate(validity_res["stable_atoms"])
+    stable_mols = np.array(validity_res["stable_molecules"])
+    stable_ats_wo_h = np.concatenate(validity_res["stable_atoms_wo_h"])
+    stable_mols_wo_h = np.array(validity_res["stable_molecules_wo_h"])
+    connected = np.array(validity_res["connected"])
+    connected_wo_h = np.array(validity_res["connected_wo_h"])
+
+    # infer metrics from validity results
+    return {
+        "frac_stable_atoms": stable_ats.mean(),
+        "frac_stable_molecules": stable_mols.mean(),
+        "frac_stable_atoms_wo_h": stable_ats_wo_h.mean(),
+        "frac_stable_molecules_wo_h": stable_mols_wo_h.mean(),
+        "frac_connected_molecules": connected.mean(),
+        "frac_connected_molecules_wo_h": connected_wo_h.mean(),
+    }
+    
 def rmsd_core(mol1, mol2, threshold=0.5, same_order=False):
     _, count = np.unique(mol1.atomic_numbers, return_counts=True)
     if same_order:

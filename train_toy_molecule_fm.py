@@ -1,8 +1,8 @@
 import os
+from functools import partial
 
 import matplotlib.pyplot as plt
 import torch
-from ase.io import write
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeometricDataLoader
@@ -12,10 +12,11 @@ from tspath.alignment import (
     get_rmsd_batched,
     hungarian_and_kabch_batched,
 )
-from tspath.datasets import CompositionBatchSampler, MoleculeDataset
+from tspath.analysis import evaluate_toy
+from tspath.datasets import ToyMoleculeDataset
 from tspath.generative import CondOTScheduler
 from tspath.model import EGNN, PaiNN
-from tspath.utils import batch_inputs_to_atoms, sample_noise_like
+from tspath.utils import sample_noise_like_2d
 
 
 def create_batch_object(batch, n_samples):
@@ -40,7 +41,7 @@ def create_batch_object(batch, n_samples):
     )  # (B, n_samples, n_atoms)
     x_expanded = x_expanded.reshape(B * n_samples * n_atoms)
 
-    z = sample_noise_like(dummy, batch_)
+    z = sample_noise_like_2d(dummy, batch_)
 
     batch_sampling.pos = z
     batch_sampling.batch = batch_
@@ -57,7 +58,6 @@ def sample(model, scheduler, num_steps, batch, n_samples):
     model.eval()
 
     # Sample prior noise n_samples * B
-    B = batch.batch.max().item() + 1
     batch_sampling = create_batch_object(batch, n_samples)
 
     # generate samples
@@ -65,59 +65,43 @@ def sample(model, scheduler, num_steps, batch, n_samples):
         batch_sampling.pos, num_steps=num_steps, model=model, batch=batch_sampling
     )
 
-    # Target
-    n_samples_total = B * n_samples
-    n_atoms = batch.num_atoms[0].item()
-    x_sample = x.view(n_samples_total, n_atoms, -1)
-    # repeat each batch elements positions n_samples times to match the shape of x_sample
-    x_target = (
-        batch.pos_orig.view(B, n_atoms, -1)
-        .unsqueeze(1)
-        .repeat(1, n_samples, 1, 1)
-        .view(n_samples_total, n_atoms, -1)
-    )
-
-    rmsd = get_rmsd_batched(
-        x_sample,
-        x_target,
-        atomic_numbers=batch_sampling.x.view(-1, n_atoms),
-        align=True,
-        permute=True,
-        brute_force_permutations=True,
-    )
-
     if was_training:
         model.train()
 
-    batch_sampling.pos_generated = x
-    atoms_samples = batch_inputs_to_atoms(batch_sampling, "pos_generated")
-
-    for i, atom in enumerate(atoms_samples):
-        atom.info["rmsd"] = rmsd[i].item()
-
-    print(f"RMSD of generated samples to target: {rmsd.mean().item():.4f} Å")
-    return atoms_samples, rmsd
+    return x.cpu().numpy()
 
 
 def visualize(
     model, scheduler, num_steps, batch, current_step, n_samples=None, outdir=None
 ):
     step = current_step
-    atoms_samples, rmsd = sample(
-        model, scheduler, num_steps, batch, n_samples=n_samples
+    x_samples = sample(model, scheduler, num_steps, batch, n_samples=n_samples)
+    mse = evaluation_function(torch.tensor(x_samples))
+    plt.scatter(
+        x_samples[:, 0], x_samples[:, 1], alpha=0.5, color="red", label="Samples"
     )
+    plt.scatter(
+        pos_dataset[:, :, 0],
+        pos_dataset[:, :, 1],
+        alpha=0.75,
+        color="gray",
+        label="Dataset",
+    )
+    plt.legend()
+    plt.xlim(
+        pos_dataset[:, :, 0].min().item() - 1.0, pos_dataset[:, :, 0].max().item() + 1.0
+    )
+    plt.ylim(
+        pos_dataset[:, :, 1].min().item() - 1.0, pos_dataset[:, :, 1].max().item() + 1.0
+    )
+    plt.title(f"Step {step}, MSE: {mse:.4f}")
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
         if isinstance(step, int):
             step_str = f"{step:04d}"
         else:
             step_str = str(step)
-        write(f"{outdir}/step_{step_str}.png", atoms_samples[0])
-        write(f"{outdir}/step_{step_str}.xyz", atoms_samples)
-        with open(f"{outdir}/step_{step_str}_rmsd.txt", "w") as f:
-            f.write(
-                f"RMSD: mean: {rmsd.mean().item():.4f} Å, median: {rmsd.median().item():.4f} Å\n"
-            )
+        plt.savefig(f"{outdir}/step_{step_str}.png")
     plt.close()
 
 
@@ -125,26 +109,46 @@ torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
-dataset_name = "t1x_eq_CHN3O"  #! just 6 ATOMS
-split_identifier = "debug"
+dataset_name = "carbon_chain"
 
-dataset = MoleculeDataset(
-    source=dataset_name,
-    root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
-    split="train",
-    split_identifier=split_identifier,
+n_atoms = 8
+r0 = 2.0
+theta0 = 120.0
+factor = 1.25
+
+n_samples = 1000
+dataset = ToyMoleculeDataset(
+    name=dataset_name,
+    n_samples=n_samples,
+    T=0,
+    seed=42,
+    r0=r0,
+    theta0=theta0,
+    factor=factor,
+    n_atoms=n_atoms,
 )
+evaluation_function = partial(
+    evaluate_toy,
+    dataset_name=dataset_name,
+    n_atoms=n_atoms,
+    r0=r0,
+    theta0=theta0,
+    factor=factor,
+)
+
+if dataset_name == "carbon_chain":
+    dataset_name += f"_n_atoms_{n_atoms}"
+
+pos_dataset = torch.stack([data.pos for data in dataset])
+n_atoms = pos_dataset.shape[1]
 
 model_type = "painn"
 aligned = True
 permuted = True
-brute_force_permutations = True
+brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(
-        use_noise_schedule_sigma_encoding=True,
-        sphere_channels=256,
-        num_layers=9,
-        max_radius=10.0,
+        use_noise_schedule_sigma_encoding=True, sphere_channels=256, num_layers=9
     ),
     "egnn": EGNN(use_noise_schedule_sigma_encoding=True),
 }
@@ -152,7 +156,7 @@ model = model_dict[model_type]
 model.to(device)
 
 
-outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/fm_baseline/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/fm_baseline/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
@@ -163,16 +167,12 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.1)
 
 
 batch_size = 64
-batch_sampler = CompositionBatchSampler(
+dataloader = GeometricDataLoader(
     dataset,
-    k=1,  # number of chunks per batch
-    n=batch_size,  # chunk size (number of samples per chunk)
+    batch_size=batch_size,
     shuffle=True,
-    drop_last=False,
-    resample=True,
-    seed=42,
+    generator=torch.Generator().manual_seed(42),
 )
-dataloader = GeometricDataLoader(dataset, batch_sampler=batch_sampler, shuffle=False)
 
 losses = []
 model.train()
@@ -194,11 +194,11 @@ for epoch in pbar:
 
         # Sample noise for each sample
         batch_neg = batch.clone()
-        x0 = sample_noise_like(batch.pos, batch.batch)
+        x0 = sample_noise_like_2d(batch.pos, batch.batch)
 
         # Get initial RMSD before alignment and permutation
-        x1_ = x1.view(batch.num_graphs, -1, x1.shape[-1])
-        x0_ = x0.view(batch.num_graphs, -1, x0.shape[-1])
+        x1_ = x1.view(batch.num_graphs, -1, x1.shape[-1])[..., :2]  # 2d problem
+        x0_ = x0.view(batch.num_graphs, -1, x0.shape[-1])[..., :2]  # 2d problem
         rmsd_orig = get_rmsd_batched(x0_, x1_)
 
         # Align and permute if specified
@@ -209,7 +209,10 @@ for epoch in pbar:
             else:
                 x1_aligned, _ = hungarian_and_kabch_batched(x0_, x1_, atomic_numbers)
             rmsd_aligned = get_rmsd_batched(x0_, x1_aligned)
-            x1_aligned = x1_aligned.view(-1, x1.shape[-1])
+            x1_aligned = x1_aligned.view(-1, x1_.shape[-1])
+            x1_aligned = torch.cat(
+                [x1_aligned, torch.zeros_like(x1_aligned[..., :1])], dim=-1
+            )  # add zero z-component
         else:
             x1_aligned = x1
             rmsd_aligned = rmsd_orig

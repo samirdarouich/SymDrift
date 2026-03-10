@@ -427,7 +427,7 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
     elif dataset_name == "ccc":
         r0 = kwargs.get("r0", 1.54)
         theta0 = kwargs.get("theta0", 120.0)
-        bond_k = kwargs.get("bond_k", 8.0)
+        bond_k = kwargs.get("bond_k", 5.0)
         angle_k = kwargs.get("angle_k", 1.5)
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
@@ -442,7 +442,7 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         return positions.numpy()
     elif dataset_name == "cccccc":
         r0 = kwargs.get("r0", 1.54)
-        bond_k = kwargs.get("bond_k", 8.0)
+        bond_k = kwargs.get("bond_k", 5.0)
         factor = kwargs.get("factor", 1.25)
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
@@ -459,7 +459,7 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         n_atoms = kwargs.get("n_atoms", 8)
         r0 = kwargs.get("r0", 1.6)
         theta0 = kwargs.get("theta0", 90.0)
-        bond_k = kwargs.get("bond_k", 8.0)
+        bond_k = kwargs.get("bond_k", 5.0)
         angle_k = kwargs.get("angle_k", 1.5)
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
@@ -494,8 +494,8 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
         name="cc", 
         n_samples=1000, 
         T=500.0, 
-        augment_with_rotations=True, 
-        augment_with_permutations=True,
+        augment_with_rotations=False, 
+        augment_with_permutations=False,
         **kwargs
     ):
         self.positions = get_dataset(

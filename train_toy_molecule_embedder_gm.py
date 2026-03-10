@@ -3,16 +3,16 @@ from functools import partial
 
 import matplotlib.pyplot as plt
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.analysis import evaluate_toy
 from tspath.datasets import ToyMoleculeDataset
-from tspath.generative import EquivariantDriftingField
-from tspath.model import EGNN, PaiNN
+from tspath.generative import DriftingField
+from tspath.model import EGNN, PaiNN, GaussianMomentDescriptor
 from tspath.utils import sample_noise_like_2d
-
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch_geometric.nn import global_mean_pool
 
 def create_batch_object(n_atoms, n_samples):
 
@@ -83,26 +83,18 @@ def visualize(model, n_atoms, current_step, n_samples=None, outdir=None):
         plt.savefig(f"{plot_dir}/step_{step_str}.png")
     plt.close()
 
-
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
 dataset_name = "carbon_chain"
-augment_with_rotations = False
-augment_with_permutations = False
 
-n_atoms = 8
+n_atoms = 5
 r0 = 2.0
 theta0 = 120.0
 factor = 1.25
 
-# If no augmentation than its just one molecule
-if augment_with_rotations and augment_with_permutations:
-    n_samples = 1000
-else:
-    n_samples = 1
-
+n_samples = 1000
 dataset = ToyMoleculeDataset(
     name=dataset_name,
     n_samples=n_samples,
@@ -112,8 +104,6 @@ dataset = ToyMoleculeDataset(
     theta0=theta0,
     factor=factor,
     n_atoms=n_atoms,
-    augment_with_rotations=augment_with_rotations,
-    augment_with_permutations=augment_with_permutations,
 )
 evaluation_function = partial(
     evaluate_toy,
@@ -131,48 +121,42 @@ pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
 model_type = "painn"
-aligned = True
-permuted = True
-brute_force_permutations = False
 model_dict = {
-    "painn": PaiNN(
-        sphere_channels=256,
-        num_layers=9,
-    ),
+    "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=6.0),
     "egnn": EGNN(num_distance_basis=0),
 }
 model = model_dict[model_type]
 model.to(device)
 
+#! GM descriptor
+n_basis = 7
+n_contr = 3
+gm_descriptor = GaussianMomentDescriptor(
+    n_basis=n_basis, max_radius=10.0, n_contr=n_contr, use_atom_type_embeddings=False
+)
 
 normalize_drift = True
 temperatures = [0.05]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/embedder_gm/n_basis_{n_basis}_n_contr_{n_contr}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
-drifting_field = EquivariantDriftingField(
+drifting_field = DriftingField(
     temperatures=temperatures,
     normalize_drift=normalize_drift,
-    aligned=aligned,
-    permuted=permuted,
-    brute_force_permutations=brute_force_permutations,
 )
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.1)
 
 losses = []
 model.train()
 
-n_steps = 9000
+n_steps = 9000# * 2
 batch_size = 64
 dataloader = GeometricDataLoader(
-    dataset,
-    batch_size=batch_size,
-    shuffle=True,
-    generator=torch.Generator().manual_seed(42),
+    dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator().manual_seed(42)
 )
 
 # if just one y is used, then we overall train less steps, as steps = n_epochs * batch size
@@ -204,23 +188,23 @@ for epoch in pbar:
                 "Warning: Non-zero z-component in model prediction, which should be zero for 2D data."
             )
 
-        # Get drifting field in 2D as 3D rotations could include reflections in 2D which are not valid
+        # Encode samples and targets
+        x_embedded = gm_descriptor(x, batch_neg.edge_index)
+        x_embedded = global_mean_pool(x_embedded, batch_neg.batch)
+        
+        y_embedded = gm_descriptor(y, batch_neg.edge_index)
+        y_embedded = global_mean_pool(y_embedded, batch_neg.batch)
+
+        # Call the drift
         V, drift_pos, drift_neg, *_ = drifting_field(
-            x[..., :2],
-            y[..., :2],
-            x[..., :2],
-            batch.num_atoms[0],
-            # atomic_numbers=batch.x, # dont use as we assume always all molecules are the same in this toy example
-            temperatures=None,
-            aligned=None,
-            permuted=None,
-            brute_force_permutations=None,
+            x_embedded.detach(),
+            y_embedded,
+            x_embedded.detach(),
         )
-        V = torch.cat([V, torch.zeros_like(V[..., :1])], dim=-1)
 
-        x_drifted = (x + V).detach()
+        x_drifted = (x_embedded + V).detach()
 
-        loss = torch.nn.functional.mse_loss(x, x_drifted)
+        loss = torch.nn.functional.mse_loss(x_embedded, x_drifted)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -229,10 +213,10 @@ for epoch in pbar:
         losses.append(loss.item())
         pbar.set_postfix(
             {
-                "step": step_count,
+                "step": step_count, 
                 "mse(V)": torch.sqrt(torch.mean(V**2)).item(),
-                "mse(pos_drift)": torch.sqrt(torch.mean(drift_pos**2)).item(),
-                "mse(neg_drift)": torch.sqrt(torch.mean(drift_neg**2)).item(),
+                "mse(pos_drift)": torch.sum(torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2)))).item(),
+                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1, 2)))).item(),
             }
         )
 
@@ -246,11 +230,9 @@ for epoch in pbar:
             )
 
         step_count += 1
-
+        
+    
     scheduler.step()
-    # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
-    #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
-
 visualize(
     model, current_step="final", n_atoms=n_atoms, n_samples=n_samples, outdir=outdir
 )

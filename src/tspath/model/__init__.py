@@ -2,3 +2,4 @@ from .equiformer_v2.equiformer_v2_denoising import EquiformerV2S_OC20_DenoisingP
 from .painn import PaiNN
 from .mlp import MLP
 from .egnn import EGNN
+from .gm import GaussianMomentDescriptor

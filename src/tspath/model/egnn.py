@@ -375,9 +375,12 @@ class EGNN(nn.Module):
             batch=data.batch,
             max_num_neighbors=self.max_neighbors,
         )
+        data.edge_index = torch.stack([idx_j, idx_i], dim=0)
 
+        # EGNN definition works with edge index where the receiver is the first index,
+        # but radius_graph returns sender-receiver order, so we swap them here
         edge_index = torch.stack([idx_i, idx_j], dim=0)
-
+        
         # Edit Emiel: Remove velocity as input
         distances, _ = coord2diff(x, edge_index)
 

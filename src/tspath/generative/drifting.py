@@ -100,7 +100,7 @@ def minimal_distance_permuted(
             x_flat, y_flat, atomic_numbers_flat
         )
     else:
-        y_aligned_and_permuted = hungarian_and_kabch_batched(
+        y_aligned_and_permuted, _ = hungarian_and_kabch_batched(
             x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
         )
 
@@ -165,12 +165,13 @@ class DriftingField(torch.nn.Module):
             mask = torch.eye(N, device=device) * 1e6
             dist_neg = dist_neg + mask
 
-        # 3. Compute logits
+        # 3. Compute logits (normalize the temperature with sqrt of dimension D to keep
+        # them transfearable between different dimensions.)
         logit_pos = (
-            -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]
+            -dist_pos.unsqueeze(0) / (self.temperatures[:, None, None] * D**0.5)
         )  # (Ts, N, N_pos)
         logit_neg = (
-            -dist_neg.unsqueeze(0) / self.temperatures[:, None, None]
+            -dist_neg.unsqueeze(0) / (self.temperatures[:, None, None] * D**0.5)
         )  # (Ts, N, N_neg)
 
         # Compute kernel (normalize over y and optionally over x)
@@ -195,7 +196,7 @@ class DriftingField(torch.nn.Module):
         if self.normalize_drift:
             # normalize each temperature's V to have same norm
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2)))  # (T)
-            V = V / (v_norm[..., None] + 1e-8)
+            V = V / (v_norm[:, None, None] + 1e-8)
         V = V.sum(dim=0)  # sum over temperatures to get final V of shape (N, D)
 
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg
@@ -316,6 +317,8 @@ class EquivariantDriftingField(torch.nn.Module):
                     .view(-1)
                 )
 
+        # Distances are RMSD, hence they are normalized by sqrt of number of atoms, so 
+        # that they are transfearable between different molecule sizes.
         dist_pos, diff_pos = self.distance_fn(x_, y_pos_, atomic_numbers=atomic_numbers)
         dist_neg, diff_neg = self.distance_fn(
             x_, y_neg_, atomic_numbers=atomic_numbers_neg
@@ -325,7 +328,7 @@ class EquivariantDriftingField(torch.nn.Module):
         if self.mask_self and N == N_neg:
             mask = torch.eye(N, device=device) * 1e6
             dist_neg = dist_neg + mask
-
+        
         # 3. Compute logits
         logit_pos = (
             -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]
@@ -345,7 +348,7 @@ class EquivariantDriftingField(torch.nn.Module):
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
-        # differences to all molecules in y.
+        # differences to all molecules in y. --> (T, N, n_atoms, d)
         drift_pos = (w_pos[..., None, None] * diff_pos.unsqueeze(0)).sum(dim=2)
         drift_neg = (w_neg[..., None, None] * diff_neg.unsqueeze(0)).sum(dim=2)
         V = drift_pos - drift_neg
@@ -356,7 +359,7 @@ class EquivariantDriftingField(torch.nn.Module):
         if self.normalize_drift:
             # normalize each temperature's V to have same norm
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2, 3)))  # (T)
-            V = V / (v_norm[..., None, None] + 1e-8)
+            V = V / (v_norm[:, None, None, None] + 1e-8)
         # sum over temperatures to get final V of shape (N, n_atoms, d)
         V = V.sum(dim=0)
 

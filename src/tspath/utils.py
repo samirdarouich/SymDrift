@@ -15,8 +15,7 @@ import itertools
 __all__ = [
     "print_config", 
     "batch_center_systems", 
-    "get_composition",
-    "get_elementwise_permutations",
+    "get_canonical_elementwise_permutations",
     "get_brute_force_permutations",
     "get_x_y_pairs",
     "batch_inputs_to_atoms",
@@ -94,30 +93,23 @@ def batch_center_systems(systems: torch.Tensor, batch: torch.Tensor, dim: int = 
 
     return systems - mean
 
-def get_composition(atomic_numbers):
-    B, N = atomic_numbers.shape
-    # (B, N, n_types)
-    n_types = int(atomic_numbers.max().item() + 1)
-    one_hot = torch.nn.functional.one_hot(atomic_numbers, num_classes=n_types)
-    # (B, n_types)
-    comp = one_hot.sum(dim=1)
-    return comp
-
-def get_elementwise_permutations(atom_types):
+def get_canonical_elementwise_permutations(canonical_atomic_numbers):
     """
-    atom_types: (n,)
-    Returns tensor of shape (P, n)
-    """
-    device = atom_types.device
+    canonical_atomic_numbers: (n_atoms,) sorted
 
-    # preserve first appearance order to get consistent permutations
+    Returns
+    -------
+    perms : (P, n_atoms)
+    """
+    device = canonical_atomic_numbers.device
+
     unique_elements = []
-    for a in atom_types.tolist():
+    for a in canonical_atomic_numbers.tolist():
         if a not in unique_elements:
             unique_elements.append(a)
 
     element_indices = [
-        torch.where(atom_types == elem)[0].tolist()
+        torch.where(canonical_atomic_numbers == elem)[0].tolist()
         for elem in unique_elements
     ]
 
@@ -127,57 +119,69 @@ def get_elementwise_permutations(atom_types):
     ]
 
     all_perms = []
-
     for prod in itertools.product(*element_perms):
         perm = list(itertools.chain(*prod))
         all_perms.append(perm)
 
-    return torch.tensor(all_perms, device=device)
+    return torch.tensor(all_perms, device=device)  # (P,n)
+
 
 def get_brute_force_permutations(x, y, atomic_numbers=None):
     """
-    Get all permutations of y and flatten into batch dimension for parallel processing.
-    x, y: (B, n_atoms, d)
-
-    Returns:
-        x_flat, y_flat, P: (P*B, n_atoms, d) where P is the number of permutations (n!)
+    Canonicalized permutation pipeline
     """
     device = x.device
     B, n, d = x.shape
-    
-    # --- 1) Generate all permutations ---
+
+    # -------------------------------------------------
+    # 1) Canonicalize atom ordering
+    # -------------------------------------------------
     if atomic_numbers is not None:
-        comp = get_composition(atomic_numbers.long())
-        all_equal = torch.all(comp == comp[0], dim=1).all()
-        assert all_equal, "Different composition across batch not supported in this version"
-        perms = get_elementwise_permutations(atomic_numbers[0]) 
+
+        sort_idx = torch.argsort(atomic_numbers, dim=1)
+        inv_sort_idx = torch.argsort(sort_idx, dim=1)
+
+        gather_idx = sort_idx[..., None].expand(-1, -1, d)
+
+        x = torch.gather(x, 1, gather_idx)
+        y = torch.gather(y, 1, gather_idx)
+
+        canonical_atomic_numbers = atomic_numbers[0].sort().values
+
+        perms = get_canonical_elementwise_permutations(
+            canonical_atomic_numbers
+        )  # (P,n)
+
     else:
-        perms = torch.tensor(list(itertools.permutations(range(n))), device=device)
 
-    P = perms.shape[0]  # n!
+        perms = torch.tensor(
+            list(itertools.permutations(range(n))),
+            device=device
+        )
 
-    # --- 2) Apply all permutations in parallel ---
-    # Expand y to (P, B, n, d)
-    y_exp = y.unsqueeze(0).expand(P, B, n, d)
+        sort_idx = None
+        inv_sort_idx = None
 
-    # Expand perms to (P, B, n)
-    perms_exp = perms.unsqueeze(1).expand(P, B, n)
+    P = perms.shape[0]
 
-    # Apply permutation indexing to get y_perm of shape (P, B, n, d)
-    # So the first entry in y_perm corresponds to the first permutation in perms, and so on.
-    y_perm = torch.gather(
-        y_exp,
-        2,  # gather along atom dimension
-        perms_exp.unsqueeze(-1).expand(P, B, n, d)
-    )
+    # -------------------------------------------------
+    # 2) Apply permutations
+    # -------------------------------------------------
 
-    # (P,B,n,d)    
-    x_rep = x.unsqueeze(0).expand(P, B, n, d)     
+    perms_exp = perms[None, :, :, None].expand(B, P, n, d)
 
-    # --- 3) Flatten permutations into batch dimension ---
-    x_flat = x_rep.reshape(P*B, n, d)
-    y_flat = y_perm.reshape(P*B, n, d)
-    return x_flat, y_flat, perms
+    y_exp = y[:, None].expand(B, P, n, d)
+
+    y_perm = torch.gather(y_exp, 2, perms_exp)
+
+    # -------------------------------------------------
+    # 3) Flatten batch
+    # -------------------------------------------------
+
+    x_flat = x[:, None].expand(B, P, n, d).reshape(B * P, n, d)
+    y_flat = y_perm.reshape(B * P, n, d)
+
+    return x_flat, y_flat, perms, sort_idx, inv_sort_idx
 
 def get_x_y_pairs(x, y, atomic_numbers=None):
     """

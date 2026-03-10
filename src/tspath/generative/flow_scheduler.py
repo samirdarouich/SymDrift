@@ -38,7 +38,6 @@ class CondOTScheduler(FlowScheduler):
         self.sigma = sigma
     
     def sample_xt(self, x0, x1, t, batch=None):
-        
         # Get interpolated position
         xt = (1 - t) * x0 + t * x1
         noise = sample_noise_like(xt, batch)
@@ -60,7 +59,6 @@ class CondOTScheduler(FlowScheduler):
         return xt, v_target
     
     def sample_time_and_conditional_path(self, x0, x1, batch):
-        
         # sample random time points
         batch_size = batch.max().item() + 1
         device = x0.device

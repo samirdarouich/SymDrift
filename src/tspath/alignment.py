@@ -1,6 +1,6 @@
 import torch
 from torch_linear_assignment import batch_linear_assignment
-from tspath.utils import get_composition, get_brute_force_permutations
+from tspath.utils import get_brute_force_permutations
 from torch_scatter import scatter_mean
 
 __all__ = [
@@ -114,10 +114,9 @@ def hungarian_batched(x, y, atomic_numbers=None):
     
     # Get composition of each system in the batch and check if all systems have the same
     # composition.
-    comp = get_composition(atomic_numbers.long())
-    all_equal = torch.all(comp == comp[0], dim=1).all()
-    
-    assert all_equal, "Different composition across batch not supported in this version"
+    assert torch.all(
+        torch.sort(atomic_numbers, dim=1).values == torch.sort(atomic_numbers[0]).values
+    ), "Different composition across batch not supported"
     
     # Compute the Cost matrix
     cost = torch.cdist(x, y)  # (B, N, N)
@@ -164,12 +163,14 @@ def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2,
     """
     B, n_atoms, d = x.shape
     y_aligned = y.clone()
+    perm_total = torch.arange(n_atoms, device=y.device).unsqueeze(0).repeat(B, 1)
     rmsds = [get_rmsd_batched(x, y_aligned).max().item()]
     if verbose:
         print(f"Initial RMSD: {rmsds[-1]:.6f}")
     for i in range(max_iter):
         # find permutation that minimizes RMSD to x (if specified respect atomic numbers)
-        y_permuted, _ = hungarian_batched(x, y_aligned, atomic_numbers)
+        y_permuted, perm_i = hungarian_batched(x, y_aligned, atomic_numbers)
+        perm_total = perm_total.gather(1, perm_i)
         y_new, _ = kabsch_batched(x, y_permuted)
         rmsd = get_rmsd_batched(x, y_new).max().item()
         y_aligned = y_new
@@ -181,7 +182,8 @@ def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2,
             if verbose:
                 print(f"Converged after {i} iterations with delta RMSD: {rmsds[-1]:.6f}")
             break
-    return y_aligned
+    return y_aligned, perm_total
+
 
 def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
     """ Perform permutations and aligment of y to x using brute force permutation and 
@@ -211,29 +213,55 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
     -------
     y_permuted_aligned: array
         aligned and permuted reference structures of shape (B, n_atoms, d)
+    best_perm: array
+        best permutation of atoms in y that minimizes RMSD to x, of shape (B, n_atoms).
+        The atom ordering is in the canonical ordering. (Increasing atomic number)
     """
     B, n_atoms, d = x.shape
 
-    # --- 1) Get all possible permutations ---
-    # (P*B, n_atoms, d)
-    x_flat, y_flat, perms = get_brute_force_permutations(x, y, atomic_numbers)  
+    x_flat, y_flat, perms, sort_idx, inv_sort_idx = get_brute_force_permutations(
+        x, y, atomic_numbers
+    )
+
     P = perms.shape[0]
-    
-    # --- 2) Align all with Kabsch ---
+
+    # --- Kabsch alignment ---
     y_aligned_flat, _ = kabsch_batched(x_flat, y_flat)
 
-    # --- 3) Compute RMSD ---
-    rmsd = get_rmsd_batched(x_flat, y_aligned_flat)  # (P*B,)
-    rmsd = rmsd.view(P, B)    
-    
-    # --- 4) Pick best permutation per batch ---
-    best_idx = rmsd.argmin(dim=0)                    # (B,)
-    best_perm = perms[best_idx]                      # (B,n)
+    # --- RMSD ---
+    rmsd = get_rmsd_batched(x_flat, y_aligned_flat)
+    rmsd = rmsd.view(B, P)
 
-    # --- 5) Gather best aligned structure ---
-    y_aligned = y_aligned_flat.view(P, B, n_atoms, d)
-    y_best_aligned = y_aligned[best_idx, torch.arange(B)]
-    
+    batch_idx = torch.arange(B, device=x.device)
+    best_idx = rmsd.argmin(dim=1)
+
+    # best permutation
+    best_perm = perms[best_idx]
+
+    # best aligned structure
+    y_aligned = y_aligned_flat.view(B, P, n_atoms, d)
+    y_best_aligned = y_aligned[batch_idx, best_idx]
+
+    # -------------------------------------------------
+    # 4) Undo canonicalization
+    # -------------------------------------------------
+
+    if inv_sort_idx is not None:
+
+        gather_idx = inv_sort_idx[..., None].expand(-1, -1, d)
+
+        y_best_aligned = torch.gather(
+            y_best_aligned,
+            1,
+            gather_idx
+        )
+
+        best_perm = torch.gather(
+            best_perm,
+            1,
+            inv_sort_idx
+        )
+
     return y_best_aligned, best_perm
 
 def get_rmsd_batched_scatter(xi, xj, batch, align=False):
@@ -243,7 +271,7 @@ def get_rmsd_batched_scatter(xi, xj, batch, align=False):
     rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
     return rmsd
 
-def get_rmsd_batched(x, y, align=False, permuted=False, atomic_numbers=None, brute_force_permutations=False):
+def get_rmsd_batched(x, y, align=False, permute=False, atomic_numbers=None, brute_force_permutations=False):
     """
     Compute RMSD between two batches of structures x and y, where x and y are of shape
     (B, N, d). The RMSD is computed for each pair of structures in the batch.
@@ -251,7 +279,7 @@ def get_rmsd_batched(x, y, align=False, permuted=False, atomic_numbers=None, bru
     """
     assert x.shape == y.shape, "X and Y must have same shape"
     if align:
-        if permuted:
+        if permute:
             if brute_force_permutations:
                 y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
             else:

@@ -566,6 +566,8 @@ class PaiNN(nn.Module):
             batch=data.batch,
             max_num_neighbors=self.max_neighbors
         )
+        
+        data.edge_index = torch.stack([idx_j, idx_i], dim=0)
 
         # get tensors from input dictionary
         atomic_numbers = data.x.long()
@@ -603,10 +605,10 @@ class PaiNN(nn.Module):
             q, mu = mixing(q, mu)
         q = q.squeeze(1)
 
-        if self.readout is None:
+        if self.readout_layer is None:
             return q, mu
         
-        # predict equivariant output
+        # predict invariant/equivariant output
         _, x = self.readout_layer((q, mu))
         x = torch.squeeze(x, -1)
         x = batch_center_systems(x, data.batch, dim=0)

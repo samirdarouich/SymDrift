@@ -6,14 +6,15 @@ import torch
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import MoleculeDataset, CompositionBatchSampler
-from tspath.generative import EquivariantDriftingField
-from tspath.model import EGNN, PaiNN
+from tspath.generative import DriftingField
+from tspath.model import EGNN, PaiNN, GaussianMomentDescriptor
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched
 from tspath.analysis import get_validity
 from torch_geometric.data import Data
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import logging
+from torch_geometric.nn import global_mean_pool
 import json
 
 logging.basicConfig(level=logging.INFO)
@@ -104,38 +105,24 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
     plt.close()
     return atoms_samples
 
-
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
-# dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
+dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
 # dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
 # dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
-dataset_name = "qm9_C3H6O" #! 9 ATOMS
-dataset_name = "qm9_C3F2N2O2" #! 9 ATOMS
-
 split_identifier = None
 # split_identifier = "debug"
 
-augment_with_rotations = False
-augment_with_permutations = False
-
 dataset = MoleculeDataset(
     source=dataset_name,
-    # root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
-    root="/home/samirdarouich/projects/TS_physics/tspath/data/qm9",
+    root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
     split="train",
-    identifier="identifier" if dataset_name.startswith("qm9") else "rxn",
     split_identifier=split_identifier,
-    augment_with_rotations=augment_with_rotations,
-    augment_with_permutations=augment_with_permutations,
 )
 
 model_type = "painn"
-aligned = True
-permuted = True
-brute_force_permutations = True
 model_dict = {
     "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),# PaiNN(),#PaiNN(sphere_channels=256,num_layers=6), PaiNN(sphere_channels=256,num_layers=9),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
@@ -143,38 +130,45 @@ model_dict = {
 model = model_dict[model_type]
 model.to(device)
 
-print(f"Dataset: {dataset_name}, Model: {model_type}, Aligned: {aligned}, Permuted: {permuted}, Brute-force permutations: {brute_force_permutations}, Augment with rotations: {augment_with_rotations}, Augment with permutations: {augment_with_permutations}")
+print(f"Dataset: {dataset_name}, Model: {model_type}, ")
+
+#! GM descriptor
+n_radial = 5
+n_basis = 4
+n_contr = 8
+gm_descriptor = GaussianMomentDescriptor(
+    n_radial=n_radial, n_basis=n_basis, max_radius=11.0, n_contr=n_contr, use_atom_type_embeddings=True
+)
+gm_descriptor.to(device)
 
 normalize_drift = True
-temperatures = [0.05] # low temperature to hope to find the optimal alignment and dont weight the others
+temperatures = [0.15]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
-drifting_field = EquivariantDriftingField(
+drifting_field = DriftingField(
     temperatures=temperatures,
-    aligned=aligned,
-    permuted=permuted,
-    brute_force_permutations=brute_force_permutations,
     normalize_drift=normalize_drift,
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.1)
 
-# In case of brute-force we just want to sample one target to make the alignment cheaper
-if brute_force_permutations:
-    batch_size_pos = min(len(dataset), 64)
-    batch_size_neg = 64
-else:
-    batch_size_pos = 64
-    batch_size_neg = 64
+optimizer = torch.optim.AdamW(
+    [
+        {"params": model.parameters(), "lr": 1e-4},
+        {"params": gm_descriptor.parameters(), "lr": 1e-4},
+    ],
+    weight_decay=0.1
+)
 
+
+batch_size = 64
 batch_sampler = CompositionBatchSampler(
     dataset,
     k=1,  # number of chunks per batch
-    n=batch_size_pos,  # chunk size (number of samples per chunk)
+    n=batch_size,  # chunk size (number of samples per chunk)
     shuffle=True,
     drop_last=False,
     resample=True,
@@ -201,41 +195,39 @@ for epoch in pbar:
         y = batch.pos.clone()
         batch.pos_orig = y.clone()
 
-        # Sample noise
-        # if less positive samples than required negatve samples, repeat positive 
-        # samples until we have enough
-        if batch_size_pos < batch_size_neg:
-            n_repeat = batch_size_neg // batch.num_graphs
-            batch_neg = create_batch_object(batch, n_samples=n_repeat)
-        else:
-            # Sample bz negative samples
-            batch_neg = batch.clone()
-            z = sample_noise_like(batch.pos, batch.batch)
-            batch_neg.pos = z
+        # Sample bz negative samples
+        batch = batch.clone()
+        z = sample_noise_like(batch.pos, batch.batch)
+        batch.pos = z
 
         # Call the model
-        x = model(batch_neg)
+        x = model(batch)
+        
+        # Encode samples and targets
+        x_embedded = gm_descriptor(x, batch.edge_index, batch.x)
+        x_embedded = global_mean_pool(x_embedded, batch.batch)
+        
+        y_embedded = gm_descriptor(y, batch.edge_index, batch.x)
+        y_embedded = global_mean_pool(y_embedded, batch.batch)
         
         # Call the drift
         V, drift_pos, drift_neg, *_ = drifting_field(
-            x.detach(), # avoid unnecessary gradient tracking
-            y,
-            x.detach(), # avoid unnecessary gradient tracking
-            batch.num_atoms[0],
-            atomic_numbers=batch.x,
+            x_embedded.detach(),
+            y_embedded,
+            x_embedded.detach(),
         )
         
+        # sum over temperatures to get final V of shape (N, d)
         if split_identifier == "debug":
-            # sum over temperatures to get final V of shape (N, n_atoms, d)
-            v_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2, 3)))  # (T)
-            drift_pos_ = drift_pos / (v_norm[:, None, None, None] + 1e-8)
+            v_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2)))  # (T)
+            drift_pos_ = drift_pos / (v_norm[:, None, None] + 1e-8)
             drift_pos_ = drift_pos.sum(dim=0)
-            drift_pos_ = drift_pos_.view_as(x)
-            x_drifted = (x + drift_pos_).detach()
+            drift_pos_ = drift_pos_.view_as(x_embedded)
+            x_drifted = (x_embedded + drift_pos_).detach()
         else:
-            x_drifted = (x + V).detach()
+            x_drifted = (x_embedded + V).detach()
 
-        loss = torch.nn.functional.mse_loss(x, x_drifted)
+        loss = torch.nn.functional.mse_loss(x_embedded, x_drifted)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
@@ -247,8 +239,8 @@ for epoch in pbar:
                 "step": step_count, 
                 "mse(V)": torch.sqrt(torch.mean(V**2)).item(),
                 # take mse per temperature and sum over temperatures (as done with V)
-                "mse(pos_drift)": torch.sum(torch.sqrt(torch.mean(drift_pos**2, dim=(1,2,3)))).item(), 
-                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1,2,3)))).item(),
+                "mse(pos_drift)": torch.sum(torch.sqrt(torch.mean(drift_pos**2, dim=(1,2)))).item(), 
+                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1,2)))).item(),
             }
         )
 
@@ -263,12 +255,9 @@ for epoch in pbar:
 
     # Update learning rate scheduler at the end of each epoch
     scheduler.step()
-            
-    # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
-    #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
 n_samples = 1000 // batch.num_graphs
-atoms_samples =visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
+atoms_samples = visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 
 if split_identifier is None:
@@ -276,7 +265,7 @@ if split_identifier is None:
     batch_sampler = CompositionBatchSampler(
         dataset,
         k=1,
-        n=batch_size_pos,
+        n=batch_size,
         shuffle=False,
         drop_last=False,
         resample=False,
@@ -292,3 +281,7 @@ if split_identifier is None:
         print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
     with open(f"{plot_dir}/metrics.json", "w") as f:
         json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)
+    
+    
+    
+    
