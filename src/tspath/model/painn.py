@@ -613,7 +613,8 @@ class PaiNN(nn.Module):
         x = torch.squeeze(x, -1)
         x = batch_center_systems(x, data.batch, dim=0)
         
-        return x
+        # prevent 0 positions collapse
+        return x + data.pos
     
     def initialize_embeddings(self, data):
         """

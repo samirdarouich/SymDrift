@@ -3,3 +3,4 @@ from .painn import PaiNN
 from .mlp import MLP
 from .egnn import EGNN
 from .gm import GaussianMomentDescriptor
+from .gvp import GVPModel

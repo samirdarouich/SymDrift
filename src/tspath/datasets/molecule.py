@@ -8,7 +8,7 @@ from torch_geometric.transforms import Compose
 import logging
 from collections import defaultdict
 from typing import Optional
-from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM
+from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM, FeaturizeMolecule
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class MoleculeDataset(InMemoryDataset):
         split=None,              # 'train' | 'val' | 'test'
         split_identifier: Optional[str] = None,
         transform=None,
-        pre_transform=Compose([RemoveCOM()]),
+        pre_transform=Compose([RemoveCOM(), FeaturizeMolecule()]),
         pre_filter=None,
         augment_with_rotations=False,
         augment_with_permutations=False,
@@ -90,15 +90,18 @@ class MoleculeDataset(InMemoryDataset):
                 x = torch.tensor(mol.numbers, dtype=torch.float),
                 num_atoms = torch.tensor(len(mol), dtype=torch.long),
                 pos = torch.tensor(mol.positions, dtype=torch.float),
-                rxn = torch.tensor(mol.info[self.identifier], dtype=torch.long),
+                identifier = torch.tensor(mol.info[self.identifier], dtype=torch.long),
                 formula = torch.tensor(unqiue_conformer_formulas.index(formula), dtype=torch.long),
             )
-            
+
+            if mol.info.get("smiles") is not None:
+                data.smiles = mol.info["smiles"]
+
             if self.pre_transform is not None:
                 data = self.pre_transform(data)
                 
             data_list.append(data)
         
-        # Sort data_list by rxn key
-        data_list.sort(key=lambda data: data.rxn.item())
+        # Sort data_list by identifier key
+        data_list.sort(key=lambda data: data.identifier.item())
         torch.save(self.collate(data_list), self.processed_paths[0])

@@ -29,6 +29,7 @@ dependencies = [
     "e3nn",
     "pymatgen",
     "py3Dmol",
+    "einops",
 ]
 
 [tool.setuptools]

@@ -283,8 +283,9 @@ def get_rmsd_batched(x, y, align=False, permute=False, atomic_numbers=None, brut
             if brute_force_permutations:
                 y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
             else:
-                y = hungarian_and_kabch_batched(x, y, atomic_numbers)
-        y, _ = kabsch_batched(x, y)
+                y, _ = hungarian_and_kabch_batched(x, y, atomic_numbers)
+        else:
+            y, _ = kabsch_batched(x, y)
     B, n_atoms, d = x.shape
     rmsd = (((x - y)**2).sum(dim=(-2,-1))/n_atoms).sqrt()
     return rmsd

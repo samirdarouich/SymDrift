@@ -9,8 +9,11 @@ from tspath.datasets import MoleculeDataset, CompositionBatchSampler
 from tspath.model import PaiNN, EGNN
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched
+from tspath.analysis import get_validity
+import json
 import numpy as np
 from ase.io import write
+import math
 
 def edm_sampler(
     net, data, num_steps=32, sigma_min=0.002, sigma_max=80, rho=7,
@@ -69,21 +72,43 @@ def visualize_samples(model, dataloader, outdir, epoch):
     gt = data.pos.clone()
     with torch.no_grad():
         prediction = edm_sampler(model, data, seed=42)
+    
+    B = data.batch.max().item() + 1
+    # Determine whether to use brute-force permutations
+    unique_types = torch.unique(data.x.view(B, -1)[0], dim=0, return_counts=True)
+    no_permutations = B
+    for t, count in zip(*unique_types):
+        no_permutations *= math.factorial(count.item())
+
+    if no_permutations < 1e5:
+        use_brute_force_permutations = True
+    else:
+        use_brute_force_permutations = False
+
     rmsd = get_rmsd_batched(
-        gt.view(64, -1, 3), prediction.view(64, -1, 3), 
-        atomic_numbers=data.x.view(64, -1), 
-        align=True, permute=True, brute_force_permutations=True
+        gt.view(B, -1, 3), prediction.view(B, -1, 3), 
+        atomic_numbers=data.x.view(B, -1), 
+        align=True, permute=True, brute_force_permutations=use_brute_force_permutations
     )
     data.predicted_pos = prediction
     atoms = batch_inputs_to_atoms(data, "predicted_pos")
-    
+    metrics_generated = get_validity(atoms)
     for i, atom in enumerate(atoms):
         atom.info["rmsd"] = rmsd[i].item()
     atoms_noise = batch_inputs_to_atoms(data, "noise")
+    write(f"{outdir}/noise.png", atoms_noise[0])
     write(f"{outdir}/epoch_{epoch}.png", atoms[0])
-    write(f"{outdir}/epoch_{epoch}_noise.png", atoms_noise[0])
     write(f"{outdir}/epoch_{epoch}.xyz", atoms)
-    print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}")
+    with open(f"{plot_dir}/epoch_{epoch}_stats.json", "w") as f:
+        json.dump({
+            "rmsd": {
+                "mean": rmsd.mean().item(),
+                "median": rmsd.median().item()
+            },
+            **metrics_generated
+        }, f, indent=4)
+    print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}; Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
+    return atoms
     
         
 def sample_sigma(batch_size, device, P_mean=-1.2, P_std=1.2):
@@ -158,6 +183,9 @@ def train(model, loader, optimizer):
         loss = edm_loss(model, data)
 
         loss.backward()
+        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
 
         total_loss += loss.item()
@@ -170,15 +198,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset setup
 # dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
-dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
+# dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
 # dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
+dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+data_folder = "qm9" if dataset_name.startswith("qm9") else "transition1x_eq"
+
 split_identifier = None
-split_identifier = "debug"
+# split_identifier = "debug"
 
 dataset = MoleculeDataset(
     source=dataset_name,
-    root="/home/samirdarouich/projects/TS_physics/tspath/data/transition1x_eq",
+    root=f"/home/samirdarouich/projects/TS_physics/tspath/data/{data_folder}",
     split="train",
+    identifier="identifier" if dataset_name.startswith("qm9") else "rxn",
     split_identifier=split_identifier,
 )
 
@@ -202,16 +234,15 @@ model_dict = {
 }
 backbone = model_dict[model_type]
 model = EDMDiffusion(backbone, sigma_data=0.5).to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.1)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 
-
-outdir = f"runs/embedder/dataset_{dataset_name}/split_{split_identifier}/{model_type}"
+outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/diffuson_baseline/plain"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
-n_epochs = 2500
+n_epochs = 15000
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
 
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
@@ -224,5 +255,29 @@ for epoch in pbar:
         
     scheduler.step()
 
-visualize_samples(model, dataloader, plot_dir, "final")
+atoms_samples = visualize_samples(model, dataloader, plot_dir, "final")
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
+
+data_atoms = []
+batch_sampler = CompositionBatchSampler(
+    dataset,
+    k=1,
+    n=64,
+    shuffle=False,
+    drop_last=False,
+    resample=False,
+    seed=42,
+)
+dataloader = GeometricDataLoader(dataset, batch_sampler=batch_sampler)
+for batch in dataloader:
+    atoms = batch_inputs_to_atoms(batch, "pos")
+    data_atoms.extend(atoms)
+metrics_dataset = get_validity(data_atoms)
+metrics_generated = get_validity(atoms_samples)
+for metric_name in metrics_dataset.keys():
+    print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
+with open(f"{plot_dir}/metrics.json", "w") as f:
+    json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)
+    
+    
+    

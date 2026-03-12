@@ -401,10 +401,9 @@ class GaussianMomentDescriptor(nn.Module):
         coord_diff = rij / (distances + 1e-8)
 
         # Radial function
+        Z_i, Z_j = None, None
         if Z is not None:
             Z_i, Z_j = Z[ii].long(), Z[jj].long()
-        else:
-            Z_i, Z_j = None, None
         radial_function = self.radial_fn(distances, Z_i, Z_j)
 
         # Compute geometric moments

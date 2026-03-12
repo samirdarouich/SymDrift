@@ -367,50 +367,50 @@ def get_validity(atoms, progress_bar=False):
         "frac_connected_molecules_wo_h": connected_wo_h.mean(),
     }
     
-def rmsd_core(mol1, mol2, threshold=0.5, same_order=False):
+def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
     _, count = np.unique(mol1.atomic_numbers, return_counts=True)
     if same_order:
         bfm = KabschMatcher(mol1)
-        aligned, rmsd = bfm.fit(mol2)
-        return rmsd, aligned
+        aligned, rmse = bfm.fit(mol2)
+        return rmse, aligned
     total_permutations = 1
     for c in count:
         total_permutations *= math.factorial(c)  # type: ignore
     if total_permutations < 1e4:
         bfm = BruteForceOrderMatcher(mol1)
-        aligned, rmsd = bfm.fit(mol2)
+        aligned, rmse = bfm.fit(mol2)
     else:
         bfm = GeneticOrderMatcher(mol1, threshold=threshold)
         pairs = bfm.fit(mol2)
-        rmsd = threshold
+        rmse = threshold
         aligned = None
         for pair in pairs:
-            if pair[-1] < rmsd:
+            if pair[-1] < rmse:
                 aligned = pair[0]
-                rmsd = pair[-1]
+                rmse = pair[-1]
         if not len(pairs):
             bfm = HungarianOrderMatcher(mol1)
-            aligned, rmsd = bfm.fit(mol2)
-    return rmsd, aligned
+            aligned, rmse = bfm.fit(mol2)
+    return rmse, aligned
 
 
-def pymatgen_rmsd(
+def pymatgen_rmse(
     mol1,
     mol2,
     ignore_chirality: bool = False,
     threshold: float = 0.5,
     same_order: bool = False,
 ): 
-    rmsd, aligned = rmsd_core(mol1, mol2, threshold, same_order=same_order)
+    rmse, aligned = rmse_core(mol1, mol2, threshold, same_order=same_order)
     if ignore_chirality:
         coords = mol2.cart_coords
         coords[:, -1] = -coords[:, -1]
         mol2_reflect = Molecule(species=mol2.species, coords=coords)
-        rmsd_reflect, aligned_reflect = rmsd_core(mol1, mol2_reflect, threshold, same_order=same_order)
-        if rmsd_reflect < rmsd:
-            rmsd = rmsd_reflect
+        rmse_reflect, aligned_reflect = rmse_core(mol1, mol2_reflect, threshold, same_order=same_order)
+        if rmse_reflect < rmse:
+            rmse = rmse_reflect
             aligned = aligned_reflect
-    return rmsd, aligned
+    return rmse, aligned
 
 def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_order=False):
     mol_pred = Molecule(
@@ -422,7 +422,7 @@ def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_orde
         coords=ref.positions,
     )
 
-    rmsd, aligned = pymatgen_rmsd(
+    rmse, aligned = pymatgen_rmse(
         mol_ref,
         mol_pred,
         ignore_chirality=ignore_chirality,
@@ -431,7 +431,7 @@ def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_orde
     )
     
     # pymatgen computes rmse instead of rmsd
-    rmsd = rmsd * 3**0.5
+    rmsd = rmse * 3**0.5
     
     aligned_sample = sample.copy()
     aligned_sample.positions = aligned.cart_coords

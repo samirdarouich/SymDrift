@@ -6,18 +6,70 @@ import torch
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import MoleculeDataset, CompositionBatchSampler
-from tspath.generative import EquivariantDriftingField
-from tspath.model import EGNN, PaiNN
+from tspath.generative import DriftingField
+from tspath.model import EGNN, PaiNN, GVPModel, GaussianMomentDescriptor
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched
 from tspath.analysis import get_validity
 from torch_geometric.data import Data
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import logging
+from torch_geometric.nn import global_mean_pool
 import json
-import math
+from sklearn.decomposition import PCA
 
 logging.basicConfig(level=logging.INFO)
+
+
+def invariant_distance_embedder(xs, ys, atomic_numbers):
+    """
+    xs, ys: (B, N, 3)
+    atomic_numbers: (B, N)
+
+    returns:
+        scalar loss
+    """
+
+    B, N, _ = xs.shape
+    
+    
+    # Pairwise distance matrices
+    Dx = torch.cdist(xs, xs)  # (B,N,N)
+    Dy = torch.cdist(ys, ys)  # (B,N,N)
+
+    Z = atomic_numbers
+
+    unique_types = torch.unique(Z)
+
+    dxs = []
+    dys = []
+    for Zi in unique_types:
+        for Zj in unique_types:
+
+            mask_i = (Z == Zi)[:, :, None]  # (B,N,1)
+            mask_j = (Z == Zj)[:, None, :]  # (B,1,N)
+
+            pair_mask = mask_i & mask_j     # (B,N,N)
+            # n_interactions = pair_mask.sum().item() // B
+
+            # i, j = torch.triu_indices(n_interactions, n_interactions, offset=min(1, n_interactions - 1), device=device)
+
+            # # flatten pair distances
+            # dx = Dx[pair_mask].view(B,n_interactions,n_interactions)[:,i,j]
+            # dy = Dy[pair_mask].view(B,n_interactions,n_interactions)[:,i,j]
+            dx = Dx[pair_mask].view(B, -1)
+            dy = Dy[pair_mask].view(B, -1)
+
+            dx = torch.sort(dx, dim=1)[0]
+            dy = torch.sort(dy, dim=1)[0]
+
+            dxs.append(dx)
+            dys.append(dy)
+
+    dxs = torch.cat(dxs, dim=1)
+    dys = torch.cat(dys, dim=1)
+
+    return dxs, dys
 
 def create_batch_object(batch, n_samples):
     
@@ -68,21 +120,12 @@ def sample(model, batch, n_samples):
     # repeat each batch elements positions n_samples times to match the shape of x_sample
     x_target = batch.pos_orig.view(B, n_atoms, -1).unsqueeze(1).repeat(1, n_samples, 1, 1).view(n_samples_total, n_atoms, -1)
 
-    # Determine whether to use brute-force permutations
-    unique_types = torch.unique(batch.x.view(-1, n_atoms)[0], dim=0, return_counts=True)
-    no_permutations = n_samples
-    for t, count in zip(*unique_types):
-        no_permutations *= math.factorial(count.item())
-
-    if no_permutations < 1e5:
-        use_brute_force_permutations = True
-    else:
-        use_brute_force_permutations = False
-    
     rmsd = get_rmsd_batched(
         x_sample, x_target, atomic_numbers=batch_sampling.x.view(-1, n_atoms),
-        align=True, permute=True, brute_force_permutations=use_brute_force_permutations
+        align=True, permute=True, brute_force_permutations=True
     )
+    
+    x_embedded, _ = embedder_fn(embedder_type, x, x, batch_sampling.x, batch_sampling.edge_index, batch_sampling.batch)
     
     if was_training:
         model.train()
@@ -93,12 +136,12 @@ def sample(model, batch, n_samples):
     
     for i, atom in enumerate(atoms_samples):
         atom.info["rmsd"] = rmsd[i].item()
-    return atoms_samples, atoms_noise, rmsd
+    return atoms_samples, atoms_noise, rmsd, x_embedded.cpu()
 
         
-def visualize(model, batch, current_step, n_samples=None, outdir=None):
+def visualize(model, batch, current_step, n_samples=None, outdir=None, y_embedded=None):
     step = current_step
-    atoms_samples, atoms_noise, rmsd = sample(model, batch, n_samples=n_samples)
+    atoms_samples, atoms_noise, rmsd, x_embedded = sample(model, batch, n_samples=n_samples)
     metrics_generated = get_validity(atoms_samples)
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
@@ -120,8 +163,36 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
             }, f, indent=4)
         print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}; Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
     plt.close()
+    if y_embedded is not None:
+        pca = PCA(n_components=2)
+        y_2d = pca.fit_transform(y_embedded)
+        x_2d = pca.transform(x_embedded)
+        
+        plt.figure(figsize=(8, 6))
+        plt.title(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+        plt.scatter(x_2d[:, 0], x_2d[:, 1], alpha=0.75, color="red", label="predictions")
+        plt.scatter(y_2d[:, 0], y_2d[:, 1], alpha=0.75, color="blue", label="target")
+        plt.xlabel("Component 1")
+        plt.ylabel("Component 2")
+        plt.legend()
+        plt.savefig(f"{plot_dir}/step_{step_str}_pca.png")
+        plt.close()
     return atoms_samples
 
+def embedder_fn(embedder_type, x, y, atomic_numbers, edge_index, batch_idx):
+    if embedder_type == "gm":
+        x_embed = gm_descriptor(x, edge_index, atomic_numbers)
+        x_embed = global_mean_pool(x_embed, batch_idx)
+        with torch.no_grad():
+            y_embed = gm_descriptor(y, edge_index, atomic_numbers).detach()
+            y_embed = global_mean_pool(y_embed, batch_idx)
+    elif embedder_type == "distance":
+        B = batch_idx.max().item() + 1
+        x_ = x.view(B, -1, 3)
+        y_ = y.view(B, -1, 3)
+        atomic_numbers_ = atomic_numbers.view(B, -1)
+        x_embed, y_embed = invariant_distance_embedder(x_, y_, atomic_numbers_)
+    return x_embed, y_embed
 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -129,15 +200,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Dataset setup
 # dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
 # dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
-# dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
-dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
+# dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
 data_folder = "qm9" if dataset_name.startswith("qm9") else "transition1x_eq"
 
 split_identifier = None
 # split_identifier = "debug"
-
-augment_with_rotations = False
-augment_with_permutations = False
 
 dataset = MoleculeDataset(
     source=dataset_name,
@@ -145,53 +213,67 @@ dataset = MoleculeDataset(
     split="train",
     identifier="identifier" if dataset_name.startswith("qm9") else "rxn",
     split_identifier=split_identifier,
-    augment_with_rotations=augment_with_rotations,
-    augment_with_permutations=augment_with_permutations,
 )
 
 model_type = "painn"
-aligned = True
-permuted = True
-brute_force_permutations = True
 model_dict = {
-    "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),
+    "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),# PaiNN(),#PaiNN(sphere_channels=256,num_layers=6), PaiNN(sphere_channels=256,num_layers=9),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
+    "gvp": GVPModel(sphere_channels=256,num_layers=9, max_radius=11.0),
 }
 model = model_dict[model_type]
 model.to(device)
 
-print(f"Dataset: {dataset_name}, Model: {model_type}, Aligned: {aligned}, Permuted: {permuted}, Brute-force permutations: {brute_force_permutations}, Augment with rotations: {augment_with_rotations}, Augment with permutations: {augment_with_permutations}")
+print(f"Dataset: {dataset_name}, Model: {model_type}, ")
 
+embedder_type = "distance"
+if embedder_type == "gm":
+    #! GM descriptor
+    n_radial = 4
+    n_basis = 4
+    n_contr = 4 # distances # 8 distances + angle
+    gm_descriptor = GaussianMomentDescriptor(
+        n_radial=n_radial, n_basis=n_basis, max_radius=6.0, n_contr=n_contr, use_atom_type_embeddings=True
+    )
+    gm_descriptor.to(device)
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": model.parameters(), "lr": 1e-4},
+            {"params": gm_descriptor.parameters(), "lr": 1e-4},
+        ],
+        weight_decay=0.0
+    )
+    embedder_str = f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
+elif embedder_type == "distance":
+    #! Invariant distance embedder
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    embedder_str = "embedder_distance"
+
+only_pos_drift = True
+drift_str = ""
+if split_identifier is None:
+    drift_str = "pos_drift" if only_pos_drift else "full_drift"
+    
 normalize_drift = True
 temperatures = [0.05]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}"
+outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
-drifting_field = EquivariantDriftingField(
+drifting_field = DriftingField(
     temperatures=temperatures,
-    aligned=aligned,
-    permuted=permuted,
-    brute_force_permutations=brute_force_permutations,
     normalize_drift=normalize_drift,
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 
-# In case of brute-force we just want to sample one target to make the alignment cheaper
-if brute_force_permutations:
-    batch_size_pos = min(len(dataset), 64)
-    batch_size_neg = 64
-else:
-    batch_size_pos = 64
-    batch_size_neg = 64
-
+batch_size = 64
 batch_sampler = CompositionBatchSampler(
     dataset,
     k=1,  # number of chunks per batch
-    n=batch_size_pos,  # chunk size (number of samples per chunk)
+    n=batch_size,  # chunk size (number of samples per chunk)
     shuffle=True,
     drop_last=False,
     resample=True,
@@ -204,7 +286,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 9000
+n_steps = 75000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -217,50 +299,47 @@ for epoch in pbar:
         batch = batch.to(device)
         y = batch.pos.clone()
         batch.pos_orig = y.clone()
-
-        # Sample noise
-        # if less positive samples than required negatve samples, repeat positive 
-        # samples until we have enough
-        if batch_size_pos < batch_size_neg:
-            n_repeat = batch_size_neg // batch.num_graphs
-            batch_neg = create_batch_object(batch, n_samples=n_repeat)
-            target_y = y.repeat(n_repeat,1)
-        else:
-            # Sample bz negative samples
-            batch_neg = batch.clone()
-            z = sample_noise_like(batch.pos, batch.batch)
-            batch_neg.pos = z
-            target_y = y
+        
+        # Sample bz negative samples
+        batch = batch.clone()
+        z = sample_noise_like(batch.pos, batch.batch)
+        batch.pos = z
 
         # Call the model
-        x = model(batch_neg)
+        x = model(batch)
+        
+        if x.isnan().any():
+            raise ValueError("NaN detected in model output.")
+        
+        # Encode samples and targets
+        x_embedded, y_embedded = embedder_fn(
+            embedder_type, x, y, batch.x, batch.edge_index, batch.batch
+        )
+        
+        if x_embedded.isnan().any():
+            raise ValueError("NaN detected in embedded model output.")
+        
         
         # Call the drift
         V, drift_pos, drift_neg, *_ = drifting_field(
-            x.detach(), # avoid unnecessary gradient tracking
-            y,
-            x.detach(), # avoid unnecessary gradient tracking
-            batch.num_atoms[0],
-            atomic_numbers=batch.x,
+            x_embedded.detach(),
+            y_embedded,
+            x_embedded.detach(),
         )
-            
-        # In case of many to one, use regression task (with alignment)
-        if split_identifier == "debug":
+        
+        if split_identifier == "debug" or only_pos_drift:
             v_pos = drift_pos[0]
             v_norm = torch.sqrt(torch.mean(v_pos**2))
             v_pos = v_pos / (v_norm + 1e-8)
-            x_drifted = (x + v_pos.view(-1,3)).detach()
+            x_drifted = (x_embedded + v_pos).detach()
         else:
-            x_drifted = (x + V).detach()
-        
-        # Compute RMSD loss
-        loss = get_rmsd_batched(
-            x.view(n_repeat*batch_size_pos, -1, 3),
-            x_drifted.view(n_repeat*batch_size_pos, -1, 3),
-        ).mean()
+            x_drifted = (x_embedded + V).detach()
+        loss = torch.nn.functional.mse_loss(x_embedded, x_drifted)
         loss.backward()
-
+        
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if embedder_type == "gm":
+            torch.nn.utils.clip_grad_norm_(gm_descriptor.parameters(), max_norm=1.0)
 
         optimizer.step()
         losses.append(loss.item())
@@ -270,7 +349,7 @@ for epoch in pbar:
                 "loss": loss.item(),
                 "mse(V)": torch.sqrt(torch.mean(V**2)).item(),
                 "mse(pos_drift)": torch.sum(torch.sqrt(torch.mean(drift_pos**2, dim=(1,2)))).item(), 
-                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1,2)))).item(),   
+                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1,2)))).item(),
             }
         )
 
@@ -279,25 +358,22 @@ for epoch in pbar:
             # which will result in 1000 samples overall
             n_samples = 1000 // batch.num_graphs 
             visualize(
-                model, batch, current_step=step_count, n_samples=n_samples, outdir=outdir
+                model, batch, current_step=step_count, n_samples=n_samples, outdir=outdir, y_embedded=y_embedded.cpu()
             )
         step_count += 1
 
     # Update learning rate scheduler at the end of each epoch
     scheduler.step()
-            
-    # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
-    #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
 n_samples = 1000 // batch.num_graphs
-atoms_samples =visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
+atoms_samples = visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir, y_embedded=y_embedded.cpu())
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 
 data_atoms = []
 batch_sampler = CompositionBatchSampler(
     dataset,
     k=1,
-    n=batch_size_pos,
+    n=batch_size,
     shuffle=False,
     drop_last=False,
     resample=False,
@@ -313,3 +389,7 @@ for metric_name in metrics_dataset.keys():
     print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
 with open(f"{plot_dir}/metrics.json", "w") as f:
     json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)
+    
+    
+    
+    
