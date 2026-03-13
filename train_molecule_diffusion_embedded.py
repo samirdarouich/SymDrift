@@ -15,6 +15,58 @@ from torch_geometric.nn import global_mean_pool
 import json
 import numpy as np
 from ase.io import write
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+from torch_geometric.data import Data
+
+def create_batch_object(batch, n_samples):
+    
+    batch_sampling = Data()
+    # Sample prior noise
+    n_atoms = batch.num_atoms[0].item()
+    d = batch.pos.shape[1]
+
+    # Sample each sample in the batch n_samples times
+    B = batch.batch.max().item() + 1
+    total_samples = B * n_samples
+    
+    batch_ = torch.arange(total_samples, device=device).repeat_interleave(n_atoms)
+    dummy = torch.zeros((total_samples * n_atoms, d), dtype=torch.float, device=device)
+    num_atoms = batch.num_atoms[0].repeat(total_samples)
+
+    orig_pos = batch.pos
+    orig_pos.view(B,n_atoms, d)
+    orig_pos_expanded = orig_pos.unsqueeze(1).repeat(1, n_samples, 1, 1)  # (B, n_samples, n_atoms, d)
+    orig_pos_expanded = orig_pos_expanded.view(total_samples * n_atoms, d)
+    batch_sampling.pos_gt = orig_pos_expanded
+    
+    # repeat the atomic numbers for each sample
+    x_reshaped = batch.x.view(B, n_atoms)          # (B, n_atoms)
+    x_expanded = x_reshaped.unsqueeze(1).repeat(1, n_samples, 1)  # (B, n_samples, n_atoms)
+    x_expanded = x_expanded.reshape(B * n_samples * n_atoms)
+
+    z = sample_noise_like(dummy, batch_)
+    
+    batch_sampling.pos = z
+    batch_sampling.batch = batch_
+    batch_sampling.x = x_expanded
+    batch_sampling.num_atoms = num_atoms
+    return batch_sampling
+
+def cov_mat(gen_emb, ref_emb, threshold):
+    """
+    Returns coverage and matching metrics.
+    """
+    D = torch.cdist(ref_emb, gen_emb)
+    # for each reference point, find the closest generated point
+    min_dist = D.min(dim=1).values
+    # if the closest generated point is within the threshold, it's covered
+    cov = (min_dist < threshold).float().mean()
+    
+    # matching metric: average distance to closest generated point (lower is better)
+    mat = min_dist.mean()
+
+    return cov, mat
 
 def invariant_distance_embedder(xs, ys, atomic_numbers):
     """
@@ -119,8 +171,9 @@ def edm_sampler(
 
 def visualize_samples(model, dataloader, outdir, epoch):
     # sample one batch
-    data = next(iter(dataloader)).to(device)
-    gt = data.pos.clone()
+    batch = next(iter(dataloader)).to(device)
+    data = create_batch_object(batch, n_samples=1000//batch.num_graphs)
+    gt = data.pos_gt.clone()
     with torch.no_grad():
         prediction = edm_sampler(model, data, seed=42)
     
@@ -150,6 +203,29 @@ def visualize_samples(model, dataloader, outdir, epoch):
     write(f"{outdir}/noise.png", atoms_noise[0])
     write(f"{outdir}/epoch_{epoch}.png", atoms[0])
     write(f"{outdir}/epoch_{epoch}.xyz", atoms)
+    
+    
+    prediction_embed, gt_embed = embedder_fn(embedder_type, prediction, gt, data.x, data.edge_index, data.batch)
+    
+    gt_embed = torch.nn.functional.normalize(gt_embed, dim=-1)
+    prediction_embed = torch.nn.functional.normalize(prediction_embed, dim=-1)
+    threshold = torch.quantile(gt_embed, 0.1)
+    cov, mat = cov_mat(prediction_embed, gt_embed, threshold=threshold)
+
+    pca = PCA(n_components=2)
+    y_2d = pca.fit_transform(gt_embed)
+    x_2d = pca.transform(prediction_embed)
+
+    plt.figure(figsize=(8, 6))
+    plt.title(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}, Cov: {cov:.4f}, Mat: {mat:.4f}")
+    plt.scatter(x_2d[:, 0], x_2d[:, 1], alpha=0.75, color="red", label="predictions")
+    plt.scatter(y_2d[:, 0], y_2d[:, 1], alpha=0.75, color="blue", label="target")
+    plt.xlabel("Component 1")
+    plt.ylabel("Component 2")
+    plt.legend()
+    plt.savefig(f"{plot_dir}/epoch_{epoch}_pca.png")
+    plt.close()
+    
     with open(f"{plot_dir}/epoch_{epoch}_stats.json", "w") as f:
         json.dump({
             "rmsd": {
@@ -268,8 +344,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Dataset setup
 # dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
 # dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
-# dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
-dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
+# dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+# dataset_name = "qm9_C5H4N2O2" #! 13 ATOMS
 data_folder = "qm9" if dataset_name.startswith("qm9") else "transition1x_eq"
 
 split_identifier = None
@@ -317,7 +394,7 @@ if embedder_type == "gm":
 
     optimizer = torch.optim.AdamW(
         [
-            {"params": model.parameters(), "lr": 1e-4},
+            {"params": model.parameters(), "lr": 5e-5},
             {"params": gm_descriptor.parameters(), "lr": 1e-4},
         ],
         weight_decay=0.0
@@ -325,7 +402,7 @@ if embedder_type == "gm":
     embedder_str = f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
 elif embedder_type == "distance":
     #! Invariant distance embedder
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.0)
     embedder_str = "embedder_distance"
 
 outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/diffuson_baseline/{embedder_str}"

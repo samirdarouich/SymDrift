@@ -20,6 +20,20 @@ from sklearn.decomposition import PCA
 
 logging.basicConfig(level=logging.INFO)
 
+def cov_mat(gen_emb, ref_emb, threshold):
+    """
+    Returns coverage and matching metrics.
+    """
+    D = torch.cdist(ref_emb, gen_emb)
+    # for each reference point, find the closest generated point
+    min_dist = D.min(dim=1).values
+    # if the closest generated point is within the threshold, it's covered
+    cov = (min_dist < threshold).float().mean()
+    
+    # matching metric: average distance to closest generated point (lower is better)
+    mat = min_dist.mean()
+
+    return cov, mat
 
 def invariant_distance_embedder(xs, ys, atomic_numbers):
     """
@@ -122,7 +136,7 @@ def sample(model, batch, n_samples):
 
     rmsd = get_rmsd_batched(
         x_sample, x_target, atomic_numbers=batch_sampling.x.view(-1, n_atoms),
-        align=True, permute=True, brute_force_permutations=True
+        align=True, permute=True, brute_force_permutations=False
     )
     
     x_embedded, _ = embedder_fn(embedder_type, x, x, batch_sampling.x, batch_sampling.edge_index, batch_sampling.batch)
@@ -153,23 +167,21 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None, y_embedde
         write(f"{plot_dir}/noise.xyz", atoms_noise)
         write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
-        with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
-            json.dump({
-                "rmsd": {
-                    "mean": rmsd.mean().item(),
-                    "median": rmsd.median().item()
-                },
-                **metrics_generated
-            }, f, indent=4)
         print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}; Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
     plt.close()
     if y_embedded is not None:
+        
+        y_embedded = torch.nn.functional.normalize(y_embedded, dim=-1)
+        x_embedded = torch.nn.functional.normalize(x_embedded, dim=-1)
+        threshold = torch.quantile(y_embedded, 0.1)
+        cov, mat = cov_mat(x_embedded, y_embedded, threshold=threshold)
+
         pca = PCA(n_components=2)
         y_2d = pca.fit_transform(y_embedded)
         x_2d = pca.transform(x_embedded)
         
         plt.figure(figsize=(8, 6))
-        plt.title(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+        plt.title(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}, Cov: {cov:.4f}, Mat: {mat:.4f}")
         plt.scatter(x_2d[:, 0], x_2d[:, 1], alpha=0.75, color="red", label="predictions")
         plt.scatter(y_2d[:, 0], y_2d[:, 1], alpha=0.75, color="blue", label="target")
         plt.xlabel("Component 1")
@@ -177,6 +189,18 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None, y_embedde
         plt.legend()
         plt.savefig(f"{plot_dir}/step_{step_str}_pca.png")
         plt.close()
+        
+        metrics_generated["cov"] = cov.item()
+        metrics_generated["mat"] = mat.item()
+        
+    with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
+            json.dump({
+                "rmsd": {
+                    "mean": rmsd.mean().item(),
+                    "median": rmsd.median().item()
+                },
+                **metrics_generated
+            }, f, indent=4)
     return atoms_samples
 
 def embedder_fn(embedder_type, x, y, atomic_numbers, edge_index, batch_idx):
@@ -200,8 +224,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Dataset setup
 # dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
 # dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
-dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
+# dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
 # dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+dataset_name = "qm9_C5H4N2O2" #! 13 ATOMS
 data_folder = "qm9" if dataset_name.startswith("qm9") else "transition1x_eq"
 
 split_identifier = None
@@ -226,7 +251,7 @@ model.to(device)
 
 print(f"Dataset: {dataset_name}, Model: {model_type}, ")
 
-embedder_type = "distance"
+embedder_type = "gm"
 if embedder_type == "gm":
     #! GM descriptor
     n_radial = 4
@@ -239,7 +264,7 @@ if embedder_type == "gm":
 
     optimizer = torch.optim.AdamW(
         [
-            {"params": model.parameters(), "lr": 1e-4},
+            {"params": model.parameters(), "lr": 5e-5},
             {"params": gm_descriptor.parameters(), "lr": 1e-4},
         ],
         weight_decay=0.0
@@ -247,7 +272,7 @@ if embedder_type == "gm":
     embedder_str = f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
 elif embedder_type == "distance":
     #! Invariant distance embedder
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.0)
     embedder_str = "embedder_distance"
 
 only_pos_drift = True

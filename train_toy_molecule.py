@@ -131,8 +131,8 @@ pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
 model_type = "painn"
-aligned = True
-permuted = True
+aligned = False
+permuted = False
 brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(
@@ -218,7 +218,13 @@ for epoch in pbar:
         )
         V = torch.cat([V, torch.zeros_like(V[..., :1])], dim=-1)
 
-        x_drifted = (x + V).detach()
+        v_pos = drift_pos[0]
+        v_norm = torch.sqrt(torch.mean(v_pos**2))
+        v_pos = v_pos / (v_norm + 1e-8)
+        v_pos = torch.cat([v_pos, torch.zeros_like(v_pos[..., :1])], dim=-1)
+        x_drifted = (x + v_pos.view(-1,3)).detach()
+            
+        # x_drifted = (x + V).detach()
 
         loss = torch.nn.functional.mse_loss(x, x_drifted)
         loss.backward()
