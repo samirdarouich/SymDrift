@@ -9,6 +9,7 @@ import logging
 from collections import defaultdict
 from typing import Optional
 from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM, FeaturizeMolecule
+from tspath.utils import inputs_to_atoms
 
 logger = logging.getLogger(__name__)
 
@@ -105,3 +106,15 @@ class MoleculeDataset(InMemoryDataset):
         # Sort data_list by identifier key
         data_list.sort(key=lambda data: data.identifier.item())
         torch.save(self.collate(data_list), self.processed_paths[0])
+        
+    def get_ase_atoms(self, idx):
+        data = self.get(idx)
+        atoms = inputs_to_atoms(data)
+        return atoms
+    
+    def get_dataset_as_atoms(self):
+        atoms_list = []
+        for idx in range(len(self)):
+            atoms = self.get_ase_atoms(idx)
+            atoms_list.append(atoms)
+        return atoms_list

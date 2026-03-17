@@ -196,8 +196,17 @@ class DriftingField(torch.nn.Module):
         if self.normalize_drift:
             # normalize each temperature's V to have same norm
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2)))  # (T)
+            v_pos_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2)))  # (T)
+            v_neg_norm = torch.sqrt(torch.mean(drift_neg**2, dim=(1, 2)))  # (T)
+            
             V = V / (v_norm[:, None, None] + 1e-8)
-        V = V.sum(dim=0)  # sum over temperatures to get final V of shape (N, D)
+            drift_pos = drift_pos / (v_pos_norm[:, None, None] + 1e-8)
+            drift_neg = drift_neg / (v_neg_norm[:, None, None] + 1e-8)
+        
+        # sum over temperatures to get final V of shape (N, D)
+        V = V.sum(dim=0)
+        drift_pos = drift_pos.sum(dim=0)
+        drift_neg = drift_neg.sum(dim=0)
 
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg
 
@@ -359,9 +368,17 @@ class EquivariantDriftingField(torch.nn.Module):
         if self.normalize_drift:
             # normalize each temperature's V to have same norm
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2, 3)))  # (T)
+            v_pos_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2, 3)))  # (T)
+            v_neg_norm = torch.sqrt(torch.mean(drift_neg**2, dim=(1, 2, 3)))  # (T)
+            
             V = V / (v_norm[:, None, None, None] + 1e-8)
+            drift_pos = drift_pos / (v_pos_norm[:, None, None, None] + 1e-8)
+            drift_neg = drift_neg / (v_neg_norm[:, None, None, None] + 1e-8)
+        
         # sum over temperatures to get final V of shape (N, n_atoms, d)
         V = V.sum(dim=0)
+        drift_pos = drift_pos.sum(dim=0)
+        drift_neg = drift_neg.sum(dim=0)
 
         # Norming each V before combining equally weights each temperature's contribution
         # to the final drift. This also means, that the overall drift direction is different
@@ -370,5 +387,7 @@ class EquivariantDriftingField(torch.nn.Module):
 
         # 9. reshape V to (N*n_atoms, d)
         V = V.view_as(x)
+        drift_pos = drift_pos.view_as(x)
+        drift_neg = drift_neg.view_as(x)
 
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg

@@ -201,7 +201,9 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
         reference structures (B, n_atoms, d)
     atomic_numbers : array
         atomic numbers of each atom in target structure, used to only permute within
-        same atomic number (B, n_atoms)
+        same atomic number (B, n_atoms). ! This assumes that x and y do have the same 
+        atomic number ordering, if not the algorithm will do incorrect permutations 
+        between different atom types.
     max_iter : int
         maximum number of iterations to perform
     tol : float
@@ -271,7 +273,7 @@ def get_rmsd_batched_scatter(xi, xj, batch, align=False):
     rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
     return rmsd
 
-def get_rmsd_batched(x, y, align=False, permute=False, atomic_numbers=None, brute_force_permutations=False):
+def get_rmsd_batched(x, y, atomic_numbers=None, align=False, permute=False, brute_force_permutations=False):
     """
     Compute RMSD between two batches of structures x and y, where x and y are of shape
     (B, N, d). The RMSD is computed for each pair of structures in the batch.

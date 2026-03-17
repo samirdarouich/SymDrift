@@ -18,6 +18,7 @@ __all__ = [
     "get_canonical_elementwise_permutations",
     "get_brute_force_permutations",
     "get_x_y_pairs",
+    "inputs_to_atoms",
     "batch_inputs_to_atoms",
     "sample_noise",
     "sample_noise_like",
@@ -210,6 +211,24 @@ def get_x_y_pairs(x, y, atomic_numbers=None):
     
     return x_flat, y_flat, atomic_numbers_b
 
+def inputs_to_atoms(inputs, pos_key='pos', info_keys=[]):
+    """
+    Converts a single input to an ASE Atoms object.
+
+    Args:
+        inputs: The input in PyTorch geometric format.
+        pos_key (str): The key in the input that contains the positions.
+    Returns:
+        Atoms: The ASE Atoms object.
+    """
+    R = inputs[pos_key].detach().cpu().numpy()
+    Z = inputs.x.detach().cpu().numpy()
+    info = {}
+    for key in info_keys:
+        if hasattr(inputs, key):
+            info[key] = getattr(inputs, key).item()
+    atoms = Atoms(positions=R, numbers=Z, info=info)
+    return atoms
 
 def batch_inputs_to_atoms(batch, pos_key='pos', info_keys=[]):
     """

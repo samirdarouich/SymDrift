@@ -411,7 +411,8 @@ plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
 
-n_epochs = 15000 * 5
+n_steps = 500_000
+n_epochs = n_steps // len(dataloader)
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
 
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")

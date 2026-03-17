@@ -13,6 +13,33 @@ from ase.io import read
 import py3Dmol
 import torch
 from tspath.datasets import ToyMoleculeDataset
+import pandas as pd
+from multiprocessing import Pool
+from functools import partial
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+
+__all__ = [
+    "generate_bonds_data",
+    "check_validity",
+    "get_validity",
+    "pymatgen_rmse",
+    "pymatgen_match",
+    "visualize_atoms_list",
+    "visualize_reaction",
+    "evaluate_toy",
+    "calc_coverage_recall",
+    "calc_coverage_precision",
+    "calc_amr_recall",
+    "calc_amr_precision",
+    "print_covmat_results",
+    "evaluate_covmat",
+    "worker_fn_rmsd",
+    "worker_fn_rmsd_wo_h",
+    "worker_fn_distance",
+    "distance_embedder",
+    "pca_plot",
+]
 
 # from https://github.com/ehoogeboom/e3_diffusion_for_molecules
 bonds1 = {
@@ -414,7 +441,7 @@ def pymatgen_rmse(
 
 def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_order=False):
     mol_pred = Molecule(
-            species=ref.numbers,
+            species=sample.numbers,
             coords=sample.positions,
         )
     mol_ref = Molecule(
@@ -432,8 +459,10 @@ def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_orde
     
     # pymatgen computes rmse instead of rmsd
     rmsd = rmse * 3**0.5
-    
+
+    # sample is aligned and permuted to match ref
     aligned_sample = sample.copy()
+    aligned_sample.numbers = ref.numbers
     aligned_sample.positions = aligned.cart_coords
     return rmsd, aligned_sample
 
@@ -557,3 +586,224 @@ def evaluate_toy(samples, dataset_name, **dataset_kwargs):
     mse = ((ref_sorted - pairwise_sorted) ** 2).mean()
 
     return mse.item()
+
+# code from https://github.com/ML4MolSim/dit_mc/blob/main/dit_mc/evaluate.py
+
+def calc_coverage_recall(rmsd_array, thresholds):
+    """
+    Compute coverage recall (COV-R) for a set of generated conformers.
+
+    Coverage recall measures the fraction of reference conformers that are
+    successfully reproduced by at least one generated conformer within a given
+    RMSD threshold.
+
+    For each reference conformer, the minimum RMSD to any generated conformer
+    is computed. A reference conformer is considered "covered" if this minimum
+    RMSD is below the specified threshold.
+    """
+    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1, keepdims=True) # (num_confs, 1)
+    hits_per_conf = min_rmsd_per_conf < thresholds # (num_confs, num_thresholds)
+    coverage_recall = np.mean(hits_per_conf, axis=0) # (num_thresholds,)
+    return coverage_recall
+
+
+def calc_coverage_precision(rmsd_array, thresholds):
+    """
+    Compute coverage precision (COV-P) for a set of generated conformers.
+
+    Coverage precision measures the fraction of generated conformers that
+    correspond to at least one reference conformer within a given RMSD
+    threshold.
+
+    For each generated conformer, the minimum RMSD to any reference conformer
+    is computed. A generated conformer is considered valid if this minimum
+    RMSD is below the specified threshold.
+    """
+    thresholds = np.expand_dims(thresholds, 1) # (num_thresholds, 1)
+    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0, keepdims=True) # (1, num_preds)
+    hits_per_pred = min_rmsd_per_pred < thresholds # (num_thresholds, num_preds)
+    coverage_precision = np.mean(hits_per_pred, axis=1) # (num_thresholds,)
+    return coverage_precision
+
+
+def calc_amr_recall(rmsd_array):
+    """
+    Compute the average minimum RMSD with respect to reference conformers
+    (AMR-R).
+
+    For each reference conformer, the minimum RMSD to any generated conformer
+    is computed. The metric reports the average of these minimum distances.
+    """
+    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1) # (num_confs,)
+    amr_recall = np.mean(min_rmsd_per_conf) # ()
+    return amr_recall
+
+
+def calc_amr_precision(rmsd_array):
+    """
+    Compute the average minimum RMSD with respect to generated conformers
+    (AMR-P).
+
+    For each generated conformer, the minimum RMSD to any reference conformer
+    is computed. The metric reports the average of these minimum distances.
+    """
+    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0) # (num_preds,)
+    amr_precision = np.mean(min_rmsd_per_pred) # ()
+    return amr_precision
+
+def print_covmat_results(results, step, threshold):
+
+    df = pd.DataFrame.from_dict(
+        {
+            "Threshold": results["thresholds"],
+            "COV-R_mean": np.mean(results["CoverageR"], 0),
+            "COV-R_median": np.median(results["CoverageR"], 0),
+            "COV-P_mean": np.mean(results["CoverageP"], 0),
+            "COV-P_median": np.median(results["CoverageP"], 0),
+        }
+    )
+
+    mask = np.abs(results['thresholds'] - threshold) < 1e-6
+
+    metrics = {
+        "epoch": np.array([step]),
+        "threshold": results["thresholds"][mask],
+        "COV-R_mean": df["COV-R_mean"][mask].to_numpy(), # xxx of reference conformers are recovered within the RMSD threshold. --> 1-xxx are missed conformers.
+        "COV-R_median": df["COV-R_median"][mask].to_numpy(),
+        "COV-P_mean": df["COV-P_mean"][mask].to_numpy(), # Every generated conformer matches a reference conformer within the threshold.
+        "COV-P_median": df["COV-P_median"][mask].to_numpy(),
+        "MAT-R_mean": np.mean(results["MatchingR"]), # On average, each reference conformer has a generated one within xxx Å RMSD.
+        "MAT-R_median": np.median(results["MatchingR"]),
+        "MAT-P_mean": np.mean(results["MatchingP"]), # If low, every generated conformer is almost identical to a reference one.
+        "MAT-P_median": np.median(results["MatchingP"]),
+    }
+
+    return df, metrics
+
+def worker_fn_rmsd(job):
+    i, j, ref_i, pred_j, same_order = job
+    rmsd, _ = pymatgen_match(ref_i, pred_j, same_order=same_order)
+    return i, j, rmsd
+
+def worker_fn_rmsd_wo_h(job):
+    i, j, ref_i, pred_j, same_order = job
+    ref_i_woh = ref_i.copy()
+    pred_j_woh = pred_j.copy()
+    del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol=='H']]
+    del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol=='H']]
+    rmsd, _ = pymatgen_match(ref_i_woh, pred_j_woh, same_order=same_order)
+    return i, j, rmsd
+
+def worker_fn_distance(job):
+    i, j, ref_i, pred_j, same_order = job
+    pos_i = ref_i.positions
+    pos_j = pred_j.positions
+    distance = torch.cdist(torch.tensor(pos_i), torch.tensor(pos_j))
+    if same_order:
+        rmse = torch.sqrt((distance**2).mean()).item()
+    else:
+        Z = torch.tensor(ref_i.numbers)
+        unique_types = torch.unique(Z)
+        d = []
+        for Zi in unique_types:
+            for Zj in unique_types:
+                mask_i = (Z == Zi)[:, None]  # (N,1)
+                mask_j = (Z == Zj)[None, :]  # (1,N)
+                pair_mask = mask_i & mask_j     # (N,N)
+                d_ = distance[pair_mask].view(1, -1)
+                d_ = torch.sort(d_, dim=1)[0]
+                d.append(d_)
+        d = torch.cat(d, dim=1)
+        rmse = torch.sqrt((d**2).mean()).item()
+    return i, j, rmse
+
+WORKER_FN_DICT = {
+    "rmsd": worker_fn_rmsd,
+    "distance": worker_fn_distance,
+    "rmsd_wo_h": worker_fn_rmsd_wo_h,
+}
+    
+def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, worker_fn_type="rmsd"):
+    
+    num_confs = len(refs)
+    num_preds = len(preds)
+    rmsd_results = np.zeros((num_confs, num_preds))
+    
+    def populate_results(res):
+        i, j, rmsd_val = res
+        rmsd_results[i, j] = rmsd_val
+        
+    jobs = []
+    for i in range(num_confs):
+        for j in range(num_preds):
+            jobs.append((i, j, refs[i], preds[j], same_order))
+
+    if num_workers > 1:
+        p = Pool(num_workers)
+        map_fn = partial(p.imap_unordered, chunksize=64)
+        p.__enter__()
+    else:
+        map_fn = map
+
+    for res in tqdm(map_fn(WORKER_FN_DICT[worker_fn_type], jobs), total=len(jobs), desc="Computing RMSD matrix"):
+        populate_results(res)
+            
+    coverage_recall = calc_coverage_recall(rmsd_results, thresholds)
+    coverage_precision = calc_coverage_precision(rmsd_results, thresholds)
+    amr_recall = calc_amr_recall(rmsd_results)
+    amr_precision = calc_amr_precision(rmsd_results)
+
+    results = {
+        "thresholds": np.array(thresholds),
+        "CoverageR": coverage_recall,
+        "CoverageP": coverage_precision,
+        "MatchingR": amr_recall,
+        "MatchingP": amr_precision,
+    }
+
+    return results
+
+def distance_embedder(pos, Z=None, invariant=False):
+    distance = torch.cdist(pos, pos)
+    if invariant:
+        unique_types = torch.unique(Z)
+        d = []
+        for Zi in unique_types:
+            for Zj in unique_types:
+                mask_i = (Z == Zi)[:, :, None]  # (B, N,1)
+                mask_j = (Z == Zj)[:, None, :]  # (B, 1,N)
+                pair_mask = mask_i & mask_j     # (B, N, N)
+                d_ = distance[pair_mask].view(distance.shape[0], -1)
+                d_ = torch.sort(d_, dim=1)[0]
+                d.append(d_)
+        d = torch.cat(d, dim=1)
+        return d
+    else:
+        return distance.view(distance.shape[0], -1)
+    
+def pca_plot(ref, samples, embedding_style="invariant_distance", save_path=None):
+    if "distance" in embedding_style:
+        invariant = "invariant" in embedding_style
+        ref_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in ref]).float()
+        ref_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in ref]).float()
+        samples_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in samples]).float()
+        samples_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in samples]).float()
+        ref_emb = distance_embedder(ref_pos, ref_atomic_numbers, invariant)
+        samples_emb = distance_embedder(samples_pos, samples_atomic_numbers, invariant)
+        
+    pca = PCA(n_components=2)
+    y_2d = pca.fit_transform(ref_emb)
+    x_2d = pca.transform(samples_emb)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    fig.suptitle(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+    ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
+    ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")
+    ax.legend()
+    ax.set_xlabel("Component 1")
+    ax.set_ylabel("Component 2")
+    fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path)
+    plt.close()
+    

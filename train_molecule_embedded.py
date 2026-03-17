@@ -7,10 +7,10 @@ from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import MoleculeDataset, CompositionBatchSampler
 from tspath.generative import DriftingField
-from tspath.model import EGNN, PaiNN, GVPModel, GaussianMomentDescriptor
+from tspath.model import EGNN, PaiNN, GVPModel, GaussianMomentDescriptor, MLP
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched
-from tspath.analysis import get_validity
+from tspath.analysis import get_validity, distance_embedder, pca_plot
 from torch_geometric.data import Data
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import logging
@@ -34,56 +34,6 @@ def cov_mat(gen_emb, ref_emb, threshold):
     mat = min_dist.mean()
 
     return cov, mat
-
-def invariant_distance_embedder(xs, ys, atomic_numbers):
-    """
-    xs, ys: (B, N, 3)
-    atomic_numbers: (B, N)
-
-    returns:
-        scalar loss
-    """
-
-    B, N, _ = xs.shape
-    
-    
-    # Pairwise distance matrices
-    Dx = torch.cdist(xs, xs)  # (B,N,N)
-    Dy = torch.cdist(ys, ys)  # (B,N,N)
-
-    Z = atomic_numbers
-
-    unique_types = torch.unique(Z)
-
-    dxs = []
-    dys = []
-    for Zi in unique_types:
-        for Zj in unique_types:
-
-            mask_i = (Z == Zi)[:, :, None]  # (B,N,1)
-            mask_j = (Z == Zj)[:, None, :]  # (B,1,N)
-
-            pair_mask = mask_i & mask_j     # (B,N,N)
-            # n_interactions = pair_mask.sum().item() // B
-
-            # i, j = torch.triu_indices(n_interactions, n_interactions, offset=min(1, n_interactions - 1), device=device)
-
-            # # flatten pair distances
-            # dx = Dx[pair_mask].view(B,n_interactions,n_interactions)[:,i,j]
-            # dy = Dy[pair_mask].view(B,n_interactions,n_interactions)[:,i,j]
-            dx = Dx[pair_mask].view(B, -1)
-            dy = Dy[pair_mask].view(B, -1)
-
-            dx = torch.sort(dx, dim=1)[0]
-            dy = torch.sort(dy, dim=1)[0]
-
-            dxs.append(dx)
-            dys.append(dy)
-
-    dxs = torch.cat(dxs, dim=1)
-    dys = torch.cat(dys, dim=1)
-
-    return dxs, dys
 
 def create_batch_object(batch, n_samples):
     
@@ -153,7 +103,7 @@ def sample(model, batch, n_samples):
     return atoms_samples, atoms_noise, rmsd, x_embedded.cpu()
 
         
-def visualize(model, batch, current_step, n_samples=None, outdir=None, y_embedded=None):
+def visualize(model, batch, current_step, n_samples, outdir=None, y_embedded=None):
     step = current_step
     atoms_samples, atoms_noise, rmsd, x_embedded = sample(model, batch, n_samples=n_samples)
     metrics_generated = get_validity(atoms_samples)
@@ -215,7 +165,8 @@ def embedder_fn(embedder_type, x, y, atomic_numbers, edge_index, batch_idx):
         x_ = x.view(B, -1, 3)
         y_ = y.view(B, -1, 3)
         atomic_numbers_ = atomic_numbers.view(B, -1)
-        x_embed, y_embed = invariant_distance_embedder(x_, y_, atomic_numbers_)
+        x_embed = distance_embedder(x_, atomic_numbers_, invariant=True)
+        y_embed = distance_embedder(y_, atomic_numbers_, invariant=True)
     return x_embed, y_embed
 
 torch.manual_seed(42)
@@ -225,8 +176,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # dataset_name = "t1x_eq_CHN3O" #! 6 ATOMS
 # dataset_name = "t1x_eq_C3H2N2O2" #! 9 ATOMS
 # dataset_name = "t1x_eq_C5H8O" #! 14 ATOMS
-# dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
-dataset_name = "qm9_C5H4N2O2" #! 13 ATOMS
+dataset_name = "qm9_C3H2N2O2" #! 9 ATOMS
+# dataset_name = "qm9_C5H4N2O2" #! 13 ATOMS
 data_folder = "qm9" if dataset_name.startswith("qm9") else "transition1x_eq"
 
 split_identifier = None
@@ -240,11 +191,15 @@ dataset = MoleculeDataset(
     split_identifier=split_identifier,
 )
 
+dataset_atoms = dataset.get_dataset_as_atoms()
+metrics_dataset = get_validity(dataset_atoms)
+
 model_type = "painn"
 model_dict = {
     "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),# PaiNN(),#PaiNN(sphere_channels=256,num_layers=6), PaiNN(sphere_channels=256,num_layers=9),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
     "gvp": GVPModel(sphere_channels=256,num_layers=9, max_radius=11.0),
+    "mlp": MLP(input_dim=4*9, hidden_dim=256, num_layers=9, output_dim=3*9), # d=4*n_atoms
 }
 model = model_dict[model_type]
 model.to(device)
@@ -311,7 +266,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 75000
+n_steps = 500_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -353,10 +308,7 @@ for epoch in pbar:
         )
         
         if split_identifier == "debug" or only_pos_drift:
-            v_pos = drift_pos[0]
-            v_norm = torch.sqrt(torch.mean(v_pos**2))
-            v_pos = v_pos / (v_norm + 1e-8)
-            x_drifted = (x_embedded + v_pos).detach()
+            x_drifted = (x_embedded + drift_pos).detach()
         else:
             x_drifted = (x_embedded + V).detach()
         loss = torch.nn.functional.mse_loss(x_embedded, x_drifted)
@@ -373,8 +325,8 @@ for epoch in pbar:
                 "step": step_count, 
                 "loss": loss.item(),
                 "mse(V)": torch.sqrt(torch.mean(V**2)).item(),
-                "mse(pos_drift)": torch.sum(torch.sqrt(torch.mean(drift_pos**2, dim=(1,2)))).item(), 
-                "mse(neg_drift)": torch.sum(torch.sqrt(torch.mean(drift_neg**2, dim=(1,2)))).item(),
+                "mse(pos_drift)": torch.sqrt(torch.mean(drift_pos**2)).item(), 
+                "mse(neg_drift)": torch.sqrt(torch.mean(drift_neg**2)).item(),
             }
         )
 
@@ -394,26 +346,18 @@ n_samples = 1000 // batch.num_graphs
 atoms_samples = visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir, y_embedded=y_embedded.cpu())
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 
-data_atoms = []
-batch_sampler = CompositionBatchSampler(
-    dataset,
-    k=1,
-    n=batch_size,
-    shuffle=False,
-    drop_last=False,
-    resample=False,
-    seed=42,
-)
-dataloader = GeometricDataLoader(dataset, batch_sampler=batch_sampler)
-for batch in dataloader:
-    atoms = batch_inputs_to_atoms(batch, "pos")
-    data_atoms.extend(atoms)
-metrics_dataset = get_validity(data_atoms)
 metrics_generated = get_validity(atoms_samples)
 for metric_name in metrics_dataset.keys():
     print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
 with open(f"{plot_dir}/metrics.json", "w") as f:
     json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)
+    
+pca_plot(
+    ref=dataset_atoms, 
+    samples=atoms_samples, 
+    embedding_style="invariant_distance", 
+    savedir=plot_dir
+)
     
     
     
