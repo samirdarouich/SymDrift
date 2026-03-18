@@ -263,7 +263,8 @@ class EquivariantDriftingField(torch.nn.Module):
         y_pos,
         y_neg,
         n_atoms,
-        atomic_numbers=None,
+        atomic_numbers_pos=None,
+        atomic_numbers_neg=None,
         temperatures=None,
         aligned=None,
         permuted=None,
@@ -274,7 +275,9 @@ class EquivariantDriftingField(torch.nn.Module):
         y_pos: (M*n_atoms, d)
         y_neg: (M*n_atoms, d)
         n_atoms: int
-        atomic_numbers: (M*n_atoms,) atomic numbers of each atom in target structure,
+        atomic_numbers_pos: (M*n_atoms,) atomic numbers of each atom in y_pos,
+            used to only permute within same atomic number (M*n_atoms,)
+        atomic_numbers_neg: (M*n_atoms,) atomic numbers of each atom in y_neg,
             used to only permute within same atomic number (M*n_atoms,)
         temperatures: (T,) array of temperatures to use for each drift field (optional, if provided overrides self.temperatures)
         aligned: bool (optional, if provided overrides self.aligned and updates distance function)
@@ -311,24 +314,26 @@ class EquivariantDriftingField(torch.nn.Module):
 
         # 1. Compute alignment-aware pairwise L2 distances and returns (N, N_pos/N_neg) RMSD
         # matrix and aligned difference y-x of shape (N, N_pos/N_neg, n_atoms, d)
-        atomic_numbers_neg = None
-        if atomic_numbers is not None:
-            assert atomic_numbers.shape == (N_pos * n_atoms,), (
-                f"Expected atomic_numbers to have shape {(N_pos * n_atoms,)}, got {atomic_numbers.shape}"
+        if atomic_numbers_pos is not None:
+            assert atomic_numbers_pos.shape == (N_pos * n_atoms,), (
+                f"Expected atomic_numbers_pos to have shape {(N_pos * n_atoms,)}, got {atomic_numbers_pos.shape}"
             )
-            if N_pos != N_neg:
-                # assume negative samples are just repeated positive samples
-                # (e.g. for each positive sample we have x negative sample which is
-                # the same molecule but with different noise)
-                atomic_numbers_neg = (
-                    atomic_numbers.view(N_pos, n_atoms)
-                    .repeat_interleave(N_neg // N_pos, dim=0)
-                    .view(-1)
-                )
+            if atomic_numbers_neg is None:
+                if N_pos != N_neg:
+                    # assume negative samples are just repeated positive samples
+                    # (e.g. for each positive sample we have x negative sample which is
+                    # the same molecule but with different noise)
+                    atomic_numbers_neg = (
+                        atomic_numbers_pos.view(N_pos, n_atoms)
+                        .repeat_interleave(N_neg // N_pos, dim=0)
+                        .view(-1)
+                    )
 
         # Distances are RMSD, hence they are normalized by sqrt of number of atoms, so 
         # that they are transfearable between different molecule sizes.
-        dist_pos, diff_pos = self.distance_fn(x_, y_pos_, atomic_numbers=atomic_numbers)
+        dist_pos, diff_pos = self.distance_fn(
+            x_, y_pos_, atomic_numbers=atomic_numbers_pos
+        )
         dist_neg, diff_neg = self.distance_fn(
             x_, y_neg_, atomic_numbers=atomic_numbers_neg
         )

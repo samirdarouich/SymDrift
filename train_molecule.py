@@ -19,23 +19,6 @@ import math
 
 logging.basicConfig(level=logging.INFO)
 
-class NumpyJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
-
-        return super().default(obj)
-    
 def create_batch_object(batch, n_samples):
     
     batch_sampling = Data()
@@ -147,7 +130,7 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
             ref=dataset_atoms, 
             samples=atoms_samples, 
             embedding_style="invariant_distance", 
-            save_path=f"{plot_dir}/step_{step_str}_pca.json"
+            save_path=f"{plot_dir}/step_{step_str}_pca.png"
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
             json.dump({
@@ -157,7 +140,8 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
                 },
                 **metrics_generated,
                 **metrics
-            }, f, indent=4, cls=NumpyJSONEncoder)
+            }, f, indent=4
+            )
         print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}; Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
     plt.close()
     return atoms_samples
@@ -214,7 +198,7 @@ print(f"Dataset: {dataset_name}, Model: {model_type}, Aligned: {aligned}, Permut
 normalize_drift = True
 temperatures = [0.05]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/molecule/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}/{drift_str}"
+outdir = f"runs/molecule_wrong_ordering/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
@@ -248,7 +232,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 10_000 #500_000
+n_steps = 1_000 #500_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -260,17 +244,18 @@ for epoch in pbar:
         optimizer.zero_grad()
         batch = batch.to(device)
         y_orig = batch.pos.clone()
+        y = batch.pos.clone()
 
         # Permute atomic numbers to be canonically ordered. This is important, otherwise
         # the brute force algorithm will do incorrect permutations when comapring different
         # x to ys.
-        z_orig = batch.x.reshape(batch.num_graphs, -1).clone()
-        sort_idx = torch.argsort(z_orig, dim=1)
-        gather_idx = sort_idx[..., None].expand(-1, -1, y_orig.shape[1])
-        y = torch.gather(y_orig.view(batch.num_graphs, batch.num_atoms[0], -1), 1, gather_idx).view(-1, y_orig.shape[1])
-        new_z = torch.gather(z_orig, 1, sort_idx).view(-1)
+        # z_orig = batch.x.reshape(batch.num_graphs, -1).clone()
+        # sort_idx = torch.argsort(z_orig, dim=1)
+        # gather_idx = sort_idx[..., None].expand(-1, -1, y_orig.shape[1])
+        # y = torch.gather(y_orig.view(batch.num_graphs, batch.num_atoms[0], -1), 1, gather_idx).view(-1, y_orig.shape[1])
+        # new_z = torch.gather(z_orig, 1, sort_idx).view(-1)
+        # batch.x = new_z
         batch.pos_orig = y.clone()
-        batch.x = new_z
 
         # Sample noise
         # if less positive samples than required negatve samples, repeat positive 

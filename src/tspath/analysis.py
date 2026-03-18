@@ -1,3 +1,4 @@
+from collections import defaultdict
 import logging
 import os
 import pickle
@@ -18,6 +19,8 @@ from multiprocessing import Pool
 from functools import partial
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "generate_bonds_data",
@@ -225,7 +228,7 @@ def generate_bonds_data(save_path: Optional[str] = None, overwrite: bool = False
     save_path = save_path or f"{os.path.dirname(__file__)}/bonds.pkl"
 
     if os.path.exists(save_path) and not overwrite:
-        logging.info("Bonds data already exists, skipping generation and reloading...")
+        logger.info("Bonds data already exists, skipping generation and reloading...")
         with open(save_path, "rb") as f:
             return pickle.load(f)
 
@@ -629,26 +632,26 @@ def calc_coverage_precision(rmsd_array, thresholds):
 def calc_amr_recall(rmsd_array):
     """
     Compute the average minimum RMSD with respect to reference conformers
-    (AMR-R).
+    (AMR-R). rmsd_array is of shape (num_confs, num_preds).
 
     For each reference conformer, the minimum RMSD to any generated conformer
-    is computed. The metric reports the average of these minimum distances.
+    is computed.
     """
     min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1) # (num_confs,)
-    amr_recall = np.mean(min_rmsd_per_conf) # ()
+    amr_recall = np.mean(min_rmsd_per_conf)
     return amr_recall
 
 
 def calc_amr_precision(rmsd_array):
     """
     Compute the average minimum RMSD with respect to generated conformers
-    (AMR-P).
+    (AMR-P). rmsd_array is of shape (num_confs, num_preds).
 
     For each generated conformer, the minimum RMSD to any reference conformer
-    is computed. The metric reports the average of these minimum distances.
+    is computed.
     """
     min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0) # (num_preds,)
-    amr_precision = np.mean(min_rmsd_per_pred) # ()
+    amr_precision = np.mean(min_rmsd_per_pred)
     return amr_precision
 
 def print_covmat_results(results, step, threshold):
@@ -662,40 +665,45 @@ def print_covmat_results(results, step, threshold):
             "COV-P_median": np.median(results["CoverageP"], 0),
         }
     )
-
+    
+    df["R_mean"] = np.mean(results["MatchingR"])
+    df["R_median"] = np.median(results["MatchingR"])
+    df["P_mean"] = np.mean(results["MatchingP"])
+    df["P_median"] = np.median(results["MatchingP"])
+    
     mask = np.abs(results['thresholds'] - threshold) < 1e-6
 
     metrics = {
-        "epoch": np.array([step]),
-        "threshold": results["thresholds"][mask],
-        "COV-R_mean": df["COV-R_mean"][mask].to_numpy(), # xxx of reference conformers are recovered within the RMSD threshold. --> 1-xxx are missed conformers.
-        "COV-R_median": df["COV-R_median"][mask].to_numpy(),
-        "COV-P_mean": df["COV-P_mean"][mask].to_numpy(), # Every generated conformer matches a reference conformer within the threshold.
-        "COV-P_median": df["COV-P_median"][mask].to_numpy(),
-        "MAT-R_mean": np.mean(results["MatchingR"]), # On average, each reference conformer has a generated one within xxx Å RMSD.
-        "MAT-R_median": np.median(results["MatchingR"]),
-        "MAT-P_mean": np.mean(results["MatchingP"]), # If low, every generated conformer is almost identical to a reference one.
-        "MAT-P_median": np.median(results["MatchingP"]),
+        "epoch": np.array([step]).item(),
+        "threshold": results["thresholds"][mask].item(),
+        "COV-R_mean": df["COV-R_mean"][mask].to_numpy().item(), # xxx of reference conformers are recovered within the RMSD threshold. --> 1-xxx are missed conformers.
+        "COV-R_median": df["COV-R_median"][mask].to_numpy().item(),
+        "COV-P_mean": df["COV-P_mean"][mask].to_numpy().item(), # Every generated conformer matches a reference conformer within the threshold.
+        "COV-P_median": df["COV-P_median"][mask].to_numpy().item(),
+        "MAT-R_mean": np.mean(results["MatchingR"]).item(), # On average, each reference conformer has a generated one within xxx Å RMSD.
+        "MAT-R_median": np.median(results["MatchingR"]).item(),
+        "MAT-P_mean": np.mean(results["MatchingP"]).item(), # If low, every generated conformer is almost identical to a reference one.
+        "MAT-P_median": np.median(results["MatchingP"]).item(),
     }
 
     return df, metrics
 
 def worker_fn_rmsd(job):
-    i, j, ref_i, pred_j, same_order = job
+    smiles, i, j, ref_i, pred_j, same_order = job
     rmsd, _ = pymatgen_match(ref_i, pred_j, same_order=same_order)
-    return i, j, rmsd
+    return smiles, i, j, rmsd
 
 def worker_fn_rmsd_wo_h(job):
-    i, j, ref_i, pred_j, same_order = job
+    smiles, i, j, ref_i, pred_j, same_order = job
     ref_i_woh = ref_i.copy()
     pred_j_woh = pred_j.copy()
     del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol=='H']]
     del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol=='H']]
     rmsd, _ = pymatgen_match(ref_i_woh, pred_j_woh, same_order=same_order)
-    return i, j, rmsd
+    return smiles, i, j, rmsd
 
 def worker_fn_distance(job):
-    i, j, ref_i, pred_j, same_order = job
+    smiles, i, j, ref_i, pred_j, same_order = job
     pos_i = ref_i.positions
     pos_j = pred_j.positions
     distance = torch.cdist(torch.tensor(pos_i), torch.tensor(pos_j))
@@ -715,7 +723,7 @@ def worker_fn_distance(job):
                 d.append(d_)
         d = torch.cat(d, dim=1)
         rmse = torch.sqrt((d**2).mean()).item()
-    return i, j, rmse
+    return smiles, i, j, rmse
 
 WORKER_FN_DICT = {
     "rmsd": worker_fn_rmsd,
@@ -724,19 +732,30 @@ WORKER_FN_DICT = {
 }
     
 def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, worker_fn_type="rmsd"):
+    ref_sample_dict = defaultdict(lambda: defaultdict(list))
+    for ref in refs:
+        ref_sample_dict[ref.info["smiles"]]["refs"].append(ref)
+    for pred in preds:
+        ref_sample_dict[pred.info["smiles"]]["preds"].append(pred)
     
-    num_confs = len(refs)
-    num_preds = len(preds)
-    rmsd_results = np.zeros((num_confs, num_preds))
+    rmsd_results = {
+        smiles: np.ones(
+            (len(ref_sample_dict[smiles]["refs"]), len(ref_sample_dict[smiles]["preds"]))
+        ) * np.nan 
+        for smiles in ref_sample_dict
+    }
     
     def populate_results(res):
-        i, j, rmsd_val = res
-        rmsd_results[i, j] = rmsd_val
+        smiles, i, j, rmsd_val = res
+        rmsd_results[smiles][i, j] = rmsd_val
         
     jobs = []
-    for i in range(num_confs):
-        for j in range(num_preds):
-            jobs.append((i, j, refs[i], preds[j], same_order))
+    for smiles, data in ref_sample_dict.items():
+        refs = data["refs"]
+        preds = data["preds"]
+        for i, refs_i in enumerate(refs):
+            for j, preds_j in enumerate(preds):
+                jobs.append((smiles, i, j, refs_i, preds_j, same_order))
 
     if num_workers > 1:
         p = Pool(num_workers)
@@ -747,11 +766,16 @@ def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, wo
 
     for res in tqdm(map_fn(WORKER_FN_DICT[worker_fn_type], jobs), total=len(jobs), desc="Computing RMSD matrix"):
         populate_results(res)
-            
-    coverage_recall = calc_coverage_recall(rmsd_results, thresholds)
-    coverage_precision = calc_coverage_precision(rmsd_results, thresholds)
-    amr_recall = calc_amr_recall(rmsd_results)
-    amr_precision = calc_amr_precision(rmsd_results)
+    
+    coverage_recall, coverage_precision = [], []
+    amr_recall, amr_precision = [], []
+    for rmsd_array in rmsd_results.values():
+        if rmsd_array.shape[1] == 0:
+            continue
+        coverage_recall.append(calc_coverage_recall(rmsd_array, thresholds))
+        coverage_precision.append(calc_coverage_precision(rmsd_array, thresholds))
+        amr_recall.append(calc_amr_recall(rmsd_array))
+        amr_precision.append(calc_amr_precision(rmsd_array))
 
     results = {
         "thresholds": np.array(thresholds),
@@ -784,14 +808,37 @@ def distance_embedder(pos, Z=None, invariant=False):
 def pca_plot(ref, samples, embedding_style="invariant_distance", save_path=None):
     if "distance" in embedding_style:
         invariant = "invariant" in embedding_style
-        ref_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in ref]).float()
-        ref_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in ref]).float()
-        samples_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in samples]).float()
-        samples_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in samples]).float()
-        ref_emb = distance_embedder(ref_pos, ref_atomic_numbers, invariant)
-        samples_emb = distance_embedder(samples_pos, samples_atomic_numbers, invariant)
-        
-    pca = PCA(n_components=2)
+        try:
+            # if all ref and samples have the same number of atoms, we can compute the distance matrix in batch
+            ref_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in ref]).float()
+            ref_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in ref]).float()
+            samples_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in samples]).float()
+            samples_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in samples]).float()
+            ref_emb = distance_embedder(ref_pos, ref_atomic_numbers, invariant)
+            samples_emb = distance_embedder(samples_pos, samples_atomic_numbers, invariant)
+        except Exception as e:
+            # # if not, we compute the distance matrix one by one (less efficient)
+            # ref_emb = []
+            # for atom in ref:
+            #     pos = torch.tensor(atom.get_positions()).float().unsqueeze(0)
+            #     Z = torch.tensor(atom.get_atomic_numbers()).float().unsqueeze(0)
+            #     emb = distance_embedder(pos, Z, invariant)[0]
+            #     ref_emb.append(emb)
+            # ref_emb = torch.stack(ref_emb, dim=0)
+            # samples_emb = []
+            # for atom in samples:
+            #     pos = torch.tensor(atom.get_positions()).float().unsqueeze(0)
+            #     Z = torch.tensor(atom.get_atomic_numbers()).float().unsqueeze(0)
+            #     emb = distance_embedder(pos, Z, invariant)[0]
+            #     samples_emb.append(emb)
+            # samples_emb = torch.stack(samples_emb, dim=0)
+            return 
+
+    if ref_emb.shape[0] == 1:
+        logger.info("Only one reference sample, skipping PCA plot.")
+        return
+    
+    pca = PCA(n_components=2)    
     y_2d = pca.fit_transform(ref_emb)
     x_2d = pca.transform(samples_emb)
 

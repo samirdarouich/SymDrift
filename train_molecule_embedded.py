@@ -10,30 +10,14 @@ from tspath.generative import DriftingField
 from tspath.model import EGNN, PaiNN, GVPModel, GaussianMomentDescriptor, MLP
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched
-from tspath.analysis import get_validity, distance_embedder, pca_plot
+from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot, distance_embedder
 from torch_geometric.data import Data
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import logging
 from torch_geometric.nn import global_mean_pool
 import json
-from sklearn.decomposition import PCA
 
 logging.basicConfig(level=logging.INFO)
-
-def cov_mat(gen_emb, ref_emb, threshold):
-    """
-    Returns coverage and matching metrics.
-    """
-    D = torch.cdist(ref_emb, gen_emb)
-    # for each reference point, find the closest generated point
-    min_dist = D.min(dim=1).values
-    # if the closest generated point is within the threshold, it's covered
-    cov = (min_dist < threshold).float().mean()
-    
-    # matching metric: average distance to closest generated point (lower is better)
-    mat = min_dist.mean()
-
-    return cov, mat
 
 def create_batch_object(batch, n_samples):
     
@@ -61,6 +45,9 @@ def create_batch_object(batch, n_samples):
     batch_sampling.batch = batch_
     batch_sampling.x = x_expanded
     batch_sampling.num_atoms = num_atoms
+    batch_sampling.num_graphs = total_samples
+    batch_sampling.ptr = torch.arange(0, total_samples * n_atoms + 1, n_atoms, device=device)
+
     return batch_sampling
 
 @torch.no_grad()
@@ -89,8 +76,6 @@ def sample(model, batch, n_samples):
         align=True, permute=True, brute_force_permutations=False
     )
     
-    x_embedded, _ = embedder_fn(embedder_type, x, x, batch_sampling.x, batch_sampling.edge_index, batch_sampling.batch)
-    
     if was_training:
         model.train()
 
@@ -100,13 +85,26 @@ def sample(model, batch, n_samples):
     
     for i, atom in enumerate(atoms_samples):
         atom.info["rmsd"] = rmsd[i].item()
-    return atoms_samples, atoms_noise, rmsd, x_embedded.cpu()
+    return atoms_samples, atoms_noise, rmsd
 
         
 def visualize(model, batch, current_step, n_samples, outdir=None, y_embedded=None):
     step = current_step
-    atoms_samples, atoms_noise, rmsd, x_embedded = sample(model, batch, n_samples=n_samples)
+    atoms_samples, atoms_noise, rmsd = sample(model, batch, n_samples=n_samples)
     metrics_generated = get_validity(atoms_samples)
+    
+    # compute coverage and recall for different rmsd thresholds (not using hydrogens)
+    results = evaluate_covmat(
+        atoms_samples, 
+        dataset_atoms, 
+        thresholds=[0.1, 0.2, 0.5], 
+        num_workers=8, 
+        same_order=False, 
+        worker_fn_type="rmsd_wo_h"
+    )
+    
+    df, metrics = print_covmat_results(results, step, threshold=0.2)
+    
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
         if isinstance(step, int):
@@ -117,31 +115,14 @@ def visualize(model, batch, current_step, n_samples, outdir=None, y_embedded=Non
         write(f"{plot_dir}/noise.xyz", atoms_noise)
         write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
+        pca_plot(
+            ref=dataset_atoms, 
+            samples=atoms_samples, 
+            embedding_style="invariant_distance", 
+            save_path=f"{plot_dir}/step_{step_str}_pca.png"
+        )
         print(f"Epoch {epoch}: Sample RMSD: {rmsd.mean().item():.4f}; Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
-    plt.close()
-    if y_embedded is not None:
-        
-        y_embedded = torch.nn.functional.normalize(y_embedded, dim=-1)
-        x_embedded = torch.nn.functional.normalize(x_embedded, dim=-1)
-        threshold = torch.quantile(y_embedded, 0.1)
-        cov, mat = cov_mat(x_embedded, y_embedded, threshold=threshold)
-
-        pca = PCA(n_components=2)
-        y_2d = pca.fit_transform(y_embedded)
-        x_2d = pca.transform(x_embedded)
-        
-        plt.figure(figsize=(8, 6))
-        plt.title(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}, Cov: {cov:.4f}, Mat: {mat:.4f}")
-        plt.scatter(x_2d[:, 0], x_2d[:, 1], alpha=0.75, color="red", label="predictions")
-        plt.scatter(y_2d[:, 0], y_2d[:, 1], alpha=0.75, color="blue", label="target")
-        plt.xlabel("Component 1")
-        plt.ylabel("Component 2")
-        plt.legend()
-        plt.savefig(f"{plot_dir}/step_{step_str}_pca.png")
-        plt.close()
-        
-        metrics_generated["cov"] = cov.item()
-        metrics_generated["mat"] = mat.item()
+    
         
     with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
             json.dump({
@@ -149,8 +130,10 @@ def visualize(model, batch, current_step, n_samples, outdir=None, y_embedded=Non
                     "mean": rmsd.mean().item(),
                     "median": rmsd.median().item()
                 },
-                **metrics_generated
-            }, f, indent=4)
+                **metrics_generated,
+                **metrics,
+            }, f, indent=4
+            )
     return atoms_samples
 
 def embedder_fn(embedder_type, x, y, atomic_numbers, edge_index, batch_idx):
@@ -231,9 +214,7 @@ elif embedder_type == "distance":
     embedder_str = "embedder_distance"
 
 only_pos_drift = True
-drift_str = ""
-if split_identifier is None:
-    drift_str = "pos_drift" if only_pos_drift else "full_drift"
+drift_str = "pos_drift" if only_pos_drift else "full_drift"
     
 normalize_drift = True
 temperatures = [0.05]
@@ -250,6 +231,7 @@ drifting_field = DriftingField(
 )
 
 batch_size = 64
+
 batch_sampler = CompositionBatchSampler(
     dataset,
     k=1,  # number of chunks per batch
@@ -351,14 +333,4 @@ for metric_name in metrics_dataset.keys():
     print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
 with open(f"{plot_dir}/metrics.json", "w") as f:
     json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)
-    
-pca_plot(
-    ref=dataset_atoms, 
-    samples=atoms_samples, 
-    embedding_style="invariant_distance", 
-    savedir=plot_dir
-)
-    
-    
-    
     

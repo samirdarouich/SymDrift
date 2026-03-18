@@ -226,7 +226,11 @@ def inputs_to_atoms(inputs, pos_key='pos', info_keys=[]):
     info = {}
     for key in info_keys:
         if hasattr(inputs, key):
-            info[key] = getattr(inputs, key).item()
+            item_ = inputs[key]
+            if isinstance(item_, str):
+                info[key] = item_
+            else:
+                info[key] = item_.item()
     atoms = Atoms(positions=R, numbers=Z, info=info)
     return atoms
 
@@ -249,7 +253,11 @@ def batch_inputs_to_atoms(batch, pos_key='pos', info_keys=[]):
         info = {}
         for key in info_keys:
             if hasattr(batch, key):
-                info[key] = batch[key][m].item()
+                item_ = batch[key][m]
+                if isinstance(item_, str):
+                    info[key] = item_
+                else:
+                    info[key] = item_.item()
         atoms = Atoms(positions=R, numbers=Z, info=info)
         atoms_list.append(atoms)
     return atoms_list
