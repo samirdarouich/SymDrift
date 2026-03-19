@@ -7,9 +7,8 @@ from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import ConformerDataset
 from tspath.generative import DriftingField, HarmonicSampler
-from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics, GaussianMomentDescriptor
+from tspath.model import EGNN, PaiNN, MLP, TorchMDDynamics, GaussianMomentDescriptor, DiT
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
-from tspath.alignment import get_rmsd_batched_scatter
 from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot, distance_embedder
 from torch_geometric.nn import global_mean_pool
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -62,8 +61,8 @@ def sample(model, batch, n_samples):
         model.train()
 
     batch_sampling.pos_generated = x
-    atoms_noise = batch_inputs_to_atoms(batch_sampling, "pos")
-    atoms_samples = batch_inputs_to_atoms(batch_sampling, "pos_generated")
+    atoms_noise = batch_inputs_to_atoms(batch_sampling, "pos", ["smiles"])
+    atoms_samples = batch_inputs_to_atoms(batch_sampling, "pos_generated", ["smiles"])
 
     return atoms_samples, atoms_noise
 
@@ -130,6 +129,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset_name = "geom_qm9"
 split_identifier = "geomol"
 split_identifier = "geomol_debug"
+split_identifier = "geomol_debug_bigger"
 
 dataset = ConformerDataset(
     source=dataset_name,
@@ -142,9 +142,6 @@ dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
 model_type = "painn"
-aligned = True
-permuted = True
-brute_force_permutations = True
 model_dict = {
     "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
@@ -176,10 +173,10 @@ if embedder_type == "gm":
     embedder_str = f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
 elif embedder_type == "distance":
     #! Invariant distance embedder
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     embedder_str = "embedder_distance"
     
-only_pos_drift = True
+only_pos_drift = False
 drift_str = "all_drift"
 if only_pos_drift:
     drift_str = "pos_drift"
@@ -213,7 +210,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 25_000 #500_000
+n_steps = 50_000 #500_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -230,23 +227,8 @@ for epoch in pbar:
         conformer_idx = torch.arange(
             batch.num_graphs, device=batch_sizes.device
         ).repeat_interleave(batch_sizes)
-
-        # create new batch mask treating each conformer as a separate graph in the batch.
-        atoms_per_conf = torch.repeat_interleave(batch.num_atoms, batch.num_conformers )
-        batch_conf = torch.repeat_interleave(
-            torch.arange(len(atoms_per_conf),device=device), atoms_per_conf
-        )
-        
-        # repeat atomic numbers to match the conformer of each batch conformer
         y_pos = batch.pos.clone()
-        z_split = torch.split(batch.x, batch.num_atoms.tolist())
-        z_pos = torch.cat([
-            z_i.repeat(n_conf_i, 1)
-            for z_i, n_conf_i in zip(z_split, batch.num_conformers)
-        ]).view(-1)
-        with torch.no_grad():
-            y_pos_embedded = embedder_fn(embedder_type, y_pos, z_pos, batch_conf)
-        
+        z_pos = batch.x.clone()
         
         # Sample n_neg priors per graph
         batch_neg = create_batch_object(batch, n_samples=n_neg_per_pos, prior_type="harmonic")
@@ -254,49 +236,56 @@ for epoch in pbar:
         # Call the model
         x = model(batch_neg)
         
-        # Embeddinf of x samples
-        x_embedded = embedder_fn(embedder_type, x, batch_neg.x, batch_neg.batch)
-        
-        # Create masks for indexing positive and negative samples corresponding to each graph in the batch
-        pos_offsets = torch.cumsum(
-            torch.cat([torch.tensor([0], device=device), batch.num_conformers[:-1]]),
-            dim=0
-        )
-        neg_offsets = torch.arange(batch.num_graphs, device=device) * n_neg_per_pos
-        
         # Per Class compute the drift seperately
-        V_total = torch.zeros_like(x_embedded)
-        V_pos_total = torch.zeros_like(x_embedded)
+        loss = 0.0
         for i in range(batch.num_graphs):
-            # get all positive conformers of the current graph
-            start = pos_offsets[i]
-            end = start + batch.num_conformers[i]
-            mask_pos = torch.arange(start, end, device=device)
-            y_i_pos_embedded = y_pos_embedded[mask_pos]
+             # positions have shape n_conformers*n_atoms, 3
+            mask_pos = conformer_idx == i
+            y_i_pos = y_pos[mask_pos]
 
-            # get all negative conformers of the current graph
-            start = neg_offsets[i]
-            end = start + n_neg_per_pos
-            mask_neg = torch.arange(start, end, device=device)
-            x_i_embed = x_embedded[mask_neg]
+            # atomic numbers have shape n_atoms
+            mask_pos = batch.batch == i
+            z_i_pos = z_pos[mask_pos].repeat(batch.num_conformers[i])
+            
+            # Embedding of y samples
+            batch_i_pos = torch.arange(
+                batch.num_conformers[i], device=device
+            ).repeat_interleave(batch.num_atoms[i])
+            with torch.no_grad():
+                y_i_pos_embedded = embedder_fn(
+                    embedder_type, y_i_pos, z_i_pos, batch_i_pos
+                )
+        
+            # search negative samples corresponding to the current positive sample
+            mask_neg = torch.isin(
+                batch_neg.batch, 
+                torch.arange(
+                    i*n_neg_per_pos, (i+1)*n_neg_per_pos,
+                    device=batch_neg.batch.device
+                )
+            )
+            x_i = x[mask_neg]
+            z_i_neg = batch_neg.x[mask_neg]
+            
+            # Embedding of x samples
+            batch_i_neg = torch.arange(
+                n_neg_per_pos, device=device
+            ).repeat_interleave(batch.num_atoms[i])
+            x_i_embedded = embedder_fn(embedder_type, x_i, z_i_neg, batch_i_neg)
             
             # Call the drift (atomic numbers will be repeated for negative samples)
             V, V_pos, V_neg, *_ = drifting_field(
-                x_i_embed.detach(),
+                x_i_embedded.detach(),
                 y_i_pos_embedded,
-                x_i_embed.detach(),
+                x_i_embedded.detach(),
             )
-            V_total[mask_neg] = V
-            V_pos_total[mask_neg] = V_pos
+            
+            if only_pos_drift:
+                x_i_drifted = (x_i_embedded + V_pos).detach()
+            else:
+                x_i_drifted = (x_i_embedded + V).detach()
 
-        # In case only attraction
-        if only_pos_drift:
-            x_drifted = (x_embedded + V_pos_total).detach()
-        else:
-            x_drifted = (x_embedded + V_total).detach()
-        
-        # Compute RMSD loss
-        loss = torch.nn.functional.mse_loss(x_embedded, x_drifted)
+            loss = loss + torch.nn.functional.mse_loss(x_i_embedded, x_i_drifted)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -309,9 +298,6 @@ for epoch in pbar:
             {
                 "step": step_count, 
                 "loss": loss.item(),
-                "mse(V)": torch.sqrt(torch.mean(V_total**2)).item(),
-                "mse(pos_drift)": torch.sqrt(torch.mean(V_pos_total**2)).item(), 
-                "mse(neg_drift)": torch.sqrt(torch.mean(V_neg**2)).item(),
             }
         )
 

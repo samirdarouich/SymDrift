@@ -7,12 +7,11 @@ from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import ConformerDataset
 from tspath.generative import EquivariantDriftingField, HarmonicSampler
-from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics
+from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics, CosineAnnealingWarmupRestarts
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched_scatter
 from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot
 from torch_geometric.data import Data
-from torch.optim.lr_scheduler import CosineAnnealingLR
 import logging
 import json
 import math
@@ -62,7 +61,7 @@ def sample(model, batch, n_samples):
         model.train()
 
     batch_sampling.pos_generated = x
-    atoms_noise = batch_inputs_to_atoms(batch_sampling, "pos")
+    atoms_noise = batch_inputs_to_atoms(batch_sampling, "pos", ["smiles"])
     atoms_samples = batch_inputs_to_atoms(batch_sampling, "pos_generated", ["smiles"])
 
     return atoms_samples, atoms_noise
@@ -119,7 +118,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset_name = "geom_qm9"
 split_identifier = "geomol"
 split_identifier = "geomol_debug"
-split_identifier = "geomol_debug_bigger"
+# split_identifier = "geomol_debug_bigger"
 
 dataset = ConformerDataset(
     source=dataset_name,
@@ -131,7 +130,7 @@ dataset = ConformerDataset(
 dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
-model_type = "painn"
+model_type = "torchmd"
 aligned = True
 permuted = True
 brute_force_permutations = True
@@ -167,7 +166,7 @@ drifting_field = EquivariantDriftingField(
     brute_force_permutations=brute_force_permutations,
     normalize_drift=normalize_drift,
 )
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+optimizer = torch.optim.AdamW(model.parameters(), lr=7e-4, weight_decay=1e-8)
 
 batch_size_pos = min(len(dataset), 2)
 n_neg_per_pos = 32
@@ -183,10 +182,13 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 500
+n_steps = 15_000
 n_epochs = n_steps // len(dataloader)
 
-scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
+scheduler = CosineAnnealingWarmupRestarts(
+    optimizer, first_cycle_steps=250_000, cycle_mult=1.0, max_lr=7e-4,
+    min_lr=1e-5, warmup_steps=0, gamma=0.05, last_epoch=-1
+)
 
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
 step_count = 0
@@ -257,6 +259,7 @@ for epoch in pbar:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
+        scheduler.step()
         losses.append(loss.item())
         pbar.set_postfix(
             {
@@ -277,8 +280,7 @@ for epoch in pbar:
             )
         step_count += 1
 
-    # Update learning rate scheduler at the end of each epoch
-    scheduler.step()
+    
             
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")

@@ -7,8 +7,9 @@ from torch.nn.init import xavier_uniform_
 from torch.nn.init import zeros_
 from torch_scatter import scatter_add
 from tspath.utils import batch_center_systems
-from torch_geometric.nn import radius_graph
- 
+from tspath.model.utils import extend_bond_index
+from torch_geometric.nn import MessagePassing
+
 __all__ = ["PaiNN", "PaiNNInteraction", "PaiNNMixing"]
 
 def replicate_module(
@@ -328,6 +329,43 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
+
+class NeighborEmbedding(MessagePassing):
+    def __init__(self, hidden_channels, num_rbf, cutoff_upper, max_z=100):
+        super().__init__(aggr="add")
+        self.embedding = nn.Embedding(max_z, hidden_channels)
+        self.distance_proj = nn.Linear(num_rbf, hidden_channels)
+        self.combine = nn.Linear(hidden_channels * 2, hidden_channels)
+        self.cutoff = CosineCutoff(cutoff_upper)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.embedding.reset_parameters()
+        nn.init.xavier_uniform_(self.distance_proj.weight)
+        nn.init.xavier_uniform_(self.combine.weight)
+        self.distance_proj.bias.data.fill_(0)
+        self.combine.bias.data.fill_(0)
+
+    def forward(self, z, x, edge_index, edge_weight, edge_attr):
+        # remove self loops
+        mask = edge_index[0] != edge_index[1]
+        if not mask.all():
+            edge_index = edge_index[:, mask]
+            edge_weight = edge_weight[mask]
+            edge_attr = edge_attr[mask]
+
+        C = self.cutoff(edge_weight)
+        W = self.distance_proj(edge_attr) * C.view(-1, 1)
+
+        x_neighbors = self.embedding(z)
+        # propagate_type: (x: Tensor, W: Tensor)
+        x_neighbors = self.propagate(edge_index, x=x_neighbors, W=W, size=None)
+        x_neighbors = self.combine(torch.cat([x, x_neighbors], dim=1))
+        return x_neighbors
+
+    def message(self, x_j, W):
+        return x_j * W
     
 class PaiNNInteraction(nn.Module):
     r"""PaiNN interaction block for modeling equivariant interactions of atomistic systems."""
@@ -461,6 +499,8 @@ class PaiNN(nn.Module):
         max_neighbors: int = 500,
         use_noise_schedule_sigma_encoding=False,
         read_out_layer=True,
+        edge_attr_dim=1,
+        neighbor_embedding=True,
     ):
         """
         Args:
@@ -490,6 +530,16 @@ class PaiNN(nn.Module):
         self.radial_basis = GaussianRBF(
             n_rbf=num_distance_basis, cutoff=self.cutoff, trainable=False
         )
+        self.neighbor_embedding = (
+            NeighborEmbedding(
+                sphere_channels,
+                num_distance_basis + edge_attr_dim,
+                max_radius,
+            )
+            if neighbor_embedding
+            else None
+        )
+        
 
         # initialize embeddings
         if nuclear_embedding is None:
@@ -559,15 +609,18 @@ class PaiNN(nn.Module):
             return_intermediate=True was used.
         """
         
-        # compute graph connectivity
-        idx_j, idx_i = radius_graph(
-            x=data.pos,
-            r=self.cutoff,
+        edge_index, edge_type, _ = extend_bond_index(
+            pos=data.pos,
+            bond_index=data.bonded_edge_index,
             batch=data.batch,
-            max_num_neighbors=self.max_neighbors
+            bond_attr=data.get("edge_attr", None),
+            device=data.pos.device,
+            cutoff=self.cutoff,
+            max_neighbors=self.max_neighbors,
         )
-        
-        data.edge_index = torch.stack([idx_j, idx_i], dim=0)
+
+        data.edge_index = edge_index
+        idx_j, idx_i = edge_index
 
         # get tensors from input dictionary
         atomic_numbers = data.x.long()
@@ -590,6 +643,13 @@ class PaiNN(nn.Module):
         q = self.embedding(atomic_numbers)
         for embedding in self.electronic_embeddings:
             q = q + embedding(q, data)
+            
+        # update atomic embeddings given the graph structure and edge features
+        if self.neighbor_embedding is not None:
+            q = self.neighbor_embedding(
+                atomic_numbers, q, edge_index, d_ij, 
+                torch.cat([phi_ij.squeeze(1), edge_type.unsqueeze(-1)], dim=-1)
+            )
 
         # noise schedule sigma encoding
         if self.use_noise_schedule_sigma_encoding:
@@ -615,77 +675,3 @@ class PaiNN(nn.Module):
         
         # prevent 0 positions collapse
         return x + data.pos
-    
-    def initialize_embeddings(self, data):
-        """
-        Compute atomic representations/embeddings.
-
-        Args:
-            data: PyG data object containing necessary tensors.
-
-        Returns:
-            torch.Tensor: atom-wise representation.
-            list of torch.Tensor: intermediate atom-wise representations, if
-            return_intermediate=True was used.
-        """
-        # get tensors from input dictionary
-        atomic_numbers = data.atomic_numbers
-        idx_j, idx_i = data.edge_index
-        r_ij = data.pos[idx_j] - data.pos[idx_i]
-        n_atoms = atomic_numbers.shape[0]
-
-        # compute atom and pair features
-        d_ij = torch.norm(r_ij, dim=1, keepdim=True)
-        dir_ij = r_ij / d_ij
-        phi_ij = self.radial_basis(d_ij)
-        fcut = self.cutoff_fn(d_ij)
-
-        filters = self.filter_net(phi_ij) * fcut[..., None]
-        if self.share_filters:
-            self.filter_list = [filters] * self.n_interactions
-        else:
-            self.filter_list = torch.split(filters, 3 * self.n_atom_basis, dim=-1)
-
-        # compute initial embeddings
-        q = self.embedding(atomic_numbers)
-        for embedding in self.electronic_embeddings:
-            q = q + embedding(q, data)
-        q = q.unsqueeze(1)
-        
-        qs = q.shape
-        mu = torch.zeros((qs[0], 3, qs[2]), device=q.device)
-        
-        return (q, mu), r_ij, dir_ij, n_atoms
-    
-    def block_forward(self, q, mu, edge_index, dir_ij, n_atoms, block_i):
-        """Compute interaction output.
-
-        Args:
-            q: scalar input values
-            mu: vector input values
-            edge_index: edge indices
-            dir_ij: interatomic unit vectors
-            n_atoms: number of atoms in the system
-            block_i: index of the block to be computed
-
-        Returns:
-            atom features after interaction
-        """
-        interaction = self.interactions[block_i]
-        mixing = self.mixing[block_i]
-        filter_list = self.filter_list[block_i]
-        idx_j, idx_i = edge_index
-        
-        q, mu = interaction(q, mu, filter_list, dir_ij, idx_i, idx_j, n_atoms)
-        q, mu = mixing(q, mu)
-        
-        return q, mu
-            
-    def readout(self, q, mu):
-        if len(q.shape) == 3: 
-            q = q.squeeze(1)
-        # predict equivariant output
-        _, x = self.readout_layer((q, mu))
-        x = torch.squeeze(x, -1)
-        
-        return x

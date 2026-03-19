@@ -4,5 +4,6 @@ from .mlp import MLP
 from .egnn import EGNN
 from .gm import GaussianMomentDescriptor
 from .gvp import GVPModel
-from .dit import DiT
+from .dit.dit import DiT
 from .torchmdnet import TorchMDDynamics
+from .scheduler import CosineAnnealingWarmupRestarts

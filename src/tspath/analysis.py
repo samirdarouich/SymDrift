@@ -805,10 +805,14 @@ def distance_embedder(pos, Z=None, invariant=False):
     else:
         return distance.view(distance.shape[0], -1)
     
-def pca_plot(ref, samples, embedding_style="invariant_distance", save_path=None):
+def pca_plot(ref, samples, embedding_style="invariant_distance", identifier="smiles", save_path=None):
+    
+    unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in ref])
+    unique_identifier_samples = set([atom.info.get(identifier, "Unknown") for atom in samples])
+    unique_identifier = unique_identifier_ref.intersection(unique_identifier_samples)
     if "distance" in embedding_style:
         invariant = "invariant" in embedding_style
-        try:
+        if len(unique_identifier) == 1:
             # if all ref and samples have the same number of atoms, we can compute the distance matrix in batch
             ref_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in ref]).float()
             ref_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in ref]).float()
@@ -816,39 +820,56 @@ def pca_plot(ref, samples, embedding_style="invariant_distance", save_path=None)
             samples_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in samples]).float()
             ref_emb = distance_embedder(ref_pos, ref_atomic_numbers, invariant)
             samples_emb = distance_embedder(samples_pos, samples_atomic_numbers, invariant)
-        except Exception as e:
-            # # if not, we compute the distance matrix one by one (less efficient)
-            # ref_emb = []
-            # for atom in ref:
-            #     pos = torch.tensor(atom.get_positions()).float().unsqueeze(0)
-            #     Z = torch.tensor(atom.get_atomic_numbers()).float().unsqueeze(0)
-            #     emb = distance_embedder(pos, Z, invariant)[0]
-            #     ref_emb.append(emb)
-            # ref_emb = torch.stack(ref_emb, dim=0)
-            # samples_emb = []
-            # for atom in samples:
-            #     pos = torch.tensor(atom.get_positions()).float().unsqueeze(0)
-            #     Z = torch.tensor(atom.get_atomic_numbers()).float().unsqueeze(0)
-            #     emb = distance_embedder(pos, Z, invariant)[0]
-            #     samples_emb.append(emb)
-            # samples_emb = torch.stack(samples_emb, dim=0)
-            return 
-
-    if ref_emb.shape[0] == 1:
-        logger.info("Only one reference sample, skipping PCA plot.")
-        return
+            
+            if ref_emb.shape[0] == 1:
+                logger.debug("Only one reference sample, skipping PCA plot.")
+                return
     
-    pca = PCA(n_components=2)    
-    y_2d = pca.fit_transform(ref_emb)
-    x_2d = pca.transform(samples_emb)
+            pca = PCA(n_components=2)
+            y_2d = pca.fit_transform(ref_emb)
+            x_2d = pca.transform(samples_emb)
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    fig.suptitle(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
-    ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
-    ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")
-    ax.legend()
-    ax.set_xlabel("Component 1")
-    ax.set_ylabel("Component 2")
+            fig, ax = plt.subplots(figsize=(6, 6))
+            fig.suptitle(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+            ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
+            ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")
+            ax.legend()
+            ax.set_xlabel("Component 1")
+            ax.set_ylabel("Component 2")
+        else:
+            assert "Unknown" not in unique_identifier, f"{identifier} should be given in atom object"
+            n_cols = min(len(unique_identifier), 3)
+            n_rows = max(len(unique_identifier) // n_cols, 1)
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
+            axes = axes.flatten()
+            for i, identifier_value in enumerate(unique_identifier):
+                ax = axes[i]
+                ref_i = [atom for atom in ref if atom.info[identifier] == identifier_value]
+                
+                if len(ref_i) == 1:
+                    logger.debug(f"Only one reference sample, {identifier}={identifier_value}, skipping...")
+                    continue
+                
+                samples_i = [atom for atom in samples if atom.info[identifier] == identifier_value]
+                
+                ref_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in ref_i]).float()
+                ref_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in ref_i]).float()
+                samples_pos = torch.stack([torch.tensor(atom.get_positions()) for atom in samples_i]).float()
+                samples_atomic_numbers = torch.stack([torch.tensor(atom.get_atomic_numbers()) for atom in samples_i]).float()
+                ref_emb = distance_embedder(ref_pos, ref_atomic_numbers, invariant)
+                samples_emb = distance_embedder(samples_pos, samples_atomic_numbers, invariant)
+                
+                pca = PCA(n_components=2)    
+                y_2d = pca.fit_transform(ref_emb)
+                x_2d = pca.transform(samples_emb)
+
+                ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
+                ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")
+                ax.set_title(f"{identifier_value}\nPCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+                ax.legend()
+                ax.set_xlabel("Component 1")
+                ax.set_ylabel("Component 2")
+    
     fig.tight_layout()
     if save_path is not None:
         fig.savefig(save_path)

@@ -6,11 +6,12 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch_cluster import radius_graph
 from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter
 
+from tspath.model.utils import extend_bond_index
 from tspath.utils import batch_center_systems
+
 
 def signed_volume(local_coords):
     """
@@ -27,102 +28,6 @@ def signed_volume(local_coords):
     cp = v2.cross(v3, dim=-1)
     vol = torch.sum(v1 * cp, dim=-1)
     return torch.sign(vol)
-
-def _extend_to_radius_graph(
-    pos: torch.Tensor,
-    edge_index: torch.Tensor,
-    edge_type: torch.Tensor,
-    batch: torch.Tensor,
-    cutoff: float = 10.0,
-    max_neighbors: int = 32,
-    unspecified_type_number=0,
-):
-    assert edge_type.dim() == 1
-    N = pos.size(0)
-
-    bgraph_adj = torch.sparse_coo_tensor(edge_index, edge_type, torch.Size([N, N]))
-    rgraph_edge_index = radius_graph(
-        pos, r=cutoff, batch=batch, max_num_neighbors=max_neighbors
-    )  # (2, E_r)
-
-    rgraph_adj = torch.sparse_coo_tensor(
-        rgraph_edge_index,
-        torch.ones(rgraph_edge_index.size(1)).long().to(pos.device)
-        * unspecified_type_number,
-        torch.Size([N, N]),
-    )
-
-    composed_adj = (bgraph_adj + rgraph_adj).coalesce()  # Sparse (N, N, T)
-
-    new_edge_index = composed_adj.indices()
-    new_edge_type = composed_adj.values().long()
-
-    return new_edge_index, new_edge_type
-            
-def extend_graph_order_radius(
-    pos: torch.Tensor,
-    edge_index: torch.Tensor,
-    edge_type: torch.Tensor,
-    batch: torch.Tensor,
-    cutoff: float = 10.0,
-    max_neighbors: int = 32,
-    extend_radius: bool = True,
-):
-    """Extends bond index"""
-    if extend_radius:
-        edge_index, edge_type = _extend_to_radius_graph(
-            pos=pos,
-            edge_index=edge_index,
-            edge_type=edge_type,
-            cutoff=cutoff,
-            batch=batch,
-            max_neighbors=max_neighbors,
-        )
-
-    return edge_index, edge_type
-
-
-def extend_bond_index(
-    pos: torch.Tensor,
-    bond_index: torch.Tensor,
-    batch: torch.Tensor,
-    bond_attr: torch.Tensor,
-    device: torch.device,
-    one_hot: bool = False,
-    one_hot_types: int = 5,
-    cutoff: float = 10.0,
-    max_neighbors: int = 32,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if bond_attr is None:
-        bond_type = torch.ones(bond_index.shape[1], dtype=torch.long, device=device)
-        # all molecular graph edges are type 1, radius based become 0
-    else:
-        bond_type = bond_attr.view(-1).long() + 1  # we reserve 0 for radius based edges
-        assert bond_type.shape[0] == bond_index.shape[1], (
-            "Edge type should have same shape as number of edges."
-        )
-
-    edge_index, edge_type = extend_graph_order_radius(
-        pos=pos,
-        edge_index=bond_index,
-        edge_type=bond_type,
-        batch=batch,
-        cutoff=cutoff,
-        max_neighbors=max_neighbors,
-        extend_radius=True,
-    )
-    assert bond_index.shape[1] == (edge_type > 0).sum().item(), (
-        "Edge Type should be greater than 0 when edge is a molecular bond."
-    )
-
-    # make one_hot if provided
-    if one_hot:
-        # +1 to account for radius based edges
-        edge_type = torch.nn.functional.one_hot(
-            edge_type, num_classes=one_hot_types + 1
-        ).float()
-
-    return edge_index, edge_type
 
 
 class NeighborEmbedding(MessagePassing):
@@ -276,74 +181,6 @@ class CosineCutoff(nn.Module):
             # remove contributions beyond the cutoff radius
             cutoffs = cutoffs * (distances < self.cutoff_upper).float()
             return cutoffs
-
-
-class Distance(nn.Module):
-    def __init__(
-        self,
-        cutoff_lower,
-        cutoff_upper,
-        max_neighbors=32,
-        return_vecs=False,
-        loop=False,
-    ):
-        super(Distance, self).__init__()
-        self.cutoff_lower = cutoff_lower
-        self.cutoff_upper = cutoff_upper
-        self.max_neighbors = max_neighbors
-        self.return_vecs = return_vecs
-        self.loop = loop
-
-    def forward(
-        self,
-        pos: torch.Tensor,
-        batch: torch.Tensor,
-        edge_index: Optional[torch.Tensor] = None,
-    ):
-        if edge_index is None:
-            edge_index = radius_graph(
-                pos,
-                r=self.cutoff_upper,
-                batch=batch,
-                loop=self.loop,
-                max_neighbors=self.max_neighbors + 1,
-            )
-
-        # make sure we didn't miss any neighbors due to max_neighbors
-        assert not (
-            torch.unique(edge_index[0], return_counts=True)[1] > self.max_neighbors
-        ).any(), (
-            "The neighbor search missed some atoms due to "
-            "max_neighbors being too low. Please increase "
-            "this parameter to include the maximum number of atoms within the cutoff."
-        )
-
-        edge_vec = pos[edge_index[0]] - pos[edge_index[1]]
-
-        mask: Optional[torch.Tensor] = None
-        if self.loop:
-            # mask out self loops when computing distances because
-            # the norm of 0 produces NaN gradients
-            # NOTE: might influence force predictions as self loop gradients are ignored
-            mask = edge_index[0] != edge_index[1]
-            edge_weight = torch.zeros(edge_vec.size(0), device=edge_vec.device)
-            edge_weight[mask] = torch.norm(edge_vec[mask], dim=-1)
-        else:
-            edge_weight = torch.norm(edge_vec, dim=-1)
-
-        lower_mask = edge_weight >= self.cutoff_lower
-        if self.loop and mask is not None:
-            # keep self loops even though they might be below the lower cutoff
-            lower_mask = lower_mask | ~mask
-        edge_index = edge_index[:, lower_mask]
-        edge_weight = edge_weight[lower_mask]
-
-        if self.return_vecs:
-            edge_vec = edge_vec[lower_mask]
-            return edge_index, edge_weight, edge_vec
-        # TODO: return only `edge_index` and `edge_weight` once
-        # Union typing works with TorchScript (https://github.com/pytorch/pytorch/pull/53180)
-        return edge_index, edge_weight, None
 
 
 class GatedEquivariantBlock(nn.Module):
@@ -649,9 +486,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
         self.qk_norm = qk_norm
 
-        input_channels = (
-            hidden_channels + (hidden_channels if node_attr_dim > 0 else 0)
-        )
+        input_channels = hidden_channels + (hidden_channels if node_attr_dim > 0 else 0)
         self.mixing_mlp = nn.Sequential(
             nn.Linear(input_channels, hidden_channels),
             nn.SiLU(),
@@ -1135,7 +970,7 @@ class TorchMDDynamics(nn.Module):
         # make edge_type one_hot
         edge_one_hot: bool = False,
         edge_one_hot_types: int = 5,
-        parity_switch=False
+        parity_switch=False,
     ):
         super().__init__()
         self.cutoff = max_radius
@@ -1174,7 +1009,7 @@ class TorchMDDynamics(nn.Module):
     def reset_parameters(self):
         self.representation_model.reset_parameters()
         self.output_model.reset_parameters()
-    
+
     def forward(self, data) -> Tuple[Tensor, Optional[Tensor]]:
         """Forward pass over torchmd-net model.
 
@@ -1196,8 +1031,8 @@ class TorchMDDynamics(nn.Module):
         node_attr: torch.Tensor, optional
             Node attributes, shape (num_atoms, node_attr_dim)
         """
-        
-        edge_index, edge_type = extend_bond_index(
+
+        edge_index, edge_type, _ = extend_bond_index(
             pos=data.pos,
             bond_index=data.bonded_edge_index,
             batch=data.batch,
@@ -1225,14 +1060,10 @@ class TorchMDDynamics(nn.Module):
         # Switch parity of positions for chiral molecules during inference if wanted.
         if self.parity_switch and not self.training:
             v = self.switch_parity_of_pos(
-                v, 
-                data.chiral_index, 
-                data.chiral_nbr_index, 
-                data.chiral_tag, 
-                data.batch
+                v, data.chiral_index, data.chiral_nbr_index, data.chiral_tag, data.batch
             )
         return v
-    
+
     def switch_parity_of_pos(
         self, pos, chiral_index, chiral_nbr_index, chiral_tag, batch
     ):

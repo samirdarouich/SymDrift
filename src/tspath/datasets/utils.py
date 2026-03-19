@@ -6,9 +6,13 @@ import torch
 from rdkit import Chem
 from rdkit.Chem.rdchem import BondType as BT
 from rdkit.Chem.rdchem import ChiralType
-from torch_cluster import radius_graph
 from rdkit.Chem.rdchem import Conformer
 from rdkit.Geometry import Point3D
+from rdkit.Chem import rdmolops
+import numpy as np
+import pyximport
+pyximport.install(setup_args={"include_dirs": np.get_include()})
+from . import algos
 
 # similar to GeoMol
 BOND_TYPES = {t: i for i, t in enumerate(BT.names.values())}
@@ -49,38 +53,24 @@ allowable_features = {
 }
 
 
-# Gradient clipping
-class Queue:
-    def __init__(self, max_len=50):
-        self.items = []
-        self.max_len = max_len
-
-    def __len__(self):
-        return len(self.items)
-
-    def add(self, item):
-        self.items.insert(0, item)
-        if len(self) > self.max_len:
-            self.items.pop()
-
-    def mean(self):
-        return np.mean(self.items)
-
-    def std(self):
-        return np.std(self.items)
-
-
 def get_atomic_number_and_charge(mol: Chem.Mol):
     """Returns atoms number and charge for rdkit molecule"""
     return np.array(
         [[atom.GetAtomicNum(), atom.GetFormalCharge()] for atom in mol.GetAtoms()]
     )
 
-
 def GetNumRings(atom):
     return sum([atom.IsInRingSize(i) for i in range(3, 7)])
 
-
+def safe_index(l, e):
+    """
+    Return index of element e in list l. If e is not present, return the last index
+    """
+    try:
+        return l.index(e)
+    except Exception as e:
+        return len(l) - 1
+    
 def atom_to_feature_vector(atom):
     """Node Invariant Features for an Atom."""
     atom_feature = [
@@ -110,17 +100,6 @@ def atom_to_feature_vector(atom):
     ]
     return atom_feature
 
-
-def safe_index(l, e):
-    """
-    Return index of element e in list l. If e is not present, return the last index
-    """
-    try:
-        return l.index(e)
-    except Exception as e:
-        return len(l) - 1
-
-
 def bond_to_feature_vector(bond):
     """
     Converts rdkit bond object to feature list of indices
@@ -138,7 +117,7 @@ def bond_to_feature_vector(bond):
 
 
 def compute_edge_index(
-    mol, no_reverse: bool = False, with_edge_attr=False
+    mol, no_reverse: bool = False, with_edge_attr=False, with_shortest_hops=False
 ) -> torch.Tensor:
     """Computes edge index from mol object"""
     edge_list = []
@@ -157,11 +136,19 @@ def compute_edge_index(
 
     edge_index = torch.from_numpy(np.array(edge_list).T).long()
 
+    shortest_hops = None
+    if with_shortest_hops:
+        num_atoms = mol.GetNumAtoms()
+        adj_matrix = rdmolops.GetAdjacencyMatrix(mol)
+        shortest_path_result, _ = algos.floyd_warshall(adj_matrix)
+        mask = ~np.eye(num_atoms, dtype=np.bool_) # get rid of self interactions
+        shortest_hops = torch.from_numpy(shortest_path_result[mask]).long()
+        
     if with_edge_attr:
         edge_attr = torch.tensor(bond_types, dtype=torch.float32)  # (num_edges, 1)
-        return edge_index, edge_attr
+        return edge_index, edge_attr, shortest_hops
 
-    return edge_index, None
+    return edge_index, None, shortest_hops
 
 
 def get_neighbor_ids(data):

@@ -9,7 +9,6 @@ from datamol.types import Mol
 from typing import Callable, Tuple
 import datamol as dm
 
-
 # Suppress RDKit warnings
 RDLogger.DisableLog("rdApp.*")
 
@@ -116,23 +115,22 @@ class FeaturizeMolecule(BaseTransform):
     def forward(self, data):
         if hasattr(data, "smiles"):
             smiles = data.smiles
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is not None:
-                mol = Chem.AddHs(mol)
-                
-                node_attr = self.get_atom_features(smiles)
-                chiral_index, chiral_nbr_index, chiral_tag = self.get_chiral_centers(
-                    smiles
-                )
-                bonded_edge_index, edge_features = self.get_edge_index(smiles, False)
-        
-                data.node_attr = node_attr
-                data.chiral_index = chiral_index
-                data.chiral_nbr_index = chiral_nbr_index
-                data.chiral_tag = chiral_tag
+            node_attr = self.get_atom_features(smiles)
+            chiral_index, chiral_nbr_index, chiral_tag = self.get_chiral_centers(
+                smiles
+            )
+            bonded_edge_index, edge_features, shortest_hops = self.get_edge_index(smiles, True, True)
 
-        data.bonded_edge_index = bonded_edge_index
-        data.edge_features = edge_features
+            data.node_attr = node_attr
+            data.chiral_index = chiral_index
+            data.chiral_nbr_index = chiral_nbr_index
+            data.chiral_tag = chiral_tag
+            data.shortest_hops = shortest_hops
+            data.bonded_edge_index = bonded_edge_index
+            data.edge_features = edge_features
+        else:
+            data.bonded_edge_index = torch.empty((2, 0)).long()
+            data.edge_features = None
         return data
     
     def get_mol(self, smiles: str) -> Mol:
@@ -161,11 +159,13 @@ class FeaturizeMolecule(BaseTransform):
         return atom_features
 
     def get_edge_index_from_mol(
-        self, mol: Mol, use_edge_feat: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns edge index and edge attributes for a given mol object."""
-        edge_index, edge_attr = compute_edge_index(mol, with_edge_attr=use_edge_feat)
-        return edge_index, edge_attr
+        self, mol: Mol, use_edge_feat: bool = False, use_shortest_hops: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns edge index and edge attributes and shortest_hops for a given mol object."""
+        edge_index, edge_attr, shortest_hops  = compute_edge_index(
+            mol, with_edge_attr=use_edge_feat, with_shortest_hops=use_shortest_hops
+        )
+        return edge_index, edge_attr, shortest_hops
 
     @cache_decorator
     def get_chiral_centers(self, smiles: str) -> torch.Tensor:
@@ -194,18 +194,19 @@ class FeaturizeMolecule(BaseTransform):
 
     @cache_decorator
     def get_edge_index(
-        self, smiles: str, use_edge_feat: bool
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns edge index and edge attributes for a given smiles."""
+        self, smiles: str, use_edge_feat: bool, use_shortest_hops: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns edge index and edge attributes and shortest_hops for a given smiles."""
         # compute edge index
         mol = self.get_mol(smiles)
-        edge_index, edge_attr = self.get_edge_index_from_mol(
-            mol, use_edge_feat=use_edge_feat
+        edge_index, edge_attr, shortest_hops = self.get_edge_index_from_mol(
+            mol, use_edge_feat=use_edge_feat, use_shortest_hops=use_shortest_hops
         )
 
         self.cache[smiles]["edge_index"] = edge_index
         self.cache[smiles]["edge_attr"] = edge_attr
-        return edge_index, edge_attr
+        self.cache[smiles]["shortest_hops"] = shortest_hops
+        return edge_index, edge_attr, shortest_hops
     
     @cache_decorator
     def get_atom_features(self, smiles: str, use_ogb_feat: bool = True) -> torch.Tensor:

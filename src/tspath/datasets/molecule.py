@@ -328,14 +328,14 @@ class ConformerDataset(InMemoryDataset):
         
         data = Data(
             x=atomic_numbers,  # [num_atoms]
-            num_atoms = torch.tensor(len(atomic_numbers), dtype=torch.long),
             charges=atomic_charges,  # [num_atoms]
             pos=positions.view(-1, 3),  # [num_conformers*num_atoms, 3]
             energy=energies,  # [num_conformers, 1]
             boltzmann_weights=boltzmann_weights,  # [num_conformers, 1]
+            num_atoms=torch.tensor(len(atomic_numbers), dtype=torch.long),
+            num_conformers=positions.shape[0],
             smiles=smiles,
             formula=formula,
-            num_conformers=positions.shape[0],
         )
         
         return data
