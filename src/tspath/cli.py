@@ -18,22 +18,27 @@ OmegaConf.register_new_resolver(
 log = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-@hydra.main(config_path='configs',version_base='1.2',config_name='diffusion')
+@hydra.main(config_path='configs',version_base='1.2',config_name='train')
 def train(cfg):
     
     log.info("Starting training for run: {}".format(cfg.run.id))
     if cfg.get("print_config", True):
         fields = (
             "run",
-            "diffusion",
+            "globals",
+            "generative_model",
+            "drifting_field",
+            "prior",
+            "embedder",
+            "model",
             "dataset",
             "trainer",
             "callbacks",
-            "logger",
+            "loggers",
             "seed",
         )
         print_config(cfg, fields=fields, resolve=False)
-        
+
     ########## Hyperparameters and settings ##########
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision('medium')
@@ -52,13 +57,13 @@ def train(cfg):
     for logger_name, logger in cfg.loggers.items():
         loggers.append(instantiate(logger))
 
-    ########## Train the diffusion model #############
-    diff_process = instantiate(cfg.diffusion)
+    ########## Train the generative model #############
+    diff_process = instantiate(cfg.generative_model)
     
     # Load pretrained model if specified
-    if cfg.diffusion.pretrained is not None:
-        log.info(f"\n\nLoading pretrained model from <{cfg.diffusion.pretrained}>\n\n")
-        pretrained = torch.load(cfg.diffusion.pretrained, "cpu", weights_only=False)
+    if cfg.generative_model.pretrained is not None:
+        log.info(f"\n\nLoading pretrained model from <{cfg.generative_model.pretrained}>\n\n")
+        pretrained = torch.load(cfg.generative_model.pretrained, "cpu", weights_only=False)
 
         if isinstance(pretrained, torch.nn.Module):
             state_dict = pretrained.state_dict()
@@ -90,7 +95,7 @@ def sample(cfg):
     if cfg.get("print_config", True):
         fields = (
             "run",
-            "diffusion",
+            "generative_model",
             "dataset",
             "seed",
         )
@@ -104,18 +109,18 @@ def sample(cfg):
     test_dataset = instantiate(cfg.dataset.test_dataset)
     test_dataloader = instantiate(cfg.dataset.val_dataloader, dataset=test_dataset)
 
-    diff_process = instantiate(cfg.diffusion)
-    log.info("Loading model checkpoint: <{}>".format(cfg.diffusion.checkpoint_path))
+    diff_process = instantiate(cfg.generative_model)
+    log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.checkpoint_path))
     state_dict = torch.load(
-        cfg.diffusion.checkpoint_path, weights_only=False, map_location=device
+        cfg.generative_model.checkpoint_path, weights_only=False, map_location=device
     )["state_dict"]
     diff_process.load_state_dict(state_dict)
     diff_process.to(device)
     diff_process.eval()
 
-    nfe = cfg.diffusion.n_sample_steps
-    guidance_scale = getattr(cfg.diffusion, "guidance_scale", 0.0)
-    conditioned = getattr(cfg.diffusion, "conditioned", True)
+    nfe = cfg.generative_model.n_sample_steps
+    guidance_scale = getattr(cfg.generative_model, "guidance_scale", 0.0)
+    conditioned = getattr(cfg.generative_model, "conditioned", True)
     log.info(
         f"Sampling with NFE={nfe}, "
         f"guidance_scale={guidance_scale}, "
@@ -128,7 +133,7 @@ def sample(cfg):
             batch=batch,
             num_steps=nfe,
             save_folder=f"nfe_{nfe}_gs_{guidance_scale}",
-            save_trajectory=getattr(cfg.diffusion, "save_trajectory", False),
+            save_trajectory=getattr(cfg.generative_model, "save_trajectory", False),
             conditioned=conditioned,
             guidance_scale=guidance_scale,
         )

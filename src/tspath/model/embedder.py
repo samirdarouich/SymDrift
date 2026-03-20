@@ -7,10 +7,12 @@ import torch.nn as nn
 from torch import Tensor
 import einops
 import numpy as np
-from torch_scatter import scatter_add
+from torch_scatter import scatter_add, scatter
+from torch_geometric.nn import radius_graph
 
 GM_DIM = {3: 94, 4: 198, 5: 360, 6: 593, 7: 910}
 
+__all__ = ["GaussianMomentEmbedder", "DistanceEmbedder"]
 
 def uniform_range(minval: float, maxval: float):
     """
@@ -328,7 +330,7 @@ class RadialFunction(nn.Module):
 
         return radial_function
 
-class GaussianMomentDescriptor(nn.Module):
+class GaussianMomentEmbedder(nn.Module):
     def __init__(
         self,
         n_contr: int = 8,
@@ -337,6 +339,7 @@ class GaussianMomentDescriptor(nn.Module):
         n_radial: int = 5,
         use_atom_type_embeddings: bool = False,
         reduced_dim: Optional[int] = None,
+        aggregation: Optional[str] = "mean",
     ):
         """
         Initializes the GaussianMomentDescriptor with given radial function and number of contractions.
@@ -353,6 +356,8 @@ class GaussianMomentDescriptor(nn.Module):
               Whether to use atom type embeddings in the radial function. Defaults to False.
             reduced_dim (Optional[int], optional):
               If specified, reduces the output dimension of the descriptor to this value using a linear layer. Defaults to None (no reduction).
+            aggregation (str, optional):
+                Method for aggregating the moments (e.g., 'mean', 'add').
         """
         super().__init__()
         self.n_contr = n_contr
@@ -366,6 +371,7 @@ class GaussianMomentDescriptor(nn.Module):
         self.triang_idxs_2d = tril_2d_indices(self.n_radial)
         self.triang_idxs_3d = tril_3d_indices(self.n_radial)
         self.reduced_dim = reduced_dim
+        self.aggregation = aggregation
 
         if reduced_dim is not None:
             self.dim = GM_DIM[self.n_radial]
@@ -375,8 +381,10 @@ class GaussianMomentDescriptor(nn.Module):
     def forward(
         self,
         positions: Tensor,
-        edge_index: Tensor,
+        batch: Tensor,
         Z: Optional[Tensor] = None,
+        edge_index: Optional[Tensor] = None,
+        **kwargs
     ):
         """
         Computes the Gaussian moments for given coordinates, edge indices, and atomic numbers.
@@ -384,10 +392,12 @@ class GaussianMomentDescriptor(nn.Module):
         Args:
             positions (Tensor):
               Tensor of shape (n_atoms, 3) containing the positions of the atoms.
-            edge_index (Tensor):
-              Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
+            batch (Tensor):
+                Tensor of shape (n_atoms,) containing the batch indices for each atom, if applicable.
             Z (Tensor, optional):
               Tensor of shape (n_atoms) containing the atomic numbers of the atoms.
+            edge_index (Tensor, optional):
+              Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
 
         Returns:
             Tensor:
@@ -395,6 +405,9 @@ class GaussianMomentDescriptor(nn.Module):
               number of contractions. The shape depends on the number of contractions
               and the radial basis functions.
         """
+        if edge_index is None:
+            edge_index = radius_graph(positions, r=self.r_max, batch=batch)
+            
         jj, ii = edge_index[0], edge_index[1]
         rij = positions[jj] - positions[ii]
         distances = torch.norm(rij, dim=-1, keepdim=True)
@@ -476,4 +489,65 @@ class GaussianMomentDescriptor(nn.Module):
         if self.reduced_dim is not None:
             gaussian_moments = self.reduction_layer(gaussian_moments)
 
-        return gaussian_moments
+        # Aggregate over the batch dimension if wanted
+        if self.aggregation is None:
+            return gaussian_moments
+        else:
+            return scatter(gaussian_moments, batch, dim=0, reduce=self.aggregation)
+
+class DistanceEmbedder(nn.Module):
+    def __init__(self, invariant=False):
+        super().__init__()
+        self.invariant = invariant
+        
+    def forward(
+        self, 
+        positions: Tensor, 
+        batch: Tensor,
+        Z: Optional[Tensor] = None, 
+        invariant: Optional[bool] = None,
+        **kwargs
+    ):
+        """
+        Embed the positions of atoms using a distance-based embedding.
+        
+        Args:
+            positions (Tensor): 
+                Tensor of shape (B*n_atoms, 3) containing the positions of the atoms.
+            batch (Tensor):
+                Tensor of shape (B*n_atoms,) containing the batch indices for each atom.
+            Z (Tensor, optional): 
+                Tensor of shape (B*n_atoms) containing the atomic numbers of the atoms.
+                Needed if `invariant` is True to compute the invariant embedding. 
+            invariant (bool, optional): 
+                If True, the embedding will be invariant to permutations of atoms. 
+                If False, the embedding will be based on the full distance matrix. 
+                If None, it will use the class attribute `self.invariant`.
+        """
+        if invariant is None:
+            # if desired overwrite invariant attribute with forward argument
+            self.invariant = invariant
+            
+        # reshape positions to (B, n_atoms, 3) and compute pairwise distances
+        B = batch.max().item() + 1
+        n_atoms = positions.shape[0] // B
+        pos = positions.view(B, n_atoms, 3)
+        
+        # Compute full distance matrix
+        distance = torch.cdist(pos, pos)
+        if self.invariant:
+            z = Z.view(B, n_atoms)
+            unique_types = torch.unique(z)
+            d = []
+            for Zi in unique_types:
+                for Zj in unique_types:
+                    mask_i = (z == Zi)[:, :, None]  # (B, N,1)
+                    mask_j = (z == Zj)[:, None, :]  # (B, 1,N)
+                    pair_mask = mask_i & mask_j     # (B, N, N)
+                    d_ = distance[pair_mask].view(B, -1)
+                    d_ = torch.sort(d_, dim=1)[0]
+                    d.append(d_)
+            d = torch.cat(d, dim=1)
+            return d
+        else:
+            return distance.view(B, -1)

@@ -74,7 +74,7 @@ class MoleculeDataset(InMemoryDataset):
         pre_filter=None,
         augment_with_rotations=False,
         augment_with_permutations=False,
-    ):
+    ):  
         self.identifier = identifier
         self.source = source
         
@@ -98,7 +98,7 @@ class MoleculeDataset(InMemoryDataset):
             
         self.comp_to_indices = defaultdict(list)
         for idx in range(len(self)):
-            self.comp_to_indices[self.get(idx).formula.item()].append(idx)
+            self.comp_to_indices[self.formula[idx].item()].append(idx)
         self.compositions = sorted(list(self.comp_to_indices.keys()))
 
     def _apply_split(self, split, split_identifier=None):
@@ -180,6 +180,7 @@ class ConformerDataset(InMemoryDataset):
         pre_filter=None,
         sort_by_boltzmann_weight=True,
         keep_top_n=30,
+        **kwargs,
     ):  
         self.source = source
         
@@ -198,17 +199,23 @@ class ConformerDataset(InMemoryDataset):
         # load split if specified
         if split is not None:
             self._apply_split(split, split_identifier)
-            
+    
     def _cache_indices(self):
         self.comp_to_indices = defaultdict(list)
         self.file_identifier_to_indices = {}
-        for idx in range(len(self)):
-            data = self.get(idx)
-            self.comp_to_indices[data.formula].append(idx)
-            self.file_identifier_to_indices[data.file_identifier] = idx
-        self.compositions = sorted(list(self.comp_to_indices.keys()))
-        self.file_identifiers = sorted(list(self.file_identifier_to_indices.keys()))
-        
+
+        # Direct access to in-memory data
+        for idx, formula, file_id in zip(
+            range(len(self)), 
+            self.formula, 
+            self.file_identifier
+        ):
+            self.comp_to_indices[formula].append(idx)
+            self.file_identifier_to_indices[file_id] = idx
+
+        self.compositions = sorted(self.comp_to_indices.keys())
+        self.file_identifiers = sorted(self.file_identifier_to_indices.keys())
+    
     @property
     def raw_file_names(self):
         return glob.glob(osp.join(self.raw_dir, "*.pickle"))

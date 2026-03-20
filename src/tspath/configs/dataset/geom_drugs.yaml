@@ -1,0 +1,58 @@
+# Dataset configuration for GEOM Drugs dataset
+
+# Dataset specific parameters
+name: geom_drugs
+root: ${run.work_dir}/data/${dataset.name}
+identifier: smiles
+split_identifier: geomol
+batch_size: 2
+
+# Define training and validation datasets and dataloaders
+train_dataset:
+  _target_: tspath.datasets.ConformerDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: train
+  split_identifier: ${dataset.split_identifier}
+  identifier: ${dataset.identifier}
+  sort_by_boltzmann_weight: true
+  keep_top_n: 30
+
+val_dataset:
+  _target_: tspath.datasets.ConformerDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: val
+  split_identifier: ${dataset.split_identifier}
+  identifier: ${dataset.identifier}
+  sort_by_boltzmann_weight: true
+  keep_top_n: 30
+
+test_dataset:
+  _target_: tspath.datasets.ConformerDataset
+  root: ${dataset.root}
+  source: ${dataset.name}
+  split: test
+  split_identifier: ${dataset.split_identifier}
+  identifier: ${dataset.identifier}
+
+train_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  num_workers: 1
+  persistent_workers: True
+  batch_size: ${dataset.batch_size}
+  shuffle: True
+
+val_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  num_workers: 1
+  persistent_workers: True
+  batch_size: ${dataset.batch_size}
+  shuffle: False
+
+test_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  num_workers: 1
+  persistent_workers: True
+  batch_size: ${dataset.batch_size}
+  shuffle: False

@@ -1,0 +1,10 @@
+
+# Coordinate space 
+_target_: tspath.generative.EquivariantDriftingField
+temperatures: ${globals.temperatures}
+normalize_over_x: true
+normalize_drift: true
+aligned: true
+permuted: true
+# only feasible for small molecues. Otherwise iterative algorithm (high chance to get stuck in local minima)
+brute_force_permutations: true 

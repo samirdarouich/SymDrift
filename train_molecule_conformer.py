@@ -27,16 +27,13 @@ def create_batch_object(batch, n_samples, prior_type="harmonic"):
     batch_sampling = Batch.from_data_list(repeated_list)
     
     # Sample from the prior
-    # create dummy with correct shape (batch.pos has shape (n_conformers*n_atoms,3))
-    dummy = torch.zeros((batch_sampling.x.shape[0],3), device=batch_sampling.pos.device)
-    
     if prior_type == "gaussian":
         # Gaussian Prior
-        z = sample_noise_like(dummy, batch_sampling.batch)
+        z = sample_noise_like(batch_sampling.x, batch_sampling.batch)
     elif prior_type == "harmonic":
         # Harmonic Prior
         z = HarmonicSampler().sample(
-            size=dummy.shape, 
+            size=batch_sampling.x.shape, 
             edge_index=batch_sampling.bonded_edge_index,
             batch=batch_sampling.batch, 
             smiles=batch_sampling.smiles,
@@ -130,7 +127,7 @@ dataset = ConformerDataset(
 dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
-model_type = "torchmd"
+model_type = "painn"
 aligned = True
 permuted = True
 brute_force_permutations = True

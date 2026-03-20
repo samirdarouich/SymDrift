@@ -1,48 +1,54 @@
+import json
+import logging
 import os
-import numpy as np
+
 import matplotlib.pyplot as plt
-from ase.io import write
+import numpy as np
 import torch
+from ase.io import write
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
+from tspath.analysis import (
+    evaluate_covmat,
+    get_validity,
+    pca_plot,
+    print_covmat_results,
+)
 from tspath.datasets import ConformerDataset
-from tspath.generative import DriftingField, HarmonicSampler
-from tspath.model import EGNN, PaiNN, MLP, TorchMDDynamics, GaussianMomentDescriptor, DiT
-from tspath.utils import sample_noise_like, batch_inputs_to_atoms
-from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot, distance_embedder
-from torch_geometric.nn import global_mean_pool
-from torch.optim.lr_scheduler import CosineAnnealingLR
-import logging
-import json
-from torch_geometric.data import Batch
-from torch_geometric.nn import radius_graph
+from tspath.generative import DriftingField, GaussianSampler, HarmonicSampler
+from tspath.model import (
+    EGNN,
+    MLP,
+    DistanceEmbedder,
+    DiT,
+    GaussianMomentEmbedder,
+    PaiNN,
+    TorchMDDynamics,
+)
+from tspath.utils import batch_inputs_to_atoms
 
 logging.basicConfig(level=logging.INFO)
 
-def create_batch_object(batch, n_samples, prior_type="harmonic"):
+
+def create_batch_object(batch, n_samples):
 
     # Repeat each graph in the batch n_samples times to create a new batch for sampling
     data_list = batch.to_data_list()
     repeated_list = [data for data in data_list for _ in range(n_samples)]
-    batch_sampling = Batch.from_data_list(repeated_list)
-    
-    # Sample from the prior
-    # create dummy with correct shape (batch.pos has shape (n_conformers*n_atoms,3))
-    dummy = torch.zeros((batch_sampling.x.shape[0],3), device=batch_sampling.pos.device)
-    
-    if prior_type == "gaussian":
-        # Gaussian Prior
-        z = sample_noise_like(dummy, batch_sampling.batch)
-    elif prior_type == "harmonic":
-        # Harmonic Prior
-        z = HarmonicSampler().sample(
-            size=dummy.shape, 
-            edge_index=batch_sampling.bonded_edge_index,
-            batch=batch_sampling.batch, 
-            smiles=batch_sampling.smiles,
-        )
-    batch_sampling.pos = z
-    return batch_sampling
+    batch_negative = Batch.from_data_list(repeated_list)
+
+    z = prior_sampler.sample(
+        size=(batch_negative.num_nodes, 3),
+        edge_index=batch_negative.bonded_edge_index,
+        batch=batch_negative.batch,
+        smiles=batch_negative.smiles,
+    )
+    batch_negative.pos = z
+
+    return batch_negative
+
 
 @torch.no_grad()
 def sample(model, batch, n_samples):
@@ -66,22 +72,22 @@ def sample(model, batch, n_samples):
 
     return atoms_samples, atoms_noise
 
-        
+
 def visualize(model, batch, current_step, n_samples=None, outdir=None):
     step = current_step
     atoms_samples, atoms_noise = sample(model, batch, n_samples=n_samples)
     metrics_generated = get_validity(atoms_samples)
-    
+
     # compute coverage and recall for different rmsd thresholds (not using hydrogens)
     results = evaluate_covmat(
-        atoms_samples, 
-        dataset_atoms, 
-        thresholds=[0.1, 0.2, 0.5], 
-        num_workers=8, 
-        same_order=False, 
-        worker_fn_type="rmsd_wo_h"
+        atoms_samples,
+        dataset_atoms,
+        thresholds=np.arange(0.05, 3.05, 0.05),
+        num_workers=8,
+        same_order=False,
+        worker_fn_type="rmsd_wo_h",
     )
-    
+
     df, metrics = print_covmat_results(results, step, threshold=0.2)
 
     if outdir is not None:
@@ -94,33 +100,21 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         write(f"{plot_dir}/noise.xyz", atoms_noise)
         write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
+        df.to_csv(f"{plot_dir}/step_{step_str}_covmat_results.csv", index=False)
         pca_plot(
-            ref=dataset_atoms, 
-            samples=atoms_samples, 
-            embedding_style="invariant_distance", 
-            save_path=f"{plot_dir}/step_{step_str}_pca.png"
+            ref=dataset_atoms,
+            samples=atoms_samples,
+            embedding_style="invariant_distance",
+            save_path=f"{plot_dir}/step_{step_str}_pca.png",
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
-            json.dump({
-                **metrics_generated,
-                **metrics
-            }, f, indent=4
-            )
-        print(f"Epoch {epoch}: Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
+            json.dump({**metrics_generated, **metrics}, f, indent=4)
+        print(
+            f"Epoch {epoch}: Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}"
+        )
     plt.close()
     return atoms_samples
 
-def embedder_fn(embedder_type, x, atomic_numbers, batch_idx):
-    if embedder_type == "gm":
-        edge_index = radius_graph(x, r=gm_descriptor.r_max, batch=batch_idx)
-        x_embedded = gm_descriptor(x, edge_index, atomic_numbers)
-        x_embedded = global_mean_pool(x_embedded, batch_idx)
-    elif embedder_type == "distance":
-        B = batch_idx.max().item() + 1
-        x_ = x.view(B, -1, 3)
-        atomic_numbers_ = atomic_numbers.view(B, -1)
-        x_embedded = distance_embedder(x_, atomic_numbers_, invariant=True)
-    return x_embedded
 
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -143,39 +137,65 @@ metrics_dataset = get_validity(dataset_atoms)
 
 model_type = "painn"
 model_dict = {
-    "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),
+    "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
-    "mlp": MLP(input_dim=4*6, hidden_dim=256, num_layers=9, output_dim=3*6), # d=4*n_atoms
-    "dit": DiT(sphere_channels=256, num_layers=9, num_heads=8, sphere_channels_mlp=512, max_radius=11.0),
-    "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9, max_radius=11.0)
+    "mlp": MLP(
+        input_dim=4 * 6, hidden_dim=256, num_layers=9, output_dim=3 * 6
+    ),  # d=4*n_atoms
+    "dit": DiT(
+        sphere_channels=256,
+        num_layers=9,
+        num_heads=8,
+        sphere_channels_mlp=512,
+        max_radius=11.0,
+    ),
+    "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9, max_radius=11.0),
 }
 model = model_dict[model_type]
 model.to(device)
 
+
+## define the embedder (GM or distance)
 embedder_type = "distance"
 if embedder_type == "gm":
     #! GM descriptor
     n_radial = 4
     n_basis = 4
-    n_contr = 4 # distances # 8 distances + angle
-    gm_descriptor = GaussianMomentDescriptor(
-        n_radial=n_radial, n_basis=n_basis, max_radius=11.0, n_contr=n_contr, use_atom_type_embeddings=True
+    n_contr = 4  # distances # 8 distances + angle
+    embedder = GaussianMomentEmbedder(
+        n_radial=n_radial,
+        n_basis=n_basis,
+        max_radius=11.0,
+        n_contr=n_contr,
+        use_atom_type_embeddings=True,
     )
-    gm_descriptor.to(device)
+    embedder.to(device)
 
     optimizer = torch.optim.AdamW(
         [
             {"params": model.parameters(), "lr": 5e-5},
-            {"params": gm_descriptor.parameters(), "lr": 1e-4},
+            {"params": embedder.parameters(), "lr": 1e-4},
         ],
-        weight_decay=0.0
+        weight_decay=0.0,
     )
-    embedder_str = f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
+    embedder_str = (
+        f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
+    )
 elif embedder_type == "distance":
     #! Invariant distance embedder
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     embedder_str = "embedder_distance"
-    
+    embedder = DistanceEmbedder(invariant=True)
+
+
+## Define the prior sampler (harmonic or gaussian)
+sampler_type = "harmonic"
+if sampler_type == "harmonic":
+    prior_sampler = HarmonicSampler()
+elif sampler_type == "gaussian":
+    prior_sampler = GaussianSampler()
+
+
 only_pos_drift = False
 drift_str = "all_drift"
 if only_pos_drift:
@@ -210,7 +230,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 50_000 #500_000
+n_steps = 50_000  # 500_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -223,63 +243,64 @@ for epoch in pbar:
         batch = batch.to(device)
 
         # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch.num_atoms * batch.num_conformers 
+        batch_sizes = batch.num_atoms * batch.num_conformers
         conformer_idx = torch.arange(
             batch.num_graphs, device=batch_sizes.device
         ).repeat_interleave(batch_sizes)
         y_pos = batch.pos.clone()
         z_pos = batch.x.clone()
-        
+
         # Sample n_neg priors per graph
-        batch_neg = create_batch_object(batch, n_samples=n_neg_per_pos, prior_type="harmonic")
+        batch_neg = create_batch_object(batch, n_samples=n_neg_per_pos)
 
         # Call the model
         x = model(batch_neg)
-        
+
         # Per Class compute the drift seperately
         loss = 0.0
         for i in range(batch.num_graphs):
-             # positions have shape n_conformers*n_atoms, 3
+            # positions have shape n_conformers*n_atoms, 3
             mask_pos = conformer_idx == i
             y_i_pos = y_pos[mask_pos]
 
             # atomic numbers have shape n_atoms
             mask_pos = batch.batch == i
             z_i_pos = z_pos[mask_pos].repeat(batch.num_conformers[i])
-            
+
             # Embedding of y samples
             batch_i_pos = torch.arange(
                 batch.num_conformers[i], device=device
             ).repeat_interleave(batch.num_atoms[i])
             with torch.no_grad():
-                y_i_pos_embedded = embedder_fn(
-                    embedder_type, y_i_pos, z_i_pos, batch_i_pos
+                y_i_pos_embedded = embedder(
+                    positions=y_i_pos, Z=z_i_pos, batch=batch_i_pos
                 )
-        
+
             # search negative samples corresponding to the current positive sample
             mask_neg = torch.isin(
-                batch_neg.batch, 
+                batch_neg.batch,
                 torch.arange(
-                    i*n_neg_per_pos, (i+1)*n_neg_per_pos,
-                    device=batch_neg.batch.device
-                )
+                    i * n_neg_per_pos,
+                    (i + 1) * n_neg_per_pos,
+                    device=batch_neg.batch.device,
+                ),
             )
             x_i = x[mask_neg]
             z_i_neg = batch_neg.x[mask_neg]
-            
+
             # Embedding of x samples
-            batch_i_neg = torch.arange(
-                n_neg_per_pos, device=device
-            ).repeat_interleave(batch.num_atoms[i])
-            x_i_embedded = embedder_fn(embedder_type, x_i, z_i_neg, batch_i_neg)
-            
+            batch_i_neg = torch.arange(n_neg_per_pos, device=device).repeat_interleave(
+                batch.num_atoms[i]
+            )
+            x_i_embedded = embedder(positions=x_i, Z=z_i_neg, batch=batch_i_neg)
+
             # Call the drift (atomic numbers will be repeated for negative samples)
             V, V_pos, V_neg, *_ = drifting_field(
                 x_i_embedded.detach(),
                 y_i_pos_embedded,
                 x_i_embedded.detach(),
             )
-            
+
             if only_pos_drift:
                 x_i_drifted = (x_i_embedded + V_pos).detach()
             else:
@@ -290,38 +311,46 @@ for epoch in pbar:
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         if embedder_type == "gm":
-            torch.nn.utils.clip_grad_norm_(gm_descriptor.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(embedder.parameters(), max_norm=1.0)
 
         optimizer.step()
         losses.append(loss.item())
         pbar.set_postfix(
             {
-                "step": step_count, 
+                "step": step_count,
                 "loss": loss.item(),
             }
         )
 
         if step_count % (n_steps // 10) == 0 and step_count > 0:
-            # Sample in total 1000 samples. This will produce per batch item n_samples, 
+            # Sample in total 1000 samples. This will produce per batch item n_samples,
             # which will result in 1000 samples overall
-            n_samples = 1000 // batch.num_graphs 
+            n_samples = 1000 // batch.num_graphs
             visualize(
-                model, batch, current_step=step_count, n_samples=n_samples, outdir=outdir
+                model,
+                batch,
+                current_step=step_count,
+                n_samples=n_samples,
+                outdir=outdir,
             )
         step_count += 1
 
     # Update learning rate scheduler at the end of each epoch
     scheduler.step()
-            
+
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
 n_samples = 1000 // batch.num_graphs
-atoms_samples = visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
+atoms_samples = visualize(
+    model, batch, current_step="final", n_samples=n_samples, outdir=outdir
+)
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 
 metrics_generated = get_validity(atoms_samples)
 for metric_name in metrics_dataset.keys():
-    print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
+    print(
+        f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}"
+    )
 with open(f"{plot_dir}/metrics.json", "w") as f:
     json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)

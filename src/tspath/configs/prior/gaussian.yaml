@@ -1,0 +1,3 @@
+
+# Use COM free Gaussian prior for positions
+_target_: tspath.generative.GaussianSampler

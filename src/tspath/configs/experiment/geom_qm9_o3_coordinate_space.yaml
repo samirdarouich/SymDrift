@@ -1,0 +1,20 @@
+# @package _global_
+
+defaults:
+  - drifting
+  - override /dataset: geom_qm9
+  - override /drifting_field: coordinate_space
+
+run:
+  experiment: geom_qm9_o3_coordinate_space
+
+globals:
+  temperatures: [0.02, 0.05, 0.2]
+
+generative_model:
+  sample_every_epoch: 100
+  embedder: null # we work in coordinate space, so no need for an embedder
+
+
+trainer:
+  max_epochs: 1000

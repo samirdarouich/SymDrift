@@ -1,0 +1,6 @@
+
+# Embedding space
+_target_: tspath.generative.DriftingField
+temperatures: ${globals.temperatures}
+normalize_over_x: true
+normalize_drift: true

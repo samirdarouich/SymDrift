@@ -971,6 +971,7 @@ class TorchMDDynamics(nn.Module):
         edge_one_hot: bool = False,
         edge_one_hot_types: int = 5,
         parity_switch=False,
+        **kwargs,
     ):
         super().__init__()
         self.cutoff = max_radius

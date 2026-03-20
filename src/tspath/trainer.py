@@ -1,247 +1,168 @@
 import os
 import time
+from typing import Optional, Union
 
-import numpy as np
 import pytorch_lightning as pl
 import torch
+import json
+import numpy as np
 from ase.io import write
-import wandb
-from tspath.analysis import check_validity
+from torch_geometric.data import Batch
+
+from tspath.alignment import get_rmsd_batched_scatter
+from tspath.analysis import get_validity, pca_plot, evaluate_covmat, print_covmat_results
+from tspath.generative import (
+    DriftingField,
+    EquivariantDriftingField,
+    GaussianSampler,
+    HarmonicSampler,
+)
+from tspath.model import DistanceEmbedder, GaussianMomentEmbedder
 from tspath.utils import (
     batch_inputs_to_atoms,
-    sample_noise_like_2d,
-    sample_noise_like,
 )
 
+__all__ = ["DriftingMolecules", "Drifting"]
 
-class ReactionPath(pl.LightningModule):
+class DriftingMolecules(pl.LightningModule):
     def __init__(
         self,
         model,
-        generative_scheduler,
-        sample_every_epoch=50,
-        n_sample_steps=10,
-        p_null_mask=0.0,
-        guidance_scale=0.0,
+        n_neg_per_pos: int,
+        drifting_field: Union[DriftingField, EquivariantDriftingField],
+        prior_sampler: Union[GaussianSampler, HarmonicSampler] = GaussianSampler(),
+        embedder: Union[None, DistanceEmbedder, GaussianMomentEmbedder] = None,
+        only_pos_drift: bool = False,
+        sample_every_epoch: int = 50,
+        identifier: str = "smiles",
+        save_folder: Optional[str] = "samples",
         **kwargs,
     ):
+        """
+        Initialize the Drifting model.
+
+        Args:
+            model:
+                The neural network model that predicts the flow field.
+            n_neg_per_pos:
+                The number of negative samples to generate per positive sample.
+            drifting_field:
+                The drifting field module that computes the drift based on the model's output.
+            prior_sampler:
+                The sampler to use for generating negative samples from the prior distribution.
+            embedder:
+                An optional embedder to compute the drift loss in latent space.
+            only_pos_drift:
+                If True, only use the positive drift (attraction) for computing the
+                drifted position and loss. If False, use the full drift (attraction + repulsion).
+            sample_every_epoch:
+                How often (in epochs) to generate and visualize samples during training.
+            identifier: str
+                The key in the batch data to use as identifier for saving the samples
+                (e.g., "smiles", "reaction_id", etc.)
+            save_folder: str
+                The folder where to save generated samples and visualizations.
+            **kwargs:
+                Additional hyperparameters to save.
+        """
         super().__init__()
-        self.save_hyperparameters(ignore=["model"])
+        self.save_hyperparameters(ignore=["model", "drifting_field", "embedder"])
         self.model = model
-        self.generative_scheduler = generative_scheduler
-        self.sample_every_epoch = sample_every_epoch
-        self.n_sample_steps = n_sample_steps
-        self.p_null_mask = p_null_mask
-        self.guidance_scale = guidance_scale
-
-    def configure_optimizers(self):
-        optimizer = self.hparams.optimizer(self.model.parameters())
-        scheduler = self.hparams.scheduler(optimizer)
-        return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
-
-    def _step(self, batch, step):
-        # Use diffusion process to get noisy positions and target noise
-        xt, t, eps_target = self.generative_scheduler.sample_t_and_diffuse(
-            batch.pos, batch.batch
-        )
-
-        batch.pos = xt
-        batch.t = t
-
-        # Predict noise
-        eps_pred = self.model(batch)
-
-        # Compute loss
-        loss = torch.nn.functional.mse_loss(eps_pred, eps_target)
-
-        # Log metrics
-        metrics = {"loss": loss}
-        batch_size = batch.batch.max().item() + 1
-        for metric_name, metric in metrics.items():
-            self.log(
-                f"{step}/{metric_name}",
-                metric,
-                on_step=(step == "train"),
-                on_epoch=(step != "train"),
-                prog_bar=False,
-                batch_size=batch_size,
-            )
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        loss = self._step(batch, "train")
-        if (
-            (self.current_epoch % self.sample_every_epoch == 0)
-            and (batch_idx == 0)
-            and (self.current_epoch > 0)
-        ):
-            self.sample(batch, step="train", guidance_scale=self.guidance_scale)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        loss = self._step(batch, "val")
-        if (self.current_epoch % self.sample_every_epoch == 0) and (
-            self.current_epoch > 0
-        ):
-            self.sample(batch, step="val", guidance_scale=self.guidance_scale)
-        return loss
-
-    @torch.no_grad()
-    def sample(
-        self,
-        batch,
-        save_folder=None,
-        save_trajectory=False,
-        step=None,
-        conditioned=True,
-        guidance_scale=0.0,
-    ):
-        """Generate samples by integrating the learned flow field."""
-
-        was_training = self.model.training
-        self.model.eval()
-
-        start_time = time.time()
-        x1_pred, trajectory = self.generative_scheduler.sample(
-            num_steps=self.n_sample_steps,
-            model=self.model,
-            batch=batch.clone(),
-            conditioned=conditioned,
-            guidance_scale=guidance_scale,
-        )
-        elapsed_time = time.time() - start_time
-
-        # Convert to ASE Atoms
-        batch.pos = x1_pred
-        atoms_pred = batch_inputs_to_atoms(batch, pos_key="pos")
-
-        # Compute metrics
-        validity_res = check_validity(atoms_pred)
-
-        stable_ats = np.concatenate(validity_res["stable_atoms"])
-        stable_mols = np.array(validity_res["stable_molecules"])
-        stable_ats_wo_h = np.concatenate(validity_res["stable_atoms_wo_h"])
-        stable_mols_wo_h = np.array(validity_res["stable_molecules_wo_h"])
-        connected = np.array(validity_res["connected"])
-        connected_wo_h = np.array(validity_res["connected_wo_h"])
-
-        # infer metrics from validity results
-        metrics = {
-            "frac_stable_atoms": stable_ats.mean(),
-            "frac_stable_molecules": stable_mols.mean(),
-            "frac_stable_atoms_wo_h": stable_ats_wo_h.mean(),
-            "frac_stable_molecules_wo_h": stable_mols_wo_h.mean(),
-            "frac_connected_molecules": connected.mean(),
-            "frac_connected_molecules_wo_h": connected_wo_h.mean(),
-        }
-
-        # Save samples and trajectory if specified
-        if save_folder is not None:
-            os.makedirs(save_folder, exist_ok=True)
-            for i, atoms in enumerate(atoms_pred):
-                sample_folder = f"{save_folder}/rxn_{atoms.info['reaction_id']}"
-                os.makedirs(sample_folder, exist_ok=True)
-                # atoms.info["rmsd"] = rmsd[i].item()
-                atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
-                atoms.write(f"{sample_folder}/sample.xyz")
-                write(f"{save_folder}/sample_db.xyz", atoms, append=True)
-
-            if save_trajectory:
-                for step_idx, x_step in enumerate(trajectory):
-                    batch.pos_ts = x_step
-                    atoms_step = batch_inputs_to_atoms(batch, pos_key="pos")
-                    for atoms in atoms_step:
-                        sample_folder = f"{save_folder}/rxn_{atoms.info['reaction_id']}"
-                        atoms.info["step"] = step_idx
-                        write(f"{sample_folder}/traj.xyz", atoms, append=True)
-
-        if step is not None:
-            batch_size = batch.batch.max().item() + 1
-            for metric_name, metric in metrics.items():
-                self.log(
-                    f"{step}/{metric_name}",
-                    metric,
-                    on_step=(step == "train"),
-                    on_epoch=(step != "train"),
-                    prog_bar=False,
-                    batch_size=batch_size,
-                )
-
-        if was_training:
-            self.model.train()
-
-        return atoms_pred, metrics
-
-
-class Drifting(pl.LightningModule):
-    def __init__(
-        self,
-        model,
-        drifting_field,
-        sample_every_epoch=50,
-        p_null_mask=0.0,
-        guidance_scale=0.0,
-        visualize_type="samples",
-        **kwargs,
-    ):
-        super().__init__()
-        self.save_hyperparameters(ignore=["model", "drifting_field"])
-        self.model = model
+        self.n_neg_per_pos = n_neg_per_pos
         self.drifting_field = drifting_field
+        self.embedder = embedder
+        self.prior_sampler = prior_sampler
+        self.only_pos_drift = only_pos_drift
         self.sample_every_epoch = sample_every_epoch
-        self.p_null_mask = p_null_mask
-        self.guidance_scale = guidance_scale
-        self.visualize_type = visualize_type
+        self.identifier = identifier
+        self.save_folder = save_folder
 
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
         if self.hparams.get("scheduler") is not None:
             scheduler = self.hparams.scheduler(optimizer)
-            return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
+            return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
         else:
             return optimizer
 
-    def _step(self, batch, step):
-        # Target data
-        y = batch.pos.clone()
-        batch.pos_orig = y
+    def sample_negative_batch(self, batch, n_neg_per_pos):
+        """
+        Create a new batch by repeating each graph in the input batch n_neg_per_pos
+        times and sampling from the prior for each graph.
+        """
 
-        # Sample prior noise
-        if self.visualize_type == "2d":
-            z = sample_noise_like_2d(y, batch.batch)
-        else:
-            z = sample_noise_like(y, batch.batch)
-        batch.pos = z
+        # Repeat each graph in the batch n_neg_per_pos times to create a new batch for sampling
+        data_list = batch.to_data_list()
+        repeated_list = [data for data in data_list for _ in range(n_neg_per_pos)]
+        batch_negative = Batch.from_data_list(repeated_list)
 
-        # generate samples
-        x = self.model(batch)
+        # Sample from the prior 
+        z = self.prior_sampler.sample(
+            size=(batch_negative.num_nodes, 3),
+            edge_index=batch_negative.bonded_edge_index,
+            batch=batch_negative.batch,
+            smiles=batch_negative.smiles,
+        )
+        batch_negative.pos = z
+        return batch_negative
 
-        # drifting field
-        v_total = torch.zeros_like(x)
-        unique_conformers = batch.formula.unique()
-        expanded_formula = batch.formula[batch.batch]
-        for conf in unique_conformers:
-            mask = expanded_formula == conf
-            mask_i = batch.formula == conf
+    def _compute_drift_coordinate_space(self, x, batch_pos, batch_neg, step):
+        """Compute the drift in coordinate space and the corresponding loss."""
+        # We got n_pos graphs, where each have n_conformers
+        batch_sizes = batch_pos.num_atoms * batch_pos.num_conformers
+        conformer_batch = torch.arange(
+            batch_pos.num_graphs, device=x.device
+        ).repeat_interleave(batch_sizes)
+        y_pos = batch_pos.pos.clone()
+        z_pos = batch_pos.x.clone()
 
-            # compute drifting field for each conformer
-            v, *_ = self.drifting_field(
-                x=x[mask],
-                y_pos=y[mask],
-                y_neg=x[mask],
-                n_atoms=batch.num_atoms[mask_i][0],
+        # Per class compute the drift seperately
+        V_total = torch.zeros_like(x)
+        V_pos_total = torch.zeros_like(x)
+        for i in range(batch_pos.num_graphs):
+            # positions have shape n_conformers*n_atoms, 3
+            mask_pos = conformer_batch == i
+            y_i_pos = y_pos[mask_pos]
+
+            # atomic numbers have shape n_atoms
+            mask_pos = batch_pos.batch == i
+            z_i_pos = z_pos[mask_pos].repeat(batch_pos.num_conformers[i])
+
+            # search negative samples corresponding to the current positive sample
+            mask_neg = torch.isin(
+                batch_neg.batch,
+                torch.arange(
+                    i * self.n_neg_per_pos,
+                    (i + 1) * self.n_neg_per_pos,
+                    device=batch_neg.batch.device,
+                ),
             )
-            v_total[mask] = v
+            x_i = x[mask_neg]
+            z_i_neg = batch_neg.x[mask_neg]
 
-        # stop-gradient target
-        x_drift = (x + v_total).detach()
+            # Compute the drift
+            V, V_pos, V_neg, *_ = self.drifting_field(
+                x_i.detach(),  # avoid unnecessary gradient tracking
+                y_i_pos,
+                x_i.detach(),  # avoid unnecessary gradient tracking
+                batch_pos.num_atoms[i],
+                atomic_numbers_pos=z_i_pos,
+                atomic_numbers_neg=z_i_neg,
+            )
+            V_total[mask_neg] = V
+            V_pos_total[mask_neg] = V_pos
 
-        # Compute loss
-        loss = ((x - x_drift) ** 2).sum(dim=1).mean()
+        # In case only attraction
+        if self.only_pos_drift:
+            x_drifted = (x + V_pos_total).detach()
+        else:
+            x_drifted = (x + V_total).detach()
+
+        # Compute RMSD loss
+        loss = get_rmsd_batched_scatter(x, x_drifted, batch_neg.batch).mean()
 
         # Log metrics
         metrics = {"loss": loss}
-        batch_size = batch.batch.max().item() + 1
         for metric_name, metric in metrics.items():
             self.log(
                 f"{step}/{metric_name}",
@@ -249,33 +170,159 @@ class Drifting(pl.LightningModule):
                 on_step=(step == "train"),
                 on_epoch=(step != "train"),
                 prog_bar=False,
-                batch_size=batch_size,
+                batch_size=batch_neg.num_graphs,
             )
+        return loss
+
+    def _compute_drift_embedded_space(self, x, batch_pos, batch_neg, step):
+        """Compute the drift in embedded space and the corresponding loss."""
+        # We got n_pos graphs, where each have n_conformers
+        batch_sizes = batch_pos.num_atoms * batch_pos.num_conformers
+        conformer_batch = torch.arange(
+            batch_pos.num_graphs, device=x.device
+        ).repeat_interleave(batch_sizes)
+        y_pos = batch_pos.pos.clone()
+        z_pos = batch_pos.x.clone()
+
+        # Per class compute the drift seperately
+        loss = 0.0
+        for i in range(batch_pos.num_graphs):
+            # positions have shape n_conformers*n_atoms, 3
+            mask_pos = conformer_batch == i
+            y_i_pos = y_pos[mask_pos]
+
+            # atomic numbers have shape n_atoms
+            mask_pos = batch_pos.batch == i
+            z_i_pos = z_pos[mask_pos].repeat(batch_pos.num_conformers[i])
+
+            # Embedding of y samples
+            batch_i_pos = torch.arange(
+                batch_pos.num_conformers[i], device=x.device
+            ).repeat_interleave(batch_pos.num_atoms[i])
+            with torch.no_grad():
+                y_i_pos_embedded = self.embedder(
+                    positions=y_i_pos, Z=z_i_pos, batch=batch_i_pos
+                )
+
+            # search negative samples corresponding to the current positive sample
+            mask_neg = torch.isin(
+                batch_neg.batch,
+                torch.arange(
+                    i * self.n_neg_per_pos,
+                    (i + 1) * self.n_neg_per_pos,
+                    device=x.device,
+                ),
+            )
+            x_i = x[mask_neg]
+            z_i_neg = batch_neg.x[mask_neg]
+
+            # Embedding of x samples
+            batch_i_neg = torch.arange(
+                self.n_neg_per_pos, device=x.device
+            ).repeat_interleave(batch_pos.num_atoms[i])
+            x_i_embedded = self.embedder(positions=x_i, Z=z_i_neg, batch=batch_i_neg)
+
+            # Call the drift
+            V, V_pos, V_neg, *_ = self.drifting_field(
+                x_i_embedded.detach(),
+                y_i_pos_embedded,
+                x_i_embedded.detach(),
+            )
+
+            if self.only_pos_drift:
+                x_i_drifted = (x_i_embedded + V_pos).detach()
+            else:
+                x_i_drifted = (x_i_embedded + V).detach()
+
+            loss = loss + torch.nn.functional.mse_loss(x_i_embedded, x_i_drifted)
+
+        # Log metrics
+        metrics = {"loss": loss}
+        for metric_name, metric in metrics.items():
+            self.log(
+                f"{step}/{metric_name}",
+                metric,
+                on_step=(step == "train"),
+                on_epoch=(step != "train"),
+                prog_bar=False,
+                batch_size=batch_neg.num_graphs,
+            )
+        return loss
+
+    def _step(self, batch_pos, step):
+
+        # Sample n_neg priors per graph
+        batch_neg = self.sample_negative_batch(
+            batch_pos, n_neg_per_pos=self.n_neg_per_pos
+        )
+
+        # Predict using the model
+        x = self.model(batch_neg)
+
+        # Per Class compute the drift seperately
+        if self.embedder is not None:
+            loss = self._compute_drift_embedded_space(x, batch_pos, batch_neg, step)
+        else:
+            loss = self._compute_drift_coordinate_space(x, batch_pos, batch_neg, step)
+
         return loss
 
     def training_step(self, batch, batch_idx):
         loss = self._step(batch, "train")
+        
+        if loss.isnan():
+            raise ValueError(
+                f"NaN loss encountered at {self.current_epoch}, batch {batch_idx}"
+            )
         if (
             (self.current_epoch % self.sample_every_epoch == 0)
             and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
-            self.visualize(batch, step="train", outdir="visualizations")
+            if self.save_folder is not None:
+                save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
+            self.sample(
+                batch, 
+                step="train", 
+                save_folder=save_folder, 
+                save_pca_plot=True, 
+                seed=42, 
+                n_neg_per_pos=10
+            )
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self._step(batch, "val")
-        # if (self.current_epoch % self.sample_every_epoch == 0) and (
-        #     self.current_epoch > 0
-        # ):
-        #     self.sample(batch, step="val", guidance_scale=self.guidance_scale)
+        if (
+            (self.current_epoch % self.sample_every_epoch == 0)
+            and (batch_idx == 0)
+            and (self.current_epoch > 0)
+        ):
+            if self.save_folder is not None:
+                save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
+            self.sample(
+                batch, 
+                step="val", 
+                save_folder=save_folder, 
+                save_pca_plot=True, 
+                seed=42, 
+                n_neg_per_pos=10
+            )
         return loss
 
     @torch.no_grad()
     def sample(
-        self, batch, save_folder=None, step=None, conditioned=True, guidance_scale=0.0
+        self,
+        batch_pos,
+        save_folder=None,
+        step=None,
+        n_neg_per_pos=None,
+        save_pca_plot=False,
+        seed=None,
     ):
-        """Generate samples by integrating the learned flow field."""
+        """Generate n_neg_per_pos samples per graph"""
+        if seed is not None:
+            torch.manual_seed(seed)
 
         was_training = self.model.training
         self.model.eval()
@@ -283,54 +330,69 @@ class Drifting(pl.LightningModule):
         start_time = time.time()
 
         # Sample prior noise
-        if self.visualize_type == "2d":
-            z = sample_noise_like_2d(batch.pos, batch.batch)
-        else:
-            z = sample_noise_like(batch.pos, batch.batch)
-        batch.pos = z
+        batch_sampling = self.sample_negative_batch(
+            batch_pos, n_neg_per_pos=n_neg_per_pos or self.n_neg_per_pos
+        )
 
         # generate samples
-        x = self.model(batch)
+        x = self.model(batch_sampling)
 
         elapsed_time = time.time() - start_time
 
         # Convert to ASE Atoms
-        batch.pos = x
-        atoms_pred = batch_inputs_to_atoms(batch, pos_key="pos")
+        batch_sampling.pos_generated = x
+        atoms_noise = batch_inputs_to_atoms(
+            batch_sampling, pos_key="pos", info_keys=[self.identifier]
+        )
+        atoms_pred = batch_inputs_to_atoms(
+            batch_sampling, pos_key="pos_generated", info_keys=[self.identifier]
+        )
+        # Get positive atoms for evaluation (treating each conformer as a separate graph
+        # in the batch)
+        atoms_positive = self._get_pos_atoms(batch_pos)
 
-        # Compute metrics
-        validity_res = check_validity(atoms_pred)
+        # Compute metrics (validity)
+        metrics_val = get_validity(atoms_pred)
+        results = evaluate_covmat(
+            atoms_pred, 
+            atoms_positive, 
+            thresholds=np.arange(0.05, 3.05, 0.05), 
+            num_workers=0, 
+            same_order=False, 
+            worker_fn_type="rmsd_wo_h"
+        )
+        df, metrics_cov = print_covmat_results(results, threshold=0.2)
 
-        stable_ats = np.concatenate(validity_res["stable_atoms"])
-        stable_mols = np.array(validity_res["stable_molecules"])
-        stable_ats_wo_h = np.concatenate(validity_res["stable_atoms_wo_h"])
-        stable_mols_wo_h = np.array(validity_res["stable_molecules_wo_h"])
-        connected = np.array(validity_res["connected"])
-        connected_wo_h = np.array(validity_res["connected_wo_h"])
-
-        # infer metrics from validity results
-        metrics = {
-            "frac_stable_atoms": stable_ats.mean(),
-            "frac_stable_molecules": stable_mols.mean(),
-            "frac_stable_atoms_wo_h": stable_ats_wo_h.mean(),
-            "frac_stable_molecules_wo_h": stable_mols_wo_h.mean(),
-            "frac_connected_molecules": connected.mean(),
-            "frac_connected_molecules_wo_h": connected_wo_h.mean(),
-        }
-
-        # Save samples and trajectory if specified
+        metrics = {**metrics_val, **metrics_cov}
+        
+        # Save samples
         if save_folder is not None:
             os.makedirs(save_folder, exist_ok=True)
+            write(f"{save_folder}/noise.xyz", atoms_noise)
             for i, atoms in enumerate(atoms_pred):
-                sample_folder = f"{save_folder}/rxn_{atoms.info['reaction_id']}"
+                sample_folder = (
+                    f"{save_folder}/{self.identifier}_{atoms.info[self.identifier]}"
+                )
                 os.makedirs(sample_folder, exist_ok=True)
-                # atoms.info["rmsd"] = rmsd[i].item()
                 atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
-                atoms.write(f"{sample_folder}/sample.xyz")
+                write(f"{sample_folder}/sample.xyz", atoms, append=True)
                 write(f"{save_folder}/sample_db.xyz", atoms, append=True)
 
+            with open(f"{save_folder}/metrics.json", "w") as f:
+                json.dump({"step": self.global_step, **metrics}, f, indent=4)
+                
+            df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
+                
+            if save_pca_plot:
+                pca_plot(
+                    atoms_positive,
+                    atoms_pred,
+                    embedder=DistanceEmbedder(invariant=True),
+                    identifier=self.identifier,
+                    save_path=f"{save_folder}/pca_plot.png",
+                )
+
         if step is not None:
-            batch_size = batch.batch.max().item() + 1
             for metric_name, metric in metrics.items():
                 self.log(
                     f"{step}/{metric_name}",
@@ -338,7 +400,7 @@ class Drifting(pl.LightningModule):
                     on_step=(step == "train"),
                     on_epoch=(step != "train"),
                     prog_bar=False,
-                    batch_size=batch_size,
+                    batch_size=batch_sampling.num_graphs,
                 )
 
         if was_training:
@@ -346,36 +408,36 @@ class Drifting(pl.LightningModule):
 
         return atoms_pred, metrics
     
-    def visualize(self, batch, step, outdir=None):
-        pos_dataset = batch.pos_orig.cpu().numpy()
-        epoch = self.current_epoch
-        atoms_pred, _ = self.sample(batch, step=step)
+    def _get_pos_atoms(self, batch_pos):
+        batch_pos_ = batch_pos.clone()
+        # get positive atoms (consiting of sum n_i_conformers_per_graph)
+        z_split = torch.split(batch_pos.x, batch_pos.num_atoms.tolist())
+        z_pos = torch.cat(
+            [
+                z_i.repeat(n_conf_i, 1)
+                for z_i, n_conf_i in zip(z_split, batch_pos.num_conformers)
+            ]
+        ).view(-1)
+
+        # treat each conformer as a separate graph in the batch for evaluation
+        conformer_batch = torch.cat(
+            [
+                torch.arange(n_conf_i, device=z_pos.device).repeat_interleave(n_atom_i)
+                for n_conf_i, n_atom_i in zip(batch_pos.num_conformers, batch_pos.num_atoms)
+            ]
+        )
         
-        if outdir is not None:
-            os.makedirs(f"{outdir}/{step}", exist_ok=True)
+        batch_pos_.batch = conformer_batch
+        batch_pos_.x = z_pos
 
-        if self.visualize_type == "samples":
-            # Write atoms as png image using ASE's built-in visualization
-            for i, atoms in enumerate(atoms_pred):
-                sample_path = f"{outdir}/{step}/epoch_{epoch:05d}_sample_{i}.png"
-                write(sample_path, atoms, scale=100)
-                self.logger.experiment.log(
-                    {f"{step}/structure_{i}": wandb.Image(sample_path)}
-                )
-        elif self.visualize_type == "2d":
-            import matplotlib.pyplot as plt
-            x_samples = torch.tensor([atoms.get_positions() for atoms in atoms_pred]).view(-1, 3)
-            plt.scatter(pos_dataset[:, 0], pos_dataset[:, 1], alpha=0.5, color="gray", label="Dataset")
-            plt.scatter(x_samples[:, 0], x_samples[:, 1], alpha=0.5, color="red", label="Samples")
-            plt.legend()
-            plt.xlim(-1.5, 1.5)
-            plt.ylim(-1.5, 1.5)
-            plt.savefig(f"{outdir}/{step}/epoch_{epoch:05d}_samples.png")
-            plt.close()
+        batch_pos_.smiles = [ smi for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers) for _ in range(n_conf_i) ]
+        atoms_positive = batch_inputs_to_atoms(
+            batch_pos_, pos_key="pos", info_keys=[self.identifier]
+        )
+        return atoms_positive
 
 
-class DriftingDummy(Drifting):
-
+class Drifting(pl.LightningModule):
     def _step(self, y, step):
 
         # Sample prior noise
@@ -437,12 +499,13 @@ class DriftingDummy(Drifting):
     def visualize(self, y, step, n_samples=1000, outdir=None):
         """Plot generated samples vs groundtruth and save/log the figure."""
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         # Get current epoch
         epoch = self.current_epoch
-        
+
         # Generate samples from noise
         x = self.sample(n_samples, y, step=step)
 
@@ -462,12 +525,15 @@ class DriftingDummy(Drifting):
 
         if outdir is not None:
             os.makedirs(f"{outdir}/{step}", exist_ok=True)
-            fig.savefig(f"{outdir}/{step}/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight")
+            fig.savefig(
+                f"{outdir}/{step}/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight"
+            )
 
         # Log to WandB if available
         if self.logger is not None:
             try:
                 import wandb
+
                 self.logger.experiment.log(
                     {f"{outdir}/samples_{step}": wandb.Image(fig)}, epoch=epoch
                 )
@@ -486,7 +552,7 @@ class DriftingDummy(Drifting):
             self.visualize(batch, step="train", outdir="visualizations")
 
         return loss
-    
+
     def validation_step(self, batch, batch_idx):
         loss = self._step(batch, "val")
         return loss

@@ -1,9 +1,22 @@
 import torch
 from torch_geometric.utils import get_laplacian, scatter, to_dense_adj
-from tspath.utils import batch_center_systems
+from tspath.utils import batch_center_systems, sample_noise_like
 import logging
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["GaussianSampler", "HarmonicSampler"]
+
+class GaussianSampler:
+    def __init__(self):
+        pass
+
+    def sample(self, size, batch=None, **kwargs):
+        x = torch.empty(size)
+        if batch is not None:
+            x = x.to(batch.device)
+        noise = sample_noise_like(x, batch=batch)
+        return noise
 
 class HarmonicSampler:
     def __init__(self, alpha=1.0):

@@ -1,0 +1,83 @@
+# @package _global_
+
+defaults:
+  - /dataset: null
+  - /model: torchmd
+  - /prior: harmonic
+  - /drifting_field: embedding_space
+  - /embedder: distance
+
+seed: 42
+
+run:
+  experiment: base
+  id: ${uuid:1}
+  path: ${run.work_dir}/runs
+  work_dir: ${hydra:runtime.cwd}
+  # if training should be continued from a checkpoint
+  ckpt_path: null 
+
+globals:
+  use_noise_schedule_sigma_encoding: false
+  # used to switch parity of predictions (to correct chirality)
+  parity_switch: null # post_hoc 
+  temperatures: [0.02, 0.05, 0.2]
+
+generative_model:
+  _target_: tspath.trainer.DriftingMolecules
+  sample_every_epoch: 100
+
+  # The drifting field needs to invariant wrt to permutations, translations and rotations
+  # (if using an equivariant model. This is either possible by aligning each y to each x
+  # or by using an invariant embedder (sorted distances for example))
+  drifting_field: ${drifting_field}
+
+  # The prior sampler defines the distribution from which the initial samples are drawn before applying the drift.
+  prior_sampler: ${prior}
+
+  # optional embedder to transform the input data into a different space before applying the drift.
+  embedder: ${embedder}
+
+  # This will only use attractive drift
+  only_pos_drift: false 
+
+  # Number of negative samples to use per positive sample
+  n_neg_per_pos: 32
+
+  # Model and optimizer configuration
+  model: ${model.model}
+  optimizer: ${model.optimizer}
+  scheduler: ${model.scheduler}
+
+  # Identifier for writing ASE atoms
+  identifier: ${dataset.identifier}
+
+  # Folder to save generated samples during training (if none, samples will not be saved)
+  save_folder: generated_samples
+
+  # Path to pretrained model checkpoint for fine-tuning
+  pretrained: null 
+
+trainer:
+  max_epochs: 1000
+  gradient_clip_val: ${model.gradient_clip_val}
+
+callbacks:
+  lr_monitor:
+    _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: epoch
+  
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: 'checkpoints/'
+    filename: "epoch_{epoch}-step_{step}"
+    save_last: True
+
+loggers:
+  wandb_logger:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    save_dir: "."
+    name: ${replace:${run.id}, "/", "_"}
+    id: ${replace:${run.id}, "/", "_"}
+    project: ${run.experiment}
+    offline: false

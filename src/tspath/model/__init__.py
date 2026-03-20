@@ -2,7 +2,7 @@ from .equiformer_v2.equiformer_v2_denoising import EquiformerV2S_OC20_DenoisingP
 from .painn import PaiNN
 from .mlp import MLP
 from .egnn import EGNN
-from .gm import GaussianMomentDescriptor
+from .embedder import GaussianMomentEmbedder, DistanceEmbedder
 from .gvp import GVPModel
 from .dit.dit import DiT
 from .torchmdnet import TorchMDDynamics
