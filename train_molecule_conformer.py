@@ -6,8 +6,8 @@ import torch
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
 from tspath.datasets import ConformerDataset
-from tspath.generative import EquivariantDriftingField, HarmonicSampler
-from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics, CosineAnnealingWarmupRestarts
+from tspath.generative import EquivariantDriftingField, HarmonicSampler, GaussianSampler
+from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics, CosineAnnealingWarmupRestarts, DistanceEmbedder
 from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched_scatter
 from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot
@@ -19,27 +19,22 @@ from torch_geometric.data import Batch
 
 logging.basicConfig(level=logging.INFO)
 
-def create_batch_object(batch, n_samples, prior_type="harmonic"):
+def create_batch_object(batch, n_samples):
 
     # Repeat each graph in the batch n_samples times to create a new batch for sampling
     data_list = batch.to_data_list()
     repeated_list = [data for data in data_list for _ in range(n_samples)]
-    batch_sampling = Batch.from_data_list(repeated_list)
-    
-    # Sample from the prior
-    if prior_type == "gaussian":
-        # Gaussian Prior
-        z = sample_noise_like(batch_sampling.x, batch_sampling.batch)
-    elif prior_type == "harmonic":
-        # Harmonic Prior
-        z = HarmonicSampler().sample(
-            size=batch_sampling.x.shape, 
-            edge_index=batch_sampling.bonded_edge_index,
-            batch=batch_sampling.batch, 
-            smiles=batch_sampling.smiles,
-        )
-    batch_sampling.pos = z
-    return batch_sampling
+    batch_negative = Batch.from_data_list(repeated_list)
+
+    z = prior_sampler.sample(
+        size=(batch_negative.num_nodes, 3),
+        edge_index=batch_negative.bonded_edge_index,
+        batch=batch_negative.batch,
+        smiles=batch_negative.smiles,
+    )
+    batch_negative.pos = z
+
+    return batch_negative
 
 @torch.no_grad()
 def sample(model, batch, n_samples):
@@ -79,7 +74,7 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         worker_fn_type="rmsd_wo_h"
     )
     
-    df, metrics = print_covmat_results(results, step, threshold=0.2)
+    df, metrics = print_covmat_results(results, threshold=0.2)
 
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
@@ -92,10 +87,10 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
         pca_plot(
-            ref=dataset_atoms, 
-            samples=atoms_samples, 
-            embedding_style="invariant_distance", 
-            save_path=f"{plot_dir}/step_{step_str}_pca.png"
+            ref=dataset_atoms,
+            samples=atoms_samples,
+            embedder=DistanceEmbedder(invariant=True),
+            save_path=f"{plot_dir}/step_{step_str}_pca.png",
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
             json.dump({
@@ -155,6 +150,14 @@ ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
 os.makedirs(plot_dir, exist_ok=True)
+
+## Define the prior sampler (harmonic or gaussian)
+sampler_type = "harmonic"
+if sampler_type == "harmonic":
+    prior_sampler = HarmonicSampler()
+elif sampler_type == "gaussian":
+    prior_sampler = GaussianSampler()
+
 
 drifting_field = EquivariantDriftingField(
     temperatures=temperatures,

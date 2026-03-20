@@ -88,7 +88,7 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         worker_fn_type="rmsd_wo_h",
     )
 
-    df, metrics = print_covmat_results(results, step, threshold=0.2)
+    df, metrics = print_covmat_results(results, threshold=0.2)
 
     if outdir is not None:
         os.makedirs(outdir, exist_ok=True)
@@ -104,7 +104,7 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         pca_plot(
             ref=dataset_atoms,
             samples=atoms_samples,
-            embedding_style="invariant_distance",
+            embedder=DistanceEmbedder(invariant=True),
             save_path=f"{plot_dir}/step_{step_str}_pca.png",
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
@@ -123,7 +123,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset_name = "geom_qm9"
 split_identifier = "geomol"
 split_identifier = "geomol_debug"
-split_identifier = "geomol_debug_bigger"
+# split_identifier = "geomol_debug_bigger"
 
 dataset = ConformerDataset(
     source=dataset_name,
@@ -135,7 +135,7 @@ dataset = ConformerDataset(
 dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
-model_type = "painn"
+model_type = "torchmd"
 model_dict = {
     "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
@@ -205,7 +205,7 @@ print(f"Dataset: {dataset_name}, Model: {model_type},  drift: {drift_str}")
 normalize_drift = True
 temperatures = [0.05]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/conformer/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
+outdir = f"runs/conformer_test/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
