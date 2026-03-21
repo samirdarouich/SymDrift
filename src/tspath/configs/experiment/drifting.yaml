@@ -17,14 +17,12 @@ run:
   # if training should be continued from a checkpoint
   ckpt_path: null 
 
-globals:
-  use_noise_schedule_sigma_encoding: false
-  # used to switch parity of predictions (to correct chirality)
-  parity_switch: null # post_hoc 
-  temperatures: [0.02, 0.05, 0.2]
-
 generative_model:
   _target_: tspath.trainer.DriftingMolecules
+  
+  # convert all OmegaConf lists to python lists (for better compatibility
+  _convert_: all 
+
   sample_every_epoch: 100
 
   # The drifting field needs to invariant wrt to permutations, translations and rotations

@@ -1,25 +1,33 @@
-from collections import defaultdict
 import logging
+import math
 import os
 import pickle
-from typing import Optional, List, Dict, Any, Sequence, Union
-from ase.data import chemical_symbols
+from collections import defaultdict
+from functools import partial
+from multiprocessing import Pool
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+import matplotlib.pyplot as plt
 import numpy as np
-from tqdm import tqdm
-import math
-from pymatgen.core import Molecule
-from pymatgen.analysis.molecule_matcher import BruteForceOrderMatcher, GeneticOrderMatcher, HungarianOrderMatcher, KabschMatcher
-from ase import Atoms
-from ase.io import read
+import pandas as pd
 import py3Dmol
 import torch
-from tspath.datasets import ToyMoleculeDataset
-import pandas as pd
-from multiprocessing import Pool
-from functools import partial
+from ase import Atoms
+from ase.data import chemical_symbols
+from ase.io import read
+from pymatgen.analysis.molecule_matcher import (
+    BruteForceOrderMatcher,
+    GeneticOrderMatcher,
+    HungarianOrderMatcher,
+    KabschMatcher,
+)
+from pymatgen.core import Molecule
+from rdkit import Chem
+from rdkit.Chem import rdMolAlign
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-from tspath.model import DistanceEmbedder
+from tqdm import tqdm
+from tspath.datasets import ToyMoleculeDataset
+from rdkit.Geometry import Point3D
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,8 @@ __all__ = [
     "evaluate_covmat",
     "worker_fn_rmsd",
     "worker_fn_rmsd_wo_h",
+    "worker_fn_rmsd_rdkit",
+    "worker_fn_rmsd_rdkit_wo_h",
     "worker_fn_distance",
     "pca_plot",
 ]
@@ -217,6 +227,7 @@ allowed_bonds_dict = {
     "I": 1,
 }
 
+
 def generate_bonds_data(save_path: Optional[str] = None, overwrite: bool = False):
     """
     generate the bonds data as connectivity matrix between possible atoms.
@@ -269,6 +280,7 @@ def generate_bonds_data(save_path: Optional[str] = None, overwrite: bool = False
 
     return data
 
+
 def squared_euclidean_distance(a, b):
     """
     Efficiently compute the squared Euclidean distance between two sets of points.
@@ -282,6 +294,7 @@ def squared_euclidean_distance(a, b):
     )
 
     return np.where(distance < 0, np.zeros(distance.shape), distance)
+
 
 def check_validity(
     atoms,
@@ -301,7 +314,7 @@ def check_validity(
     m_bonds_2 = bonds_data["bonds_2"]
     m_bonds_3 = bonds_data["bonds_3"]
     allowed_bonds = bonds_data["allowed_bonds"]
-    
+
     # set default covalent radii relaxation coefficients
     bonds_relaxation = [0.1, 0.05, 0.03]
 
@@ -371,6 +384,7 @@ def check_validity(
 
     return results
 
+
 def get_validity(atoms, progress_bar=False):
     """
     Get the validity of molecules in a batch, including mol connectivity.
@@ -396,7 +410,8 @@ def get_validity(atoms, progress_bar=False):
         "frac_connected_molecules": connected.mean(),
         "frac_connected_molecules_wo_h": connected_wo_h.mean(),
     }
-    
+
+
 def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
     _, count = np.unique(mol1.atomic_numbers, return_counts=True)
     if same_order:
@@ -430,23 +445,28 @@ def pymatgen_rmse(
     ignore_chirality: bool = False,
     threshold: float = 0.5,
     same_order: bool = False,
-): 
+):
     rmse, aligned = rmse_core(mol1, mol2, threshold, same_order=same_order)
     if ignore_chirality:
         coords = mol2.cart_coords
         coords[:, -1] = -coords[:, -1]
         mol2_reflect = Molecule(species=mol2.species, coords=coords)
-        rmse_reflect, aligned_reflect = rmse_core(mol1, mol2_reflect, threshold, same_order=same_order)
+        rmse_reflect, aligned_reflect = rmse_core(
+            mol1, mol2_reflect, threshold, same_order=same_order
+        )
         if rmse_reflect < rmse:
             rmse = rmse_reflect
             aligned = aligned_reflect
     return rmse, aligned
 
-def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_order=False):
+
+def pymatgen_match(
+    ref, sample, ignore_chirality=False, threshold=0.5, same_order=False
+):
     mol_pred = Molecule(
-            species=sample.numbers,
-            coords=sample.positions,
-        )
+        species=sample.numbers,
+        coords=sample.positions,
+    )
     mol_ref = Molecule(
         species=ref.numbers,
         coords=ref.positions,
@@ -459,7 +479,7 @@ def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_orde
         threshold=threshold,
         same_order=same_order,
     )
-    
+
     # pymatgen computes rmse instead of rmsd
     rmsd = rmse * 3**0.5
 
@@ -468,6 +488,7 @@ def pymatgen_match(ref, sample, ignore_chirality=False, threshold=0.5, same_orde
     aligned_sample.numbers = ref.numbers
     aligned_sample.positions = aligned.cart_coords
     return rmsd, aligned_sample
+
 
 def atoms_to_xyz_text(atoms: Atoms):
     xyz_str = f"{len(atoms)}\n\n"
@@ -560,7 +581,7 @@ def visualize_reaction(atoms_list: Sequence[Union[Atoms, str]], offset: float = 
 
 
 def evaluate_toy(samples, dataset_name, **dataset_kwargs):
-    
+
     # Get reference dataset to compute the reference distances
     dataset = ToyMoleculeDataset(
         name=dataset_name,
@@ -571,7 +592,7 @@ def evaluate_toy(samples, dataset_name, **dataset_kwargs):
         seed=42,
         **dataset_kwargs,
     )
-    
+
     # --- Compute reference distances ---
     ref_sample = dataset[0].pos.to(samples.device)
     n_atoms = ref_sample.shape[0]
@@ -579,7 +600,7 @@ def evaluate_toy(samples, dataset_name, **dataset_kwargs):
     idx = torch.triu_indices(n_atoms, n_atoms, offset=1)
     ref_pairwise = ref_dist[idx[0], idx[1]]
     ref_sorted, _ = torch.sort(ref_pairwise)
-    
+
     # --- Sample distances ---
     samples_ = samples.reshape(-1, n_atoms, 3)
     distances = torch.cdist(samples_, samples_)
@@ -590,7 +611,9 @@ def evaluate_toy(samples, dataset_name, **dataset_kwargs):
 
     return mse.item()
 
+
 # code from https://github.com/ML4MolSim/dit_mc/blob/main/dit_mc/evaluate.py
+
 
 def calc_coverage_recall(rmsd_array, thresholds):
     """
@@ -604,9 +627,9 @@ def calc_coverage_recall(rmsd_array, thresholds):
     is computed. A reference conformer is considered "covered" if this minimum
     RMSD is below the specified threshold.
     """
-    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1, keepdims=True) # (num_confs, 1)
-    hits_per_conf = min_rmsd_per_conf < thresholds # (num_confs, num_thresholds)
-    coverage_recall = np.mean(hits_per_conf, axis=0) # (num_thresholds,)
+    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1, keepdims=True)  # (num_confs, 1)
+    hits_per_conf = min_rmsd_per_conf < thresholds  # (num_confs, num_thresholds)
+    coverage_recall = np.mean(hits_per_conf, axis=0)  # (num_thresholds,)
     return coverage_recall
 
 
@@ -622,10 +645,10 @@ def calc_coverage_precision(rmsd_array, thresholds):
     is computed. A generated conformer is considered valid if this minimum
     RMSD is below the specified threshold.
     """
-    thresholds = np.expand_dims(thresholds, 1) # (num_thresholds, 1)
-    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0, keepdims=True) # (1, num_preds)
-    hits_per_pred = min_rmsd_per_pred < thresholds # (num_thresholds, num_preds)
-    coverage_precision = np.mean(hits_per_pred, axis=1) # (num_thresholds,)
+    thresholds = np.expand_dims(thresholds, 1)  # (num_thresholds, 1)
+    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0, keepdims=True)  # (1, num_preds)
+    hits_per_pred = min_rmsd_per_pred < thresholds  # (num_thresholds, num_preds)
+    coverage_precision = np.mean(hits_per_pred, axis=1)  # (num_thresholds,)
     return coverage_precision
 
 
@@ -637,7 +660,7 @@ def calc_amr_recall(rmsd_array):
     For each reference conformer, the minimum RMSD to any generated conformer
     is computed.
     """
-    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1) # (num_confs,)
+    min_rmsd_per_conf = np.nanmin(rmsd_array, axis=1)  # (num_confs,)
     amr_recall = np.mean(min_rmsd_per_conf)
     return amr_recall
 
@@ -650,42 +673,56 @@ def calc_amr_precision(rmsd_array):
     For each generated conformer, the minimum RMSD to any reference conformer
     is computed.
     """
-    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0) # (num_preds,)
+    min_rmsd_per_pred = np.nanmin(rmsd_array, axis=0)  # (num_preds,)
     amr_precision = np.mean(min_rmsd_per_pred)
     return amr_precision
 
-def print_covmat_results(results, threshold):
-
-    df = pd.DataFrame.from_dict(
-        {
-            "Threshold": results["thresholds"],
-            "COV-R_mean": np.mean(results["CoverageR"], 0),
-            "COV-R_median": np.median(results["CoverageR"], 0),
-            "COV-P_mean": np.mean(results["CoverageP"], 0),
-            "COV-P_median": np.median(results["CoverageP"], 0),
-        }
-    )
+def mol_from_ase(ase_atoms):
+    atomic_numbers = ase_atoms.numbers
+    coords = ase_atoms.positions
     
-    df["R_mean"] = np.mean(results["MatchingR"])
-    df["R_median"] = np.median(results["MatchingR"])
-    df["P_mean"] = np.mean(results["MatchingP"])
-    df["P_median"] = np.median(results["MatchingP"])
-    
-    mask = np.abs(results['thresholds'] - threshold) < 1e-6
+    mol = Chem.RWMol()
+    conf = Chem.Conformer(len(atomic_numbers))
 
-    metrics = {
-        "threshold": results["thresholds"][mask].item(),
-        "COV-R_mean": df["COV-R_mean"][mask].to_numpy().item(), # xxx of reference conformers are recovered within the RMSD threshold. --> 1-xxx are missed conformers.
-        "COV-R_median": df["COV-R_median"][mask].to_numpy().item(),
-        "COV-P_mean": df["COV-P_mean"][mask].to_numpy().item(), # Every generated conformer matches a reference conformer within the threshold.
-        "COV-P_median": df["COV-P_median"][mask].to_numpy().item(),
-        "MAT-R_mean": np.mean(results["MatchingR"]).item(), # On average, each reference conformer has a generated one within xxx Å RMSD.
-        "MAT-R_median": np.median(results["MatchingR"]).item(),
-        "MAT-P_mean": np.mean(results["MatchingP"]).item(), # If low, every generated conformer is almost identical to a reference one.
-        "MAT-P_median": np.median(results["MatchingP"]).item(),
-    }
+    for i, (z, pos) in enumerate(zip(atomic_numbers, coords)):
+        atom = Chem.Atom(int(z))
+        mol_idx = mol.AddAtom(atom)
+        conf.SetAtomPosition(mol_idx, Point3D(*pos))
 
-    return df, metrics
+    mol = mol.GetMol()
+    mol.AddConformer(conf)
+    return mol
+
+
+def get_best_rmsd_rdkit(ref_mol, gen_mol, use_alignmol=False):
+    ref_mol_rdikit = mol_from_ase(ref_mol)
+    gen_mol_rdikit = mol_from_ase(gen_mol)
+    try:
+        if use_alignmol:
+            return rdMolAlign.AlignMol(gen_mol_rdikit, ref_mol_rdikit)
+        else:
+            rmsd = rdMolAlign.GetBestRMS(gen_mol_rdikit, ref_mol_rdikit)
+    except:  # noqa
+        rmsd = np.nan
+
+    return rmsd
+
+
+def worker_fn_rmsd_rdkit(job, use_alignmol=False):
+    smiles, i, j, ref_i, pred_j, same_order = job
+    rmsd = get_best_rmsd_rdkit(ref_i, pred_j, use_alignmol=use_alignmol)
+    return smiles, i, j, rmsd
+
+
+def worker_fn_rmsd_rdkit_wo_h(job, use_alignmol=False):
+    smiles, i, j, ref_i, pred_j, same_order = job
+    ref_i_woh = ref_i.copy()
+    pred_j_woh = pred_j.copy()
+    del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol == "H"]]
+    del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol == "H"]]
+    rmsd = get_best_rmsd_rdkit(ref_i_woh, pred_j_woh, use_alignmol=use_alignmol)
+    return smiles, i, j, rmsd
+
 
 def worker_fn_rmsd(job):
     smiles, i, j, ref_i, pred_j, same_order = job
@@ -696,8 +733,8 @@ def worker_fn_rmsd_wo_h(job):
     smiles, i, j, ref_i, pred_j, same_order = job
     ref_i_woh = ref_i.copy()
     pred_j_woh = pred_j.copy()
-    del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol=='H']]
-    del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol=='H']]
+    del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol == "H"]]
+    del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol == "H"]]
     rmsd, _ = pymatgen_match(ref_i_woh, pred_j_woh, same_order=same_order)
     return smiles, i, j, rmsd
 
@@ -716,7 +753,7 @@ def worker_fn_distance(job):
             for Zj in unique_types:
                 mask_i = (Z == Zi)[:, None]  # (N,1)
                 mask_j = (Z == Zj)[None, :]  # (1,N)
-                pair_mask = mask_i & mask_j     # (N,N)
+                pair_mask = mask_i & mask_j  # (N,N)
                 d_ = distance[pair_mask].view(1, -1)
                 d_ = torch.sort(d_, dim=1)[0]
                 d.append(d_)
@@ -724,30 +761,39 @@ def worker_fn_distance(job):
         rmse = torch.sqrt((d**2).mean()).item()
     return smiles, i, j, rmse
 
+
 WORKER_FN_DICT = {
     "rmsd": worker_fn_rmsd,
-    "distance": worker_fn_distance,
     "rmsd_wo_h": worker_fn_rmsd_wo_h,
+    "rmsd_rdkit": worker_fn_rmsd_rdkit,
+    "rmsd_rdkit_wo_h": worker_fn_rmsd_rdkit_wo_h,
+    "distance": worker_fn_distance,
 }
-    
-def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, worker_fn_type="rmsd"):
+
+def evaluate_covmat(
+    preds, refs, thresholds, num_workers=8, same_order=False, worker_fn_type="rmsd"
+):
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     for ref in refs:
         ref_sample_dict[ref.info["smiles"]]["refs"].append(ref)
     for pred in preds:
         ref_sample_dict[pred.info["smiles"]]["preds"].append(pred)
-    
+
     rmsd_results = {
         smiles: np.ones(
-            (len(ref_sample_dict[smiles]["refs"]), len(ref_sample_dict[smiles]["preds"]))
-        ) * np.nan 
+            (
+                len(ref_sample_dict[smiles]["refs"]),
+                len(ref_sample_dict[smiles]["preds"]),
+            )
+        )
+        * np.nan
         for smiles in ref_sample_dict
     }
-    
+
     def populate_results(res):
         smiles, i, j, rmsd_val = res
         rmsd_results[smiles][i, j] = rmsd_val
-        
+
     jobs = []
     for smiles, data in ref_sample_dict.items():
         refs = data["refs"]
@@ -763,12 +809,16 @@ def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, wo
     else:
         map_fn = map
 
-    for res in tqdm(map_fn(WORKER_FN_DICT[worker_fn_type], jobs), total=len(jobs), desc="Computing RMSD matrix"):
+    for res in tqdm(
+        map_fn(WORKER_FN_DICT[worker_fn_type], jobs),
+        total=len(jobs),
+        desc="Computing RMSD matrix",
+    ):
         populate_results(res)
-    
+
     if num_workers > 1:
         p.__exit__(None, None, None)
-            
+
     coverage_recall, coverage_precision = [], []
     amr_recall, amr_precision = [], []
     for rmsd_array in rmsd_results.values():
@@ -788,30 +838,84 @@ def evaluate_covmat(preds, refs, thresholds, num_workers=8, same_order=False, wo
     }
 
     return results
-    
+
+
+def print_covmat_results(results, threshold):
+
+    df = pd.DataFrame.from_dict(
+        {
+            "Threshold": results["thresholds"],
+            "COV-R_mean": np.mean(results["CoverageR"], 0),
+            "COV-R_median": np.median(results["CoverageR"], 0),
+            "COV-P_mean": np.mean(results["CoverageP"], 0),
+            "COV-P_median": np.median(results["CoverageP"], 0),
+        }
+    )
+
+    df["R_mean"] = np.mean(results["MatchingR"])
+    df["R_median"] = np.median(results["MatchingR"])
+    df["P_mean"] = np.mean(results["MatchingP"])
+    df["P_median"] = np.median(results["MatchingP"])
+
+    mask = np.abs(results["thresholds"] - threshold) < 1e-6
+
+    metrics = {
+        "threshold": results["thresholds"][mask].item(),
+        "COV-R_mean": df["COV-R_mean"][mask]
+        .to_numpy()
+        .item(),  # xxx of reference conformers are recovered within the RMSD threshold. --> 1-xxx are missed conformers.
+        "COV-R_median": df["COV-R_median"][mask].to_numpy().item(),
+        "COV-P_mean": df["COV-P_mean"][mask]
+        .to_numpy()
+        .item(),  # Every generated conformer matches a reference conformer within the threshold.
+        "COV-P_median": df["COV-P_median"][mask].to_numpy().item(),
+        "MAT-R_mean": np.mean(
+            results["MatchingR"]
+        ).item(),  # On average, each reference conformer has a generated one within xxx Å RMSD.
+        "MAT-R_median": np.median(results["MatchingR"]).item(),
+        "MAT-P_mean": np.mean(
+            results["MatchingP"]
+        ).item(),  # If low, every generated conformer is almost identical to a reference one.
+        "MAT-P_median": np.median(results["MatchingP"]).item(),
+    }
+
+    return df, metrics
+
 def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
-    
+
     unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in ref])
-    unique_identifier_samples = set([atom.info.get(identifier, "Unknown") for atom in samples])
+    unique_identifier_samples = set(
+        [atom.info.get(identifier, "Unknown") for atom in samples]
+    )
     unique_identifier = unique_identifier_ref.intersection(unique_identifier_samples)
 
     if len(unique_identifier) == 1:
         # Get ref embedding
-        ref_pos = torch.cat([torch.tensor(atom.get_positions()) for atom in ref], dim=0).float()
-        ref_atomic_numbers = torch.cat([torch.tensor(atom.get_atomic_numbers()) for atom in ref], dim=0).float()
+        ref_pos = torch.cat(
+            [torch.tensor(atom.get_positions()) for atom in ref], dim=0
+        ).float()
+        ref_atomic_numbers = torch.cat(
+            [torch.tensor(atom.get_atomic_numbers()) for atom in ref], dim=0
+        ).float()
         batch_ref = torch.arange(len(ref)).repeat_interleave(len(ref[0]))
         ref_emb = embedder(positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref)
-        
+
         if ref_emb.shape[0] == 1:
             logger.debug("Only one reference sample, skipping PCA plot.")
             return
-        
+
         # Get samples embedding
-        samples_pos = torch.cat([torch.tensor(atom.get_positions()) for atom in samples], dim=0).float()
-        samples_atomic_numbers = torch.cat([torch.tensor(atom.get_atomic_numbers()) for atom in samples], dim=0).float()
+        samples_pos = torch.cat(
+            [torch.tensor(atom.get_positions()) for atom in samples], dim=0
+        ).float()
+        samples_atomic_numbers = torch.cat(
+            [torch.tensor(atom.get_atomic_numbers()) for atom in samples], dim=0
+        ).float()
         batch_samples = torch.arange(len(samples)).repeat_interleave(len(samples[0]))
-        samples_emb = embedder(positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples)
-        
+        samples_emb = embedder(
+            positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples
+        )
+
         pca = PCA(n_components=2)
         y_2d = pca.fit_transform(ref_emb)
         x_2d = pca.transform(samples_emb)
@@ -824,37 +928,59 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
         ax.set_xlabel("Component 1")
         ax.set_ylabel("Component 2")
     else:
-        assert "Unknown" not in unique_identifier, f"{identifier} should be given in atom object"
-        
+        assert "Unknown" not in unique_identifier, (
+            f"{identifier} should be given in atom object"
+        )
+
         if len(unique_identifier) > 18:
-            logger.debug(f"Too many unique {identifier} values ({len(unique_identifier)}), skipping PCA plot.")
+            logger.debug(
+                f"Too many unique {identifier} values ({len(unique_identifier)}), skipping PCA plot."
+            )
             return
-        
+
         n_cols = min(len(unique_identifier), 3)
-        n_rows = max(len(unique_identifier) // n_cols, 1)
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
-        axes = axes.flatten()
+        n_rows = max(math.ceil(len(unique_identifier) / n_cols), 1)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows))
+        axes = np.atleast_1d(axes).flatten()
         for i, identifier_value in enumerate(unique_identifier):
             ax = axes[i]
-            
+
             # Get reference embedding
             ref_i = [atom for atom in ref if atom.info[identifier] == identifier_value]
-            
+
             if len(ref_i) == 1:
-                logger.debug(f"Only one reference sample, {identifier}={identifier_value}, skipping...")
+                logger.debug(
+                    f"Only one reference sample, {identifier}={identifier_value}, skipping..."
+                )
                 continue
-            
-            ref_pos = torch.cat([torch.tensor(atom.get_positions()) for atom in ref_i], dim=0).float()
-            ref_atomic_numbers = torch.cat([torch.tensor(atom.get_atomic_numbers()) for atom in ref_i], dim=0).float()
+
+            ref_pos = torch.cat(
+                [torch.tensor(atom.get_positions()) for atom in ref_i], dim=0
+            ).float()
+            ref_atomic_numbers = torch.cat(
+                [torch.tensor(atom.get_atomic_numbers()) for atom in ref_i], dim=0
+            ).float()
             batch_ref_i = torch.arange(len(ref_i)).repeat_interleave(len(ref_i[0]))
-            ref_emb = embedder(positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref_i)
-            
+            ref_emb = embedder(
+                positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref_i
+            )
+
             # Get samples embedding
-            samples_i = [atom for atom in samples if atom.info[identifier] == identifier_value]
-            samples_pos = torch.cat([torch.tensor(atom.get_positions()) for atom in samples_i], dim=0).float()
-            samples_atomic_numbers = torch.cat([torch.tensor(atom.get_atomic_numbers()) for atom in samples_i], dim=0).float()
-            batch_samples_i = torch.arange(len(samples_i)).repeat_interleave(len(samples_i[0]))
-            samples_emb = embedder(positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples_i)
+            samples_i = [
+                atom for atom in samples if atom.info[identifier] == identifier_value
+            ]
+            samples_pos = torch.cat(
+                [torch.tensor(atom.get_positions()) for atom in samples_i], dim=0
+            ).float()
+            samples_atomic_numbers = torch.cat(
+                [torch.tensor(atom.get_atomic_numbers()) for atom in samples_i], dim=0
+            ).float()
+            batch_samples_i = torch.arange(len(samples_i)).repeat_interleave(
+                len(samples_i[0])
+            )
+            samples_emb = embedder(
+                positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples_i
+            )
 
             pca = PCA(n_components=2)
             y_2d = pca.fit_transform(ref_emb)
@@ -862,13 +988,18 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
 
             ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
             ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")
-            ax.set_title(f"{identifier_value}\nPCA variance: {sum(pca.explained_variance_ratio_):.2f}")
+            ax.set_title(
+                f"{identifier_value}\nPCA variance: {sum(pca.explained_variance_ratio_):.2f}"
+            )
             ax.legend()
             ax.set_xlabel("Component 1")
             ax.set_ylabel("Component 2")
-    
+
+        # remove unused axes
+        for j in range(len(unique_identifier), len(axes)):
+            fig.delaxes(axes[j])
+
     fig.tight_layout()
     if save_path is not None:
         fig.savefig(save_path)
     plt.close()
-    

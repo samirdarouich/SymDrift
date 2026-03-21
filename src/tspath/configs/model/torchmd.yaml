@@ -20,8 +20,10 @@ model:
   clip_during_norm: true
   so3_equivariant: false
   output_layer_norm: true
-  parity_switch: ${globals.parity_switch}
-  use_noise_schedule_sigma_encoding: ${globals.use_noise_schedule_sigma_encoding}
+  # used to switch parity of predictions (to correct chirality)
+  parity_switch: null # post_hoc 
+  # use embedding for time conditioning
+  use_noise_schedule_sigma_encoding: false
 
 optimizer:
   _target_: torch.optim.AdamW

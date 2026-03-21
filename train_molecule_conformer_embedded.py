@@ -123,7 +123,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset_name = "geom_qm9"
 split_identifier = "geomol"
 split_identifier = "geomol_debug"
-# split_identifier = "geomol_debug_bigger"
+split_identifier = "geomol_debug_bigger"
 
 dataset = ConformerDataset(
     source=dataset_name,
@@ -203,7 +203,7 @@ if only_pos_drift:
 print(f"Dataset: {dataset_name}, Model: {model_type},  drift: {drift_str}")
 
 normalize_drift = True
-temperatures = [0.05]
+temperatures = [0.02, 0.05, 0.2]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
 outdir = f"runs/conformer_test/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
@@ -230,7 +230,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 50_000  # 500_000
+n_steps = 500  # 500_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)

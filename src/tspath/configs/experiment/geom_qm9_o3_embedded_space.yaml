@@ -7,9 +7,6 @@ defaults:
 run:
   experiment: geom_qm9_o3_embedded_space
 
-globals:
-  temperatures: [0.02, 0.05, 0.2]
-
 generative_model:
   sample_every_epoch: 100
 

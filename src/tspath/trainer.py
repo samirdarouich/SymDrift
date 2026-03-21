@@ -369,6 +369,8 @@ class DriftingMolecules(pl.LightningModule):
         if save_folder is not None:
             os.makedirs(save_folder, exist_ok=True)
             write(f"{save_folder}/noise.xyz", atoms_noise)
+            write(f"{save_folder}/noise.png", atoms_noise[0])
+            write(f"{save_folder}/sample.png", atoms_pred[0])
             for i, atoms in enumerate(atoms_pred):
                 sample_folder = (
                     f"{save_folder}/{self.identifier}_{atoms.info[self.identifier]}"

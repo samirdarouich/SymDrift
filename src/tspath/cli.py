@@ -59,7 +59,7 @@ def train(cfg):
 
     ########## Train the generative model #############
     diff_process = instantiate(cfg.generative_model)
-    
+
     # Load pretrained model if specified
     if cfg.generative_model.pretrained is not None:
         log.info(f"\n\nLoading pretrained model from <{cfg.generative_model.pretrained}>\n\n")
