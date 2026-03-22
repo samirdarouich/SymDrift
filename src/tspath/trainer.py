@@ -416,10 +416,10 @@ class DriftingMolecules(pl.LightningModule):
         z_split = torch.split(batch_pos.x, batch_pos.num_atoms.tolist())
         z_pos = torch.cat(
             [
-                z_i.repeat(n_conf_i, 1)
+                z_i.repeat(n_conf_i)
                 for z_i, n_conf_i in zip(z_split, batch_pos.num_conformers)
             ]
-        ).view(-1)
+        )
 
         # treat each conformer as a separate graph in the batch for evaluation
         conformer_batch = torch.cat(
