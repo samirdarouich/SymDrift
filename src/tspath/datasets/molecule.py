@@ -9,57 +9,14 @@ import logging
 from collections import defaultdict
 from typing import Optional
 from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM, RemoveCOMConformer, FeaturizeMolecule, BoltzmannWeightingConformers
+from tspath.datasets.utils import load_pkl, check_disconnected_components
 from tspath.utils import inputs_to_atoms
 import datamol as dm
 import os
-import pickle
 import glob
 from rdkit.Chem import rdMolDescriptors
 
 logger = logging.getLogger(__name__)
-
-def load_pkl(file_path: str):
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"File {file_path} does not exist.")
-    with open(file_path, "rb") as f:
-        return pickle.load(f)
-
-def check_disconnected_components(mol):
-    """Check for disconnected components using Union-Find algorithm."""
-    # Initialize parent array for union-find
-    n_nodes = mol.GetNumAtoms()
-    parent = list(range(n_nodes))
-
-    edge_index = []
-    for bond in mol.GetBonds():
-        i = bond.GetBeginAtomIdx()
-        j = bond.GetEndAtomIdx()
-        edge_index.append([i, j])
-        edge_index.append([j, i])  # Add reverse edge for undirected graph
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t()
-
-    def find(x):
-        if parent[x] != x:
-            parent[x] = find(parent[x])
-        return parent[x]
-
-    def union(x, y):
-        parent[find(x)] = find(y)
-
-    # Process all edges
-    for i in range(edge_index.shape[1]):
-        src, dst = edge_index[0, i], edge_index[1, i]
-        union(src, dst)
-
-    # Count unique components
-    components = {}
-    for node in range(n_nodes):
-        root = find(node)
-        if root not in components:
-            components[root] = []
-        components[root].append(node)
-
-    return list(components.values())
 
 class MoleculeDataset(InMemoryDataset):
     def __init__(

@@ -347,8 +347,6 @@ class DriftingMolecules(pl.LightningModule):
         atoms_pred = batch_inputs_to_atoms(
             batch_sampling, pos_key="pos_generated", info_keys=[self.identifier]
         )
-        # Get positive atoms for evaluation (treating each conformer as a separate graph
-        # in the batch)
         atoms_positive = self._get_pos_atoms(batch_pos)
 
         # Compute metrics (validity)
@@ -411,6 +409,8 @@ class DriftingMolecules(pl.LightningModule):
         return atoms_pred, metrics
     
     def _get_pos_atoms(self, batch_pos):
+        """Treating each conformer as a separate graph in the batch"""
+        
         batch_pos_ = batch_pos.clone()
         # get positive atoms (consiting of sum n_i_conformers_per_graph)
         z_split = torch.split(batch_pos.x, batch_pos.num_atoms.tolist())
@@ -422,17 +422,21 @@ class DriftingMolecules(pl.LightningModule):
         )
 
         # treat each conformer as a separate graph in the batch for evaluation
+        offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()[:-1]
         conformer_batch = torch.cat(
             [
-                torch.arange(n_conf_i, device=z_pos.device).repeat_interleave(n_atom_i)
-                for n_conf_i, n_atom_i in zip(batch_pos.num_conformers, batch_pos.num_atoms)
+                torch.arange(n_conf_i, device=z_pos.device).repeat_interleave(n_atom_i) + offsets[i]
+                for i, (n_conf_i, n_atom_i )in enumerate(zip(batch_pos.num_conformers, batch_pos.num_atoms))
             ]
         )
         
         batch_pos_.batch = conformer_batch
         batch_pos_.x = z_pos
 
-        batch_pos_.smiles = [ smi for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers) for _ in range(n_conf_i) ]
+        batch_pos_.smiles = [ 
+            smi for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers) 
+            for _ in range(n_conf_i) 
+        ]
         atoms_positive = batch_inputs_to_atoms(
             batch_pos_, pos_key="pos", info_keys=[self.identifier]
         )
