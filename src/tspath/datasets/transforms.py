@@ -238,4 +238,5 @@ class BoltzmannWeightingConformers(BaseTransform):
         data.pos = positions[sorted_indices].view(-1, 3)  # Reshape back to [num_conformers*num_atoms, 3]
         data.boltzmann_weights = boltzmann_weights[sorted_indices]
         data.energy = data.energy[sorted_indices]
+        data.num_conformers = data.num_conformers.clamp(max=self.keep_top_n)
         return data
