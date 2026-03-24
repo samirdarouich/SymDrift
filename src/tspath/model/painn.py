@@ -608,17 +608,17 @@ class PaiNN(nn.Module):
             list of torch.Tensor: intermediate atom-wise representations, if
             return_intermediate=True was used.
         """
-        
+
+        # combine bond and radius graph edges
         edge_index, edge_type, _ = extend_bond_index(
             pos=data.pos,
-            bond_index=data.bonded_edge_index,
             batch=data.batch,
+            bond_index=data.get("bonded_edge_index", None),
             bond_attr=data.get("edge_attr", None),
-            device=data.pos.device,
             cutoff=self.cutoff,
             max_neighbors=self.max_neighbors,
         )
-
+        
         data.edge_index = edge_index
         idx_j, idx_i = edge_index
 

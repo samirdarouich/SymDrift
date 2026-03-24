@@ -1,23 +1,35 @@
+import json
+import logging
 import os
-import numpy as np
+
 import matplotlib.pyplot as plt
-from ase.io import write
 import torch
+from ase.io import write
+from torch_geometric.data import Batch
 from torch_geometric.loader import DataLoader as GeometricDataLoader
 from tqdm import tqdm
-from tspath.datasets import ConformerDataset
-from tspath.generative import EquivariantDriftingField, HarmonicSampler, GaussianSampler
-from tspath.model import EGNN, PaiNN, MLP, DiT, TorchMDDynamics, CosineAnnealingWarmupRestarts, DistanceEmbedder
-from tspath.utils import sample_noise_like, batch_inputs_to_atoms
 from tspath.alignment import get_rmsd_batched_scatter
-from tspath.analysis import get_validity, evaluate_covmat, print_covmat_results, pca_plot
-from torch_geometric.data import Data
-import logging
-import json
-import math
-from torch_geometric.data import Batch
+from tspath.analysis import (
+    evaluate_covmat,
+    get_validity,
+    pca_plot,
+    print_covmat_results,
+)
+from tspath.datasets import ConformerDataset
+from tspath.generative import EquivariantDriftingField, GaussianSampler, HarmonicSampler
+from tspath.model import (
+    EGNN,
+    MLP,
+    CosineAnnealingWarmupRestarts,
+    DistanceEmbedder,
+    DiT,
+    PaiNN,
+    TorchMDDynamics,
+)
+from tspath.utils import batch_inputs_to_atoms
 
 logging.basicConfig(level=logging.INFO)
+
 
 def create_batch_object(batch, n_samples):
 
@@ -35,6 +47,7 @@ def create_batch_object(batch, n_samples):
     batch_negative.pos = z
 
     return batch_negative
+
 
 @torch.no_grad()
 def sample(model, batch, n_samples):
@@ -58,22 +71,22 @@ def sample(model, batch, n_samples):
 
     return atoms_samples, atoms_noise
 
-        
+
 def visualize(model, batch, current_step, n_samples=None, outdir=None):
     step = current_step
     atoms_samples, atoms_noise = sample(model, batch, n_samples=n_samples)
     metrics_generated = get_validity(atoms_samples)
-    
+
     # compute coverage and recall for different rmsd thresholds (not using hydrogens)
     results = evaluate_covmat(
-        atoms_samples, 
-        dataset_atoms, 
-        thresholds=[0.1, 0.2, 0.5], 
-        num_workers=8, 
-        same_order=False, 
-        worker_fn_type="rmsd_wo_h"
+        atoms_samples,
+        dataset_atoms,
+        thresholds=[0.1, 0.2, 0.5],
+        num_workers=8,
+        same_order=False,
+        worker_fn_type="rmsd_wo_h",
     )
-    
+
     df, metrics = print_covmat_results(results, threshold=0.2)
 
     if outdir is not None:
@@ -93,12 +106,10 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
             save_path=f"{plot_dir}/step_{step_str}_pca.png",
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
-            json.dump({
-                **metrics_generated,
-                **metrics
-            }, f, indent=4
-            )
-        print(f"Epoch {epoch}: Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}")
+            json.dump({**metrics_generated, **metrics}, f, indent=4)
+        print(
+            f"Epoch {epoch}: Stable atoms: {metrics_generated['frac_stable_atoms']:.4f}; Stable mol: {metrics_generated['frac_stable_molecules']:.4f}"
+        )
     plt.close()
     return atoms_samples
 
@@ -127,11 +138,19 @@ aligned = True
 permuted = True
 brute_force_permutations = True
 model_dict = {
-    "painn": PaiNN(sphere_channels=256,num_layers=9, max_radius=11.0),
+    "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
-    "mlp": MLP(input_dim=4*6, hidden_dim=256, num_layers=9, output_dim=3*6), # d=4*n_atoms
-    "dit": DiT(sphere_channels=256, num_layers=9, num_heads=8, sphere_channels_mlp=512, max_radius=11.0),
-    "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9)
+    "mlp": MLP(
+        input_dim=4 * 6, hidden_dim=256, num_layers=9, output_dim=3 * 6
+    ),  # d=4*n_atoms
+    "dit": DiT(
+        sphere_channels=256,
+        num_layers=9,
+        num_heads=8,
+        sphere_channels_mlp=512,
+        max_radius=11.0,
+    ),
+    "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9),
 }
 model = model_dict[model_type]
 model.to(device)
@@ -140,7 +159,9 @@ only_pos_drift = True
 drift_str = "all_drift"
 if only_pos_drift:
     drift_str = "pos_drift"
-print(f"Dataset: {dataset_name}, Model: {model_type}, Aligned: {aligned}, Permuted: {permuted}, Brute-force permutations: {brute_force_permutations}, drift: {drift_str}")
+print(
+    f"Dataset: {dataset_name}, Model: {model_type}, Aligned: {aligned}, Permuted: {permuted}, Brute-force permutations: {brute_force_permutations}, drift: {drift_str}"
+)
 
 normalize_drift = True
 temperatures = [0.05]
@@ -186,8 +207,14 @@ n_steps = 15_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingWarmupRestarts(
-    optimizer, first_cycle_steps=250_000, cycle_mult=1.0, max_lr=7e-4,
-    min_lr=1e-5, warmup_steps=0, gamma=0.05, last_epoch=-1
+    optimizer,
+    first_cycle_steps=250_000,
+    cycle_mult=1.0,
+    max_lr=7e-4,
+    min_lr=1e-5,
+    warmup_steps=0,
+    gamma=0.05,
+    last_epoch=-1,
 )
 
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
@@ -198,19 +225,21 @@ for epoch in pbar:
         batch = batch.to(device)
 
         # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch.num_atoms * batch.num_conformers 
+        batch_sizes = batch.num_atoms * batch.num_conformers
         conformer_idx = torch.arange(
             batch.num_graphs, device=batch_sizes.device
         ).repeat_interleave(batch_sizes)
         y_pos = batch.pos.clone()
         z_pos = batch.x.clone()
-        
+
         # Sample n_neg priors per graph
-        batch_neg = create_batch_object(batch, n_samples=n_neg_per_pos, prior_type="harmonic")
+        batch_neg = create_batch_object(
+            batch, n_samples=n_neg_per_pos
+        )
 
         # Call the model
         x = model(batch_neg)
-        
+
         # Per Class compute the drift seperately
         V_total = torch.zeros_like(x)
         V_pos_total = torch.zeros_like(x)
@@ -222,23 +251,24 @@ for epoch in pbar:
             # atomic numbers have shape n_atoms
             mask_pos = batch.batch == i
             z_i_pos = z_pos[mask_pos].repeat(batch.num_conformers[i])
-            
+
             # search negative samples corresponding to the current positive sample
             mask_neg = torch.isin(
-                batch_neg.batch, 
+                batch_neg.batch,
                 torch.arange(
-                    i*n_neg_per_pos, (i+1)*n_neg_per_pos,
-                    device=batch_neg.batch.device
-                )
+                    i * n_neg_per_pos,
+                    (i + 1) * n_neg_per_pos,
+                    device=batch_neg.batch.device,
+                ),
             )
             x_i = x[mask_neg]
             z_i_neg = batch_neg.x[mask_neg]
 
             # Call the drift (atomic numbers will be repeated for negative samples)
             V, V_pos, V_neg, *_ = drifting_field(
-                x_i.detach(), # avoid unnecessary gradient tracking
+                x_i.detach(),  # avoid unnecessary gradient tracking
                 y_i_pos,
-                x_i.detach(), # avoid unnecessary gradient tracking
+                x_i.detach(),  # avoid unnecessary gradient tracking
                 batch.num_atoms[i],
                 atomic_numbers_pos=z_i_pos,
                 atomic_numbers_neg=z_i_neg,
@@ -251,9 +281,9 @@ for epoch in pbar:
             x_drifted = (x + V_pos_total).detach()
         else:
             x_drifted = (x + V_total).detach()
-        
+
         # Compute RMSD loss
-        loss = get_rmsd_batched_scatter( x, x_drifted, batch_neg.batch).mean()
+        loss = get_rmsd_batched_scatter(x, x_drifted, batch_neg.batch).mean()
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -263,34 +293,40 @@ for epoch in pbar:
         losses.append(loss.item())
         pbar.set_postfix(
             {
-                "step": step_count, 
+                "step": step_count,
                 "loss": loss.item(),
                 "mse(V)": torch.sqrt(torch.mean(V_total**2)).item(),
-                "mse(pos_drift)": torch.sqrt(torch.mean(V_pos_total**2)).item(), 
+                "mse(pos_drift)": torch.sqrt(torch.mean(V_pos_total**2)).item(),
                 "mse(neg_drift)": torch.sqrt(torch.mean(V_neg**2)).item(),
             }
         )
 
         if step_count % (n_steps // 10) == 0 and step_count > 0:
-            # Sample in total 1000 samples. This will produce per batch item n_samples, 
+            # Sample in total 1000 samples. This will produce per batch item n_samples,
             # which will result in 1000 samples overall
-            n_samples = 1000 // batch.num_graphs 
+            n_samples = 1000 // batch.num_graphs
             visualize(
-                model, batch, current_step=step_count, n_samples=n_samples, outdir=outdir
+                model,
+                batch,
+                current_step=step_count,
+                n_samples=n_samples,
+                outdir=outdir,
             )
         step_count += 1
 
-    
-            
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
 n_samples = 1000 // batch.num_graphs
-atoms_samples = visualize(model, batch, current_step="final", n_samples=n_samples, outdir=outdir)
+atoms_samples = visualize(
+    model, batch, current_step="final", n_samples=n_samples, outdir=outdir
+)
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 
 metrics_generated = get_validity(atoms_samples)
 for metric_name in metrics_dataset.keys():
-    print(f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}")
+    print(
+        f"{metric_name}: Dataset: {metrics_dataset[metric_name]:.4f}, Generated: {metrics_generated[metric_name]:.4f}"
+    )
 with open(f"{plot_dir}/metrics.json", "w") as f:
     json.dump({"dataset": metrics_dataset, "generated": metrics_generated}, f, indent=4)

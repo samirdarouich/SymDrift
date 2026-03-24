@@ -119,7 +119,7 @@ class FeaturizeMolecule(BaseTransform):
             chiral_index, chiral_nbr_index, chiral_tag = self.get_chiral_centers(
                 smiles
             )
-            bonded_edge_index, edge_features, shortest_hops = self.get_edge_index(smiles, True, True)
+            bonded_edge_index, edge_attr, shortest_hops = self.get_edge_index(smiles, True, True)
 
             data.node_attr = node_attr
             data.chiral_index = chiral_index
@@ -127,10 +127,10 @@ class FeaturizeMolecule(BaseTransform):
             data.chiral_tag = chiral_tag
             data.shortest_hops = shortest_hops
             data.bonded_edge_index = bonded_edge_index
-            data.edge_features = edge_features
+            data.edge_attr = edge_attr
         else:
             data.bonded_edge_index = torch.empty((2, 0)).long()
-            data.edge_features = None
+            data.edge_attr = None
         return data
     
     def get_mol(self, smiles: str) -> Mol:

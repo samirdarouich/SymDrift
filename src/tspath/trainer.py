@@ -281,13 +281,14 @@ class DriftingMolecules(pl.LightningModule):
         ):
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
+            max_num_conformers = batch.num_conformers.max().item()
             self.sample(
                 batch, 
                 step="train", 
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_neg_per_pos=10
+                n_neg_per_pos=max_num_conformers*2 # at least having 2*n_conformers
             )
         return loss
 
@@ -300,13 +301,14 @@ class DriftingMolecules(pl.LightningModule):
         ):
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
+            max_num_conformers = batch.num_conformers.max().item()
             self.sample(
                 batch, 
                 step="val", 
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_neg_per_pos=10
+                n_neg_per_pos=max_num_conformers*2 # at least having 2*n_conformers
             )
         return loss
 
@@ -319,6 +321,7 @@ class DriftingMolecules(pl.LightningModule):
         n_neg_per_pos=None,
         save_pca_plot=False,
         seed=None,
+        threshold=0.5,
     ):
         """Generate n_neg_per_pos samples per graph"""
         if seed is not None:
@@ -356,10 +359,10 @@ class DriftingMolecules(pl.LightningModule):
             atoms_positive, 
             thresholds=np.arange(0.05, 3.05, 0.05), 
             num_workers=0, 
-            same_order=False, 
-            worker_fn_type="rmsd_wo_h"
+            worker_fn_type="rmsd_rdkit_wo_h",
+            ratio=2.0, # only keep at most 2*n_conformers predictions per reference
         )
-        df, metrics_cov = print_covmat_results(results, threshold=0.2)
+        df, metrics_cov = print_covmat_results(results, threshold=threshold)
 
         metrics = {**metrics_val, **metrics_cov}
         

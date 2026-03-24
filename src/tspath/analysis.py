@@ -708,14 +708,14 @@ def get_best_rmsd_rdkit(ref_mol, gen_mol, use_alignmol=False):
     return rmsd
 
 
-def worker_fn_rmsd_rdkit(job, use_alignmol=False):
-    smiles, i, j, ref_i, pred_j, same_order = job
+def worker_fn_rmsd_rdkit(job):
+    smiles, i, j, ref_i, pred_j, use_alignmol = job
     rmsd = get_best_rmsd_rdkit(ref_i, pred_j, use_alignmol=use_alignmol)
     return smiles, i, j, rmsd
 
 
-def worker_fn_rmsd_rdkit_wo_h(job, use_alignmol=False):
-    smiles, i, j, ref_i, pred_j, same_order = job
+def worker_fn_rmsd_rdkit_wo_h(job):
+    smiles, i, j, ref_i, pred_j, use_alignmol = job
     ref_i_woh = ref_i.copy()
     pred_j_woh = pred_j.copy()
     del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol == "H"]]
@@ -771,12 +771,17 @@ WORKER_FN_DICT = {
 }
 
 def evaluate_covmat(
-    preds, refs, thresholds, num_workers=8, same_order=False, worker_fn_type="rmsd"
+    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None
 ):
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     for ref in refs:
         ref_sample_dict[ref.info["smiles"]]["refs"].append(ref)
     for pred in preds:
+        smi = pred.info["smiles"]
+        # Only keep a certain ratio of predictions per reference
+        if ratio is not None:
+            if len(ref_sample_dict[smi]["preds"]) >= len(ref_sample_dict[smi]["refs"]) * ratio:
+                continue
         ref_sample_dict[pred.info["smiles"]]["preds"].append(pred)
 
     rmsd_results = {
@@ -800,7 +805,7 @@ def evaluate_covmat(
         preds = data["preds"]
         for i, refs_i in enumerate(refs):
             for j, preds_j in enumerate(preds):
-                jobs.append((smiles, i, j, refs_i, preds_j, same_order))
+                jobs.append((smiles, i, j, refs_i, preds_j, False))
 
     if num_workers > 1:
         p = Pool(num_workers)
@@ -869,14 +874,14 @@ def print_covmat_results(results, threshold):
         .to_numpy()
         .item(),  # Every generated conformer matches a reference conformer within the threshold.
         "COV-P_median": df["COV-P_median"][mask].to_numpy().item(),
-        "MAT-R_mean": np.mean(
+        "AMR-R_mean": np.mean(
             results["MatchingR"]
         ).item(),  # On average, each reference conformer has a generated one within xxx Å RMSD.
-        "MAT-R_median": np.median(results["MatchingR"]).item(),
-        "MAT-P_mean": np.mean(
+        "AMR-R_median": np.median(results["MatchingR"]).item(),
+        "AMR-P_mean": np.mean(
             results["MatchingP"]
-        ).item(),  # If low, every generated conformer is almost identical to a reference one.
-        "MAT-P_median": np.median(results["MatchingP"]).item(),
+        ).item(),  # On average, each generated conformer has a reference one within xxx Å RMSD.
+        "AMR-P_median": np.median(results["MatchingP"]).item(),
     }
 
     return df, metrics
@@ -942,6 +947,7 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
         n_rows = max(math.ceil(len(unique_identifier) / n_cols), 1)
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows))
         axes = np.atleast_1d(axes).flatten()
+        unused_axes = list(range(len(unique_identifier), len(axes)))
         for i, identifier_value in enumerate(unique_identifier):
             ax = axes[i]
 
@@ -952,6 +958,7 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
                 logger.debug(
                     f"Only one reference sample, {identifier}={identifier_value}, skipping..."
                 )
+                unused_axes.append(ax)
                 continue
 
             ref_pos = torch.cat(
@@ -996,7 +1003,7 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
             ax.set_ylabel("Component 2")
 
         # remove unused axes
-        for j in range(len(unique_identifier), len(axes)):
+        for j in unused_axes:
             fig.delaxes(axes[j])
 
     fig.tight_layout()

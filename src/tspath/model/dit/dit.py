@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -10,12 +11,30 @@ from tspath.model.utils import extend_bond_index
 from tspath.utils import batch_center_systems
 
 
+def signed_volume(local_coords):
+    """
+    Compute signed volume given ordered neighbor local coordinates
+    From GeoMol
+
+    :param local_coords: (n_tetrahedral_chiral_centers, 4, n_generated_confs, 3)
+    :return: signed volume of each tetrahedral center
+    (n_tetrahedral_chiral_centers, n_generated_confs)
+    """
+    v1 = local_coords[:, 0] - local_coords[:, 3]
+    v2 = local_coords[:, 1] - local_coords[:, 3]
+    v3 = local_coords[:, 2] - local_coords[:, 3]
+    cp = v2.cross(v3, dim=-1)
+    vol = torch.sum(v1 * cp, dim=-1)
+    return torch.sign(vol)
+
+
 class DiTLayer(nn.Module):
     def __init__(
         self,
         num_features,
         num_heads,
         num_features_mlp,
+        num_features_condition=None,
         activation_fn="silu",
         activation_fn_mlp="gelu",
         edge_dim=None,
@@ -24,16 +43,18 @@ class DiTLayer(nn.Module):
         super().__init__()
 
         self.num_features = num_features
+        if num_features_condition is None:
+            num_features_condition = num_features
         self.activation = get_activation_fn(activation_fn)
         self.act_dense_correct_bool = act_dense_correct_bool
 
         # AdaLN parameter generator
-        self.adaLN_linear = nn.Linear(num_features, 6 * num_features)
+        self.adaLN_linear = nn.Linear(num_features_condition, 6 * num_features)
         nn.init.zeros_(self.adaLN_linear.weight)
         nn.init.zeros_(self.adaLN_linear.bias)
 
         # normalizations
-        self.norm_cond = nn.LayerNorm(num_features)
+        self.norm_cond = nn.LayerNorm(num_features_condition)
         self.norm1 = nn.LayerNorm(num_features, elementwise_affine=False)
         self.norm2 = nn.LayerNorm(num_features, elementwise_affine=False)
 
@@ -112,41 +133,48 @@ class DiT(nn.Module):
         max_neighbors=32,
         activation_fn="silu",
         activation_fn_mlp="gelu",
-        positional_encoding_bool=True, # breaks permutation invariance
-        positional_embedding_bool=True, # breaks translation and rotation equivariance
-        embed_distances_bool=True, # breaks rotation equivariance
+        absolute_positional_embedding_bool=False,  # breaks translation and rotation equivariance
+        positional_encoding_bool=False,  # breaks permutation invariance
+        relative_positional_embedding_bool=False,  # breaks rotation equivariance
         embed_shortest_hops_bool=False,
-        act_dense_correct_bool=False,
-        radial_basis_bool=True,
+        act_dense_correct_bool=True,
+        radial_basis_bool=False,
         num_radial_basis=8,
         max_frequency=2 * math.pi,
+        parity_switch: Optional[str] = None,
     ):
         super().__init__()
         self.cutoff = max_radius
         self.max_neighbors = max_neighbors
+        self.parity_switch = parity_switch
 
         if sphere_channels_mlp is None:
             sphere_channels_mlp = 4 * sphere_channels
 
-        self.enconder_cond = MeshGraphNetEncoder(
-            node_dim=mgn_num_node_features,
-            edge_dim=mgn_num_edge_features,
-            hidden_dim=mgn_num_features,
-            num_layers=mgn_num_layers,
-            activation_fn=mgn_activation_fn,
-        )
+        if mgn_num_layers > 0:
+            self.enconder_cond = MeshGraphNetEncoder(
+                node_dim=mgn_num_node_features,
+                edge_dim=mgn_num_edge_features,
+                hidden_dim=mgn_num_features,
+                num_layers=mgn_num_layers,
+                activation_fn=mgn_activation_fn,
+            )
+            num_features_condition = mgn_num_features
+        else:
+            self.enconder_cond = lambda data: None
+            num_features_condition = sphere_channels
 
         self.node_embed = DiTNodeEmbed(
             num_features=sphere_channels,
             activation_fn=activation_fn,
             positional_encoding_bool=positional_encoding_bool,
-            positional_embedding_bool=positional_embedding_bool,
+            positional_embedding_bool=absolute_positional_embedding_bool,
         )
 
         self.edge_embed = DiTEdgeEmbed(
             num_features=sphere_channels,
             activation_fn=activation_fn,
-            embed_distances_bool=embed_distances_bool,
+            embed_distances_bool=relative_positional_embedding_bool,
             embed_shortest_hops_bool=embed_shortest_hops_bool,
             radial_basis_bool=radial_basis_bool,
             num_radial_basis=num_radial_basis,
@@ -159,6 +187,7 @@ class DiT(nn.Module):
                     num_features=sphere_channels,
                     num_heads=num_heads,
                     num_features_mlp=sphere_channels_mlp,
+                    num_features_condition=num_features_condition,
                     activation_fn=activation_fn_mlp,
                     edge_dim=sphere_channels,
                     act_dense_correct_bool=act_dense_correct_bool,
@@ -168,7 +197,9 @@ class DiT(nn.Module):
         )
 
         self.readout = SimpleReadout(
-            num_features=sphere_channels, activation_fn=activation_fn_mlp
+            num_features=sphere_channels, 
+            num_features_condition=num_features_condition,
+            activation_fn=activation_fn_mlp,
         )
 
     def forward(self, data):
@@ -179,17 +210,16 @@ class DiT(nn.Module):
         # combine bond and radius graph edges
         edge_index, _, new_shortest_hop = extend_bond_index(
             pos=data.pos,
-            bond_index=data.bonded_edge_index,
             batch=data.batch,
+            bond_index=data.get("bonded_edge_index", None),
             bond_attr=data.get("edge_attr", None),
-            device=data.pos.device,
             cutoff=self.cutoff,
             max_neighbors=self.max_neighbors,
             shortest_hops=data.get("shortest_hops", None),
         )
         data.edge_index = edge_index
         data.shortest_hops = new_shortest_hop
-        
+
         h = self.node_embed(data)
         edge_attr = self.edge_embed(data)
 
@@ -202,6 +232,37 @@ class DiT(nn.Module):
             )
 
         out = self.readout(features_nodes=h, features_cond=features_cond)
-
         out = batch_center_systems(out, data.batch)
+
+        # Switch parity of positions for chiral molecules during inference if wanted.
+        if self.parity_switch and not self.training:
+            out = self.switch_parity_of_pos(
+                out,
+                data.chiral_index,
+                data.chiral_nbr_index,
+                data.chiral_tag,
+                data.batch,
+            )
         return out
+
+    def switch_parity_of_pos(
+        self, pos, chiral_index, chiral_nbr_index, chiral_tag, batch
+    ):
+        assert all(
+            [
+                key is not None
+                for key in [chiral_index, chiral_nbr_index, chiral_tag, batch]
+            ]
+        )
+        num_graphs = batch.max().item() + 1
+        sv = signed_volume(
+            pos[chiral_nbr_index.view(chiral_index.shape[1], 4)].unsqueeze(2)
+        ).squeeze()
+        ct = chiral_tag
+        z_flip = sv * ct
+
+        graph_diag = torch.ones(num_graphs, device=pos.device)
+        graph_diag[batch[chiral_index][:, (z_flip == -1.0)].squeeze()] = -1.0
+        node_factor = graph_diag[batch].unsqueeze(1)
+
+        return pos * node_factor

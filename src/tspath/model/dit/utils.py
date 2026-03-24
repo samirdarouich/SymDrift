@@ -94,14 +94,16 @@ class MLP(nn.Module):
         return x
 
 class SimpleReadout(nn.Module):
-    def __init__(self, num_features, activation_fn="silu"):
+    def __init__(self, num_features, num_features_condition=None, activation_fn="silu"):
         super().__init__()
 
         self.num_features = num_features
+        if num_features_condition is None:
+            num_features_condition = num_features
         self.activation = get_activation_fn(activation_fn)
 
         # conditioning → shift/scale
-        self.adaLN_linear = nn.Linear(num_features, 2 * num_features)
+        self.adaLN_linear = nn.Linear(num_features_condition, 2 * num_features)
         nn.init.zeros_(self.adaLN_linear.weight)
         nn.init.zeros_(self.adaLN_linear.bias)
         self.norm = nn.LayerNorm(num_features, elementwise_affine=False)

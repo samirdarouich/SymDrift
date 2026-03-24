@@ -8,6 +8,7 @@ split_identifier: geomol
 batch_size: 2
 num_workers: 0
 persistent_workers: false
+pin_memory: false
 
 # Define training and validation datasets and dataloaders
 train_dataset:
@@ -40,21 +41,24 @@ test_dataset:
 
 train_dataloader:
   _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
-  batch_size: ${dataset.batch_size}
+  pin_memory: ${dataset.pin_memory}
   shuffle: True
 
 val_dataloader:
   _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
-  batch_size: ${dataset.batch_size}
+  pin_memory: ${dataset.pin_memory}
   shuffle: False
 
 test_dataloader:
   _target_: torch_geometric.loader.DataLoader
+  batch_size: ${dataset.batch_size}
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
-  batch_size: ${dataset.batch_size}
+  pin_memory: ${dataset.pin_memory}
   shuffle: False

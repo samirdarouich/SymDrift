@@ -134,7 +134,16 @@ def generate_cc_harmonic_2d(
     positions[:, 1, 0] = r * torch.cos(theta)
     positions[:, 1, 1] = r * torch.sin(theta)
 
-    return positions
+    # bonded edges
+    i = torch.tensor([0,1])
+    j = torch.tensor([1,0])
+
+    # forward + reverse
+    bonded_edge_index = torch.cat(
+        [torch.stack([i,j]), torch.stack([j,i])], dim=1
+    ).unsqueeze(0).repeat(n_samples,1, 1)
+    
+    return positions, bonded_edge_index
 
 def generate_ccc_harmonic_2d(
     n_samples=1000,
@@ -171,6 +180,15 @@ def generate_ccc_harmonic_2d(
     positions[:, 2, 0] = -r2 * torch.cos(theta)
     positions[:, 2, 1] = r2 * torch.sin(theta)
     
+    # bonded edges
+    i = torch.tensor([0,1])
+    j = torch.tensor([1,2])
+
+    # forward + reverse
+    bonded_edge_index = torch.cat(
+        [torch.stack([i,j]), torch.stack([j,i])], dim=1
+    ).unsqueeze(0).repeat(n_samples,1, 1)
+    
     # Apply random rotations to each sample (sample unfiform angle between 0 and 2pi)
     if augment_with_rotations:
         angles = torch.rand(n_samples) * 2 * math.pi
@@ -187,10 +205,16 @@ def generate_ccc_harmonic_2d(
     # Apply random permutations of the atoms
     if augment_with_permutations:
         perms = torch.stack([torch.randperm(3) for _ in range(n_samples)])
-        batch_indices = torch.arange(n_samples)[:, None]
-        positions = positions[batch_indices, perms]
-    
-    return positions
+        batch_idx = torch.arange(n_samples)[:, None]
+        positions = positions[batch_idx, perms]
+        
+        E = bonded_edge_index.shape[2]
+        batch_idx_edges = batch_idx[:, None].expand(n_samples, 2, E)
+        inv_perms = torch.zeros_like(perms)
+        inv_perms.scatter_(1, perms, torch.arange(3).repeat(n_samples, 1))
+        bonded_edge_index = inv_perms[batch_idx_edges, bonded_edge_index]
+
+    return positions, bonded_edge_index
 
 def generate_cccccc_harmonic_2d(
     n_samples=1000,
@@ -245,6 +269,15 @@ def generate_cccccc_harmonic_2d(
     positions[:, 5, 0] = -sqrt3/2 * r
     positions[:, 5, 1] =  r/2
 
+    # hexagon connectivity (0-1-2-3-4-5-0)
+    i = torch.tensor([0,1,2,3,4,5])
+    j = torch.tensor([1,2,3,4,5,0])
+
+    # forward + reverse
+    bonded_edge_index = torch.cat(
+        [torch.stack([i,j]), torch.stack([j,i])], dim=1
+    ).unsqueeze(0).repeat(n_samples,1, 1)
+    
     # ---- Rotations ----
     if augment_with_rotations:
         angles = torch.rand(n_samples) * 2 * math.pi
@@ -268,8 +301,14 @@ def generate_cccccc_harmonic_2d(
         perms = torch.stack([torch.randperm(6) for _ in range(n_samples)])
         batch_idx = torch.arange(n_samples)[:, None]
         positions = positions[batch_idx, perms]
+        
+        E = bonded_edge_index.shape[2]
+        batch_idx_edges = batch_idx[:, None].expand(n_samples, 2, E)
+        inv_perms = torch.zeros_like(perms)
+        inv_perms.scatter_(1, perms, torch.arange(6).repeat(n_samples, 1))
+        bonded_edge_index = inv_perms[batch_idx_edges, bonded_edge_index]
 
-    return positions
+    return positions, bonded_edge_index
 
 
 def generate_carbon_chain_2d(
@@ -352,6 +391,15 @@ def generate_carbon_chain_2d(
     # Center
     positions[:, :, :2] -= positions[:, :, :2].mean(dim=1, keepdim=True)
 
+    # Bonded edge index (n_samples, 2, n_edges)
+    i = torch.arange(n_atoms - 1)
+    j = i + 1
+    bonded_edge_index = torch.cat([
+        torch.stack([i, j], dim=0),
+        torch.stack([j, i], dim=0)
+    ], dim=1).unsqueeze(0).repeat(n_samples,1, 1)
+
+    
     # ---- Rotations ----
     if augment_with_rotations:
         angles = torch.rand(n_samples) * 2 * math.pi
@@ -375,8 +423,14 @@ def generate_carbon_chain_2d(
         perms = torch.stack([torch.randperm(n_atoms) for _ in range(n_samples)])
         batch_idx = torch.arange(n_samples)[:, None]
         positions = positions[batch_idx, perms]
+        
+        E = bonded_edge_index.shape[2]
+        batch_idx_edges = batch_idx[:, None].expand(n_samples, 2, E)
+        inv_perms = torch.zeros_like(perms)
+        inv_perms.scatter_(1, perms, torch.arange(n_atoms).repeat(n_samples, 1))
+        bonded_edge_index = inv_perms[batch_idx_edges, bonded_edge_index]
 
-    return positions
+    return positions, bonded_edge_index
 
 def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
     """
@@ -419,11 +473,11 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         T = kwargs.get("T", 300.0)
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
         seed = kwargs.get("seed", None)
-        positions = generate_cc_harmonic_2d(
+        positions, bonded_edge_indices = generate_cc_harmonic_2d(
             n_samples, r0, bond_k, T, augment_with_rotations=augment_with_rotations, 
             seed=seed
         )
-        return positions.numpy()
+        return positions.numpy(), bonded_edge_indices.numpy()
     elif dataset_name == "ccc":
         r0 = kwargs.get("r0", 1.54)
         theta0 = kwargs.get("theta0", 120.0)
@@ -433,13 +487,13 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
         augment_with_permutations = kwargs.get("augment_with_permutations", False)
         seed = kwargs.get("seed", None)
-        positions = generate_ccc_harmonic_2d(
+        positions, bonded_edge_indices = generate_ccc_harmonic_2d(
             n_samples, r0, theta0, bond_k, angle_k, T, 
             augment_with_rotations=augment_with_rotations, 
             augment_with_permutations=augment_with_permutations,
             seed=seed
         )
-        return positions.numpy()
+        return positions.numpy(), bonded_edge_indices.numpy()
     elif dataset_name == "cccccc":
         r0 = kwargs.get("r0", 1.54)
         bond_k = kwargs.get("bond_k", 5.0)
@@ -448,13 +502,13 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
         augment_with_permutations = kwargs.get("augment_with_permutations", False)
         seed = kwargs.get("seed", None)
-        positions = generate_cccccc_harmonic_2d(
+        positions, bonded_edge_indices = generate_cccccc_harmonic_2d(
             n_samples, r0, bond_k, factor, T, 
             augment_with_rotations=augment_with_rotations, 
             augment_with_permutations=augment_with_permutations,
             seed=seed
         )
-        return positions.numpy()
+        return positions.numpy(), bonded_edge_indices.numpy()
     elif dataset_name == "carbon_chain":
         n_atoms = kwargs.get("n_atoms", 8)
         r0 = kwargs.get("r0", 1.6)
@@ -465,13 +519,13 @@ def get_dataset(dataset_name="spiral", n_samples=10000, **kwargs):
         augment_with_rotations = kwargs.get("augment_with_rotations", False)
         augment_with_permutations = kwargs.get("augment_with_permutations", False)
         seed = kwargs.get("seed", None)
-        positions = generate_carbon_chain_2d(
+        positions, bonded_edge_indices = generate_carbon_chain_2d(
             n_samples, n_atoms, r0, theta0, bond_k, angle_k, T,
             augment_with_rotations=augment_with_rotations, 
             augment_with_permutations=augment_with_permutations,
             seed=seed
         )
-        return positions.numpy()
+        return positions.numpy(), bonded_edge_indices.numpy()
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -498,7 +552,7 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
         augment_with_permutations=False,
         **kwargs
     ):
-        self.positions = get_dataset(
+        self.positions, self.bonded_edge_indices = get_dataset(
             name, n_samples=n_samples, T=T, 
             augment_with_rotations=augment_with_rotations,
             augment_with_permutations=augment_with_permutations,
@@ -522,8 +576,15 @@ class ToyMoleculeDataset(torch.utils.data.Dataset):
         pos = torch.tensor(self.positions[idx], dtype=torch.float)
         x = torch.tensor([6]*pos.shape[0], dtype=torch.float)  # Carbon atomic numbers
         num_atoms = torch.tensor(pos.shape[0], dtype=torch.long)
+        bonded_edge_indices = torch.tensor(self.bonded_edge_indices[idx], dtype=torch.long)
         data = Data(
-            x=x, pos=pos, num_atoms=num_atoms, formula=torch.tensor(0, dtype=torch.long)
+            x=x, 
+            pos=pos, 
+            num_atoms=num_atoms, 
+            bonded_edge_index=bonded_edge_indices,
+            formula=torch.tensor(0, dtype=torch.long),
+            node_attr=torch.ones(pos.shape[0], 1),  # dummy node attr
+            edge_attr=torch.ones(bonded_edge_indices.shape[1], 1)  # dummy edge attr
         )
         data.pos = data.pos - data.pos.mean(dim=0, keepdim=True)  # Center the molecule
         return data

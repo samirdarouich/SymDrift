@@ -24,7 +24,7 @@ class MLP(nn.Module):
             B_times_n_atoms, _ = data.pos.shape
             B = data.batch.max().item() + 1
             n_atoms = B_times_n_atoms // B
-            d_net = self.input_dim // (n_atoms + 1) # +1 for atomic number feature
+            d_net = self.output_dim // n_atoms
             x = torch.cat(
                 [
                     data.pos[:, :d_net].reshape(B, -1), 
@@ -36,7 +36,7 @@ class MLP(nn.Module):
             out = self.net(x).view(B_times_n_atoms, -1)
             out = batch_center_systems(out, data.batch)
             # add 3d dimension if output_dim is 2 (for compatibility with drifting field)
-            if d_net== 2:
+            if d_net == 2:
                 out = torch.cat([out, torch.zeros_like(out[..., :1])], dim=-1)
             return out
         else:

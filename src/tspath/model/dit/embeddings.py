@@ -49,7 +49,7 @@ class EdgeAttributeEmbedding(nn.Module):
         """
         data.edge_features : (num_edges, edge_attr_dim)
         """
-        edge_attr = data.edge_features
+        edge_attr = data.edge_attr
         e = self.mlp(edge_attr)
         e = self.norm(e)
         return e  # (E,F)
@@ -128,28 +128,31 @@ class DiTEdgeEmbed(nn.Module):
             if num_radial_basis is None or max_frequency is None:
                 raise ValueError("num_radial_basis and max_frequency required")
 
-        self.dist_mlp = MLP(
-            in_dim=3 if not radial_basis_bool else 3 * num_radial_basis,
-            hidden_dim=num_features,
-            out_dim=num_features,
-            num_layers=2,
-            activation_fn=activation_fn,
-            use_bias=False,
-        )
+        if embed_distances_bool:
+            self.dist_mlp = MLP(
+                in_dim=3 if not radial_basis_bool else 3 * num_radial_basis,
+                hidden_dim=num_features,
+                out_dim=num_features,
+                num_layers=2,
+                activation_fn=activation_fn,
+                use_bias=False,
+            )
+        
+        
+        if embed_shortest_hops_bool:
+            self.shortest_hop_embedding = nn.Embedding(
+                num_embeddings=512,
+                embedding_dim=self.num_features,
+            )
 
-        self.shortest_hop_embedding = nn.Embedding(
-            num_embeddings=512,
-            embedding_dim=self.num_features,
-        )
-
-        self.shortest_hop_mlp = MLP(
-            in_dim=self.num_features,
-            hidden_dim=num_features,
-            out_dim=num_features,
-            num_layers=2,
-            activation_fn=activation_fn,
-            use_bias=True,  # we need a bias here s.t. the output is non-zero in case of CFG
-        )
+            self.shortest_hop_mlp = MLP(
+                in_dim=self.num_features,
+                hidden_dim=num_features,
+                out_dim=num_features,
+                num_layers=2,
+                activation_fn=activation_fn,
+                use_bias=True,  # we need a bias here s.t. the output is non-zero in case of CFG
+            )
 
     def forward(self, data):
 

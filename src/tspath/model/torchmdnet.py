@@ -1035,10 +1035,9 @@ class TorchMDDynamics(nn.Module):
 
         edge_index, edge_type, _ = extend_bond_index(
             pos=data.pos,
-            bond_index=data.bonded_edge_index,
             batch=data.batch,
+            bond_index=data.get("bonded_edge_index", None),
             bond_attr=data.get("edge_attr", None),
-            device=data.pos.device,
             one_hot=self.edge_one_hot,
             one_hot_types=self.edge_one_hot_types,
             cutoff=self.cutoff,

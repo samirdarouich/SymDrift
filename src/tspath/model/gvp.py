@@ -5,7 +5,7 @@ import torch
 from torch import device, einsum, nn
 from torch_geometric.nn import radius_graph
 from torch_scatter import scatter
-
+from tspath.model.utils import extend_bond_index
 from tspath.utils import batch_center_systems
 
 __all__ = [
@@ -613,61 +613,23 @@ class GVPModel(nn.Module):
 
         return x_diff, d
 
-    def get_edge_feats(self, data):
-        """
-        Get edge features for the graph. If rdkit connectivity information is
-        available, use it to assign edge features. Otherwise, assign all edge features
-        to be zero.
-        """
-        edge_index = data.edge_index
-        # output tensor
-        edge_feats = torch.zeros(
-            edge_index.shape[1],
-            device=edge_index.device,
-            dtype=torch.long,
-        )
-
-        # If rdkit connectivity information is available, use it to assign edge features
-        if hasattr(data, "edge_features"):
-            bonded_edge_index = data.bonded_edge_index
-            N = data.num_nodes
-
-            # ----- build unique edge hashes -----
-            radius_hash = edge_index[0] * N + edge_index[1]
-            bonded_hash = bonded_edge_index[0] * N + bonded_edge_index[1]
-
-            max_hash = max(radius_hash.max(), bonded_hash.max()) + 1
-            hash_to_idx = torch.full(
-                (max_hash,), -1, device=edge_index.device, dtype=torch.long
-            )
-            hash_to_idx[bonded_hash] = torch.arange(
-                bonded_hash.shape[0], device=edge_index.device
-            )
-
-            # ----- get indices for radius edges -----
-            idx = hash_to_idx[radius_hash]  # -1 if not in bonded_hash
-
-            # ----- assign features -----
-            mask = idx >= 0
-            edge_feats[mask] = data.edge_features[idx[mask]]
-
-        data.edge_attr = torch.nn.functional.one_hot(edge_feats,self.n_bond_types).float()
-        return
-
     def forward(
         self,
         data,
     ):
 
-        # compute graph connectivity
-        idx_j, idx_i = radius_graph(
-            x=data.pos,
-            r=self.rbf_dmax,
+        edge_index, edge_type, _ = extend_bond_index(
+            pos=data.pos,
             batch=data.batch,
-            max_num_neighbors=self.max_neighbors,
+            bond_index=data.get("bonded_edge_index", None),
+            bond_attr=data.get("edge_attr", None),
+            one_hot=self.edge_one_hot,
+            one_hot_types=self.edge_one_hot_types,
+            cutoff=self.cutoff,
+            max_neighbors=self.max_neighbors,
         )
 
-        data.edge_index = torch.stack([idx_j, idx_i], dim=0)
+        data.edge_index = edge_index
 
         # Get scalar embedding
         node_scalar_features = self.scalar_embedding(data.x.long())
@@ -681,9 +643,7 @@ class GVPModel(nn.Module):
         )
 
         # Initialize edge features
-        self.get_edge_feats(data)
-        edge_features = data.edge_attr
-        edge_features = self.edge_embedding(edge_features)
+        edge_features = self.edge_embedding(edge_type)
 
         x_diff, d = self.precompute_distances(node_positions, data.edge_index)
         for recycle_idx in range(self.n_recycles):
