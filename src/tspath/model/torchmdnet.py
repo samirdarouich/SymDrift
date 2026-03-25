@@ -9,25 +9,8 @@ from torch import Tensor, nn
 from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter
 
-from tspath.model.utils import extend_bond_index
+from tspath.model.utils import extend_bond_index, signed_volume
 from tspath.utils import batch_center_systems
-
-
-def signed_volume(local_coords):
-    """
-    Compute signed volume given ordered neighbor local coordinates
-    From GeoMol
-
-    :param local_coords: (n_tetrahedral_chiral_centers, 4, n_generated_confs, 3)
-    :return: signed volume of each tetrahedral center
-    (n_tetrahedral_chiral_centers, n_generated_confs)
-    """
-    v1 = local_coords[:, 0] - local_coords[:, 3]
-    v2 = local_coords[:, 1] - local_coords[:, 3]
-    v3 = local_coords[:, 2] - local_coords[:, 3]
-    cp = v2.cross(v3, dim=-1)
-    vol = torch.sum(v1 * cp, dim=-1)
-    return torch.sign(vol)
 
 
 class NeighborEmbedding(MessagePassing):

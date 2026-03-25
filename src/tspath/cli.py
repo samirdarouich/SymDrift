@@ -109,6 +109,7 @@ def sample(cfg):
         print_config(cfg, fields=fields, resolve=False)
 
     ########## Hyperparameters and settings ##########
+    log.info("Setting random seed to {}".format(cfg.seed))
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision("medium")
 
@@ -133,7 +134,7 @@ def sample(cfg):
     threshold = getattr(cfg.generative_model, "threshold", 0.5)
     prior_type = generative_process.prior_sampler.type
     save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
-
+    
     log.info(
         f"Sampling {no_of_samples} time(s) with:\n"
         f"  NFE = {nfe} "
@@ -141,6 +142,10 @@ def sample(cfg):
         f"  conditioned = {conditioned}"
         f"  prior_type = {prior_type}"
     )
+
+    sample_seed = getattr(cfg, "sample_seed", None)
+    if sample_seed is not None:
+        log.info(f"Setting sample seed for every batch to {sample_seed}")
 
     metrics = {}
     atoms_generated = []
@@ -151,10 +156,13 @@ def sample(cfg):
             num_steps=nfe,
             n_samples=no_of_samples,
             save_folder=save_folder,
-            save_trajectory=getattr(cfg.generative_model, "save_trajectory", False),
-            save_pca_plot=getattr(cfg.generative_model, "save_pca_plot", False),
+            save_trajectory=getattr(cfg, "save_trajectory", False),
+            save_pca_plot=getattr(cfg, "save_pca_plot", False),
             conditioned=conditioned,
             guidance_scale=guidance_scale,
+            # Fix initial seed for each batch (in case of gaussian prior, this would be
+            # the same prior for each batch).
+            seed=sample_seed, 
         )
         atoms_generated.extend(batch_atoms_generated)
         for k, v in batch_metrics.items():

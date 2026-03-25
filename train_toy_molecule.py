@@ -87,7 +87,7 @@ dataset_name = "carbon_chain"
 augment_with_rotations = False
 augment_with_permutations = False
 
-n_atoms = 5
+n_atoms = 8
 r0 = 2.0
 theta0 = 120.0
 factor = 1.25
@@ -125,10 +125,10 @@ if dataset_name == "carbon_chain":
 pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
-model_type = "dit_perm_eq"
+model_type = "mlp"
 aligned = True
-permuted = True
-brute_force_permutations = True
+permuted = False
+brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(
         sphere_channels=256,

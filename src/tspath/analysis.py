@@ -958,7 +958,7 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
                 logger.debug(
                     f"Only one reference sample, {identifier}={identifier_value}, skipping..."
                 )
-                unused_axes.append(ax)
+                unused_axes.append(i)
                 continue
 
             ref_pos = torch.cat(
@@ -1003,7 +1003,7 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
             ax.set_ylabel("Component 2")
 
         # remove unused axes
-        for j in unused_axes:
+        for j in sorted(unused_axes, reverse=True):
             fig.delaxes(axes[j])
 
     fig.tight_layout()

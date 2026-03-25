@@ -4,6 +4,22 @@ import torch.nn as nn
 from torch_geometric.nn import radius_graph
 from typing import Tuple
 
+def signed_volume(local_coords):
+    """
+    Compute signed volume given ordered neighbor local coordinates
+    From GeoMol
+
+    :param local_coords: (n_tetrahedral_chiral_centers, 4, n_generated_confs, 3)
+    :return: signed volume of each tetrahedral center
+    (n_tetrahedral_chiral_centers, n_generated_confs)
+    """
+    v1 = local_coords[:, 0] - local_coords[:, 3]
+    v2 = local_coords[:, 1] - local_coords[:, 3]
+    v3 = local_coords[:, 2] - local_coords[:, 3]
+    cp = v2.cross(v3, dim=-1)
+    vol = torch.sum(v1 * cp, dim=-1)
+    return torch.sign(vol)
+
 def map_shortest_hops_safe(old_edge_index, shortest_hops, new_edge_index, N, fill_value=-1):
     # Step 1: compute unique edge hashes
     old_hash = old_edge_index[0] * N + old_edge_index[1]
@@ -84,8 +100,8 @@ def extend_graph_order_radius(
 def extend_bond_index(
     pos: torch.Tensor,
     batch: torch.Tensor,
-    bond_index: Optional[torch.Tensor],
-    bond_attr: Optional[torch.Tensor],
+    bond_index: Optional[torch.Tensor] = None,
+    bond_attr: Optional[torch.Tensor] = None,
     one_hot: bool = False,
     one_hot_types: int = 5,
     cutoff: float = 10.0,
