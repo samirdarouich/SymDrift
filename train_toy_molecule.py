@@ -100,7 +100,7 @@ else:
 
 dataset = ToyMoleculeDataset(
     name=dataset_name,
-    n_samples=2,
+    n_samples=n_samples,
     T=0,
     seed=42,
     r0=r0,
@@ -108,7 +108,7 @@ dataset = ToyMoleculeDataset(
     factor=factor,
     n_atoms=n_atoms,
     augment_with_rotations=augment_with_rotations,
-    augment_with_permutations=True,
+    augment_with_permutations=augment_with_rotations,
 )
 evaluation_function = partial(
     evaluate_toy,
@@ -125,7 +125,7 @@ if dataset_name == "carbon_chain":
 pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
-model_type = "painn"
+model_type = "dit_perm_eq"
 aligned = True
 permuted = True
 brute_force_permutations = True
@@ -136,7 +136,8 @@ model_dict = {
     ),
     "egnn": EGNN(num_distance_basis=0),
     "mlp": MLP(input_dim=n_atoms * 3 , hidden_dim=256, num_layers=9, output_dim=n_atoms * 2), #2d and atomic number as input
-    "dit": DiT(mgn_num_node_features=1, positional_encoding_bool=True, relative_positional_embedding_bool=False, max_radius=0), #positional_encoding_bool=True breaks permutation equivariance, 
+    "dit_perm_eq": DiT(mgn_num_node_features=1, positional_encoding_bool=False, relative_positional_embedding_bool=False, max_radius=0), #positional_encoding_bool=True breaks permutation equivariance, 
+    "dit_naive": DiT(mgn_num_node_features=1, positional_encoding_bool=True, relative_positional_embedding_bool=False, max_radius=0), #positional_encoding_bool=True breaks permutation equivariance, 
 }
 model = model_dict[model_type]
 model.to(device)
@@ -167,7 +168,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 losses = []
 model.train()
 
-n_steps = 9000
+n_steps = 3000
 batch_size_pos = min(16, len(dataset))
 dataloader = GeometricDataLoader(
     dataset,

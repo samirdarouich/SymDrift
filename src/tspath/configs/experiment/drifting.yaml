@@ -10,7 +10,7 @@ defaults:
 seed: 42
 
 run:
-  experiment: base
+  experiment: drifting_base
   id: ${uuid:1}
   path: ${run.work_dir}/runs
   work_dir: ${hydra:runtime.cwd}

@@ -42,6 +42,7 @@ package-dir = { "" = "src" }
 script-files = [
     "src/scripts/tspath_train",
     "src/scripts/tspath_sample",
+    "src/scripts/tspath_covmat_evaluation",
 ]
 
 [tool.setuptools.dynamic]

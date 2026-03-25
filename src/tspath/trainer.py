@@ -288,7 +288,7 @@ class DriftingMolecules(pl.LightningModule):
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_neg_per_pos=max_num_conformers*2 # at least having 2*n_conformers
+                n_samples=max_num_conformers*2 # at least having 2*n_conformers
             )
         return loss
 
@@ -308,7 +308,7 @@ class DriftingMolecules(pl.LightningModule):
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_neg_per_pos=max_num_conformers*2 # at least having 2*n_conformers
+                n_samples=max_num_conformers*2 # at least having 2*n_conformers
             )
         return loss
 
@@ -318,10 +318,11 @@ class DriftingMolecules(pl.LightningModule):
         batch_pos,
         save_folder=None,
         step=None,
-        n_neg_per_pos=None,
+        n_samples=None,
         save_pca_plot=False,
         seed=None,
         threshold=0.5,
+        **kwargs
     ):
         """Generate n_neg_per_pos samples per graph"""
         if seed is not None:
@@ -334,7 +335,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # Sample prior noise
         batch_sampling = self.sample_negative_batch(
-            batch_pos, n_neg_per_pos=n_neg_per_pos or self.n_neg_per_pos
+            batch_pos, n_neg_per_pos=n_samples or self.n_neg_per_pos
         )
 
         # generate samples
@@ -354,22 +355,27 @@ class DriftingMolecules(pl.LightningModule):
 
         # Compute metrics (validity)
         metrics_val = get_validity(atoms_pred)
-        results = evaluate_covmat(
-            atoms_pred, 
-            atoms_positive, 
-            thresholds=np.arange(0.05, 3.05, 0.05), 
-            num_workers=0, 
-            worker_fn_type="rmsd_rdkit_wo_h",
-            ratio=2.0, # only keep at most 2*n_conformers predictions per reference
-        )
-        df, metrics_cov = print_covmat_results(results, threshold=threshold)
+        
+        # Compute metrics (coverage and matching)
+        if threshold is not None:
+            results = evaluate_covmat(
+                atoms_pred, 
+                atoms_positive, 
+                thresholds=np.arange(0.05, 3.05, 0.05), 
+                num_workers=0, 
+                worker_fn_type="rmsd_rdkit_wo_h",
+                ratio=2.0, # only keep at most 2*n_conformers predictions per reference
+            )
+            df, metrics_cov = print_covmat_results(results, threshold=threshold)
+        else:
+            df, metrics_cov = None, {}
 
         metrics = {**metrics_val, **metrics_cov}
         
         # Save samples
         if save_folder is not None:
             os.makedirs(save_folder, exist_ok=True)
-            write(f"{save_folder}/noise.xyz", atoms_noise)
+            write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
             for i, atoms in enumerate(atoms_pred):
@@ -383,8 +389,9 @@ class DriftingMolecules(pl.LightningModule):
 
             with open(f"{save_folder}/metrics.json", "w") as f:
                 json.dump({"step": self.global_step, **metrics}, f, indent=4)
-                
-            df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
+            
+            if df is not None:
+                df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
                 
             if save_pca_plot:
                 pca_plot(

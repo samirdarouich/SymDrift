@@ -9,7 +9,7 @@ __all__ = ["GaussianSampler", "HarmonicSampler"]
 
 class GaussianSampler:
     def __init__(self):
-        pass
+        self.type = "gaussian"
 
     def sample(self, size, batch=None, **kwargs):
         x = torch.empty(size)
@@ -20,6 +20,7 @@ class GaussianSampler:
 
 class HarmonicSampler:
     def __init__(self, alpha=1.0):
+        self.type = "harmonic"
         self.alpha = alpha
         self.eig_val_cache = {}
         self.eig_vec_cache = {}
