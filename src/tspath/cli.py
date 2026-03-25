@@ -146,7 +146,7 @@ def sample(cfg):
     atoms_generated = []
     for batch in tqdm(test_dataloader, desc="Evaluating test dataset"):
         batch = batch.to(device)
-        atoms_generated_, batch_metrics = generative_process.sample(
+        batch_atoms_generated, batch_metrics = generative_process.sample(
             batch_pos=batch,
             num_steps=nfe,
             n_samples=no_of_samples,
@@ -155,9 +155,8 @@ def sample(cfg):
             save_pca_plot=getattr(cfg.generative_model, "save_pca_plot", False),
             conditioned=conditioned,
             guidance_scale=guidance_scale,
-            threshold=None,  # only evaluate coverage and matching at the end for the whole dataset
         )
-        atoms_generated.extend(atoms_generated_)
+        atoms_generated.extend(batch_atoms_generated)
         for k, v in batch_metrics.items():
             if k not in metrics:
                 metrics[k] = []

@@ -36,6 +36,7 @@ class DriftingMolecules(pl.LightningModule):
         sample_every_epoch: int = 50,
         identifier: str = "smiles",
         save_folder: Optional[str] = "samples",
+        threshold: Optional[float] = 0.5,
         **kwargs,
     ):
         """
@@ -62,11 +63,13 @@ class DriftingMolecules(pl.LightningModule):
                 (e.g., "smiles", "reaction_id", etc.)
             save_folder: str
                 The folder where to save generated samples and visualizations.
+            threshold: float
+                The RMSD threshold to use for evaluating coverage and matching during sampling.
             **kwargs:
                 Additional hyperparameters to save.
         """
         super().__init__()
-        self.save_hyperparameters(ignore=["model", "drifting_field", "embedder"])
+        self.save_hyperparameters(ignore=["model"])
         self.model = model
         self.n_neg_per_pos = n_neg_per_pos
         self.drifting_field = drifting_field
@@ -76,6 +79,7 @@ class DriftingMolecules(pl.LightningModule):
         self.sample_every_epoch = sample_every_epoch
         self.identifier = identifier
         self.save_folder = save_folder
+        self.threshold = threshold
 
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
@@ -288,7 +292,8 @@ class DriftingMolecules(pl.LightningModule):
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_samples=max_num_conformers*2 # at least having 2*n_conformers
+                n_samples=max_num_conformers*2, # at least having 2*n_conformers
+                threshold=self.threshold
             )
         return loss
 
@@ -308,7 +313,8 @@ class DriftingMolecules(pl.LightningModule):
                 save_folder=save_folder, 
                 save_pca_plot=True, 
                 seed=42, 
-                n_samples=max_num_conformers*2 # at least having 2*n_conformers
+                n_samples=max_num_conformers*2, # at least having 2*n_conformers
+                threshold=self.threshold
             )
         return loss
 
@@ -321,7 +327,7 @@ class DriftingMolecules(pl.LightningModule):
         n_samples=None,
         save_pca_plot=False,
         seed=None,
-        threshold=0.5,
+        threshold=None,
         **kwargs
     ):
         """Generate n_neg_per_pos samples per graph"""
@@ -379,8 +385,9 @@ class DriftingMolecules(pl.LightningModule):
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
             for i, atoms in enumerate(atoms_pred):
+                identifier_str = atoms.info[self.identifier].replace("/", "_").replace(" ", "_")
                 sample_folder = (
-                    f"{save_folder}/{self.identifier}_{atoms.info[self.identifier]}"
+                    f"{save_folder}/{self.identifier}_{identifier_str}"
                 )
                 os.makedirs(sample_folder, exist_ok=True)
                 atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
