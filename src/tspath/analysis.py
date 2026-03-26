@@ -886,44 +886,52 @@ def print_covmat_results(results, threshold):
 
     return df, metrics
 
-def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
+def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
 
-    unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in ref])
+    unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in refs])
     unique_identifier_samples = set(
         [atom.info.get(identifier, "Unknown") for atom in samples]
     )
     unique_identifier = unique_identifier_ref.intersection(unique_identifier_samples)
+    
+    if len(unique_identifier) == 0:
+        logger.debug(
+            f"No common {identifier} values between refs and samples, skipping PCA plot."
+        )
+        return
+    
+    # Output of embedder is one long vector per molecule, and a mask that indicates 
+    # which positions in the vector correspond to atoms.
+    # Get ref embedding
+    ref_pos = torch.cat(
+        [torch.tensor(atom.get_positions()) for atom in refs], dim=0
+    ).float()
+    ref_atomic_numbers = torch.cat(
+        [torch.tensor(atom.get_atomic_numbers()) for atom in refs], dim=0
+    ).float()
+    batch_ref = torch.cat([torch.ones(len(atom))* i for i, atom in enumerate(refs)]).long()
+    ref_emb, ref_mask = embedder(
+        positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref
+    )
+
+    # Get samples embedding
+    samples_pos = torch.cat(
+        [torch.tensor(atom.get_positions()) for atom in samples], dim=0
+    ).float()
+    samples_atomic_numbers = torch.cat(
+        [torch.tensor(atom.get_atomic_numbers()) for atom in samples], dim=0
+    ).float()
+    batch_samples = torch.cat([torch.ones(len(atom))* i for i, atom in enumerate(samples)]).long()
+    samples_emb, samples_mask = embedder(
+        positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples
+    )
 
     if len(unique_identifier) == 1:
-        # Get ref embedding
-        ref_pos = torch.cat(
-            [torch.tensor(atom.get_positions()) for atom in ref], dim=0
-        ).float()
-        ref_atomic_numbers = torch.cat(
-            [torch.tensor(atom.get_atomic_numbers()) for atom in ref], dim=0
-        ).float()
-        batch_ref = torch.arange(len(ref)).repeat_interleave(len(ref[0]))
-        ref_emb = embedder(positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref)
-
-        if ref_emb.shape[0] == 1:
-            logger.debug("Only one reference sample, skipping PCA plot.")
-            return
-
-        # Get samples embedding
-        samples_pos = torch.cat(
-            [torch.tensor(atom.get_positions()) for atom in samples], dim=0
-        ).float()
-        samples_atomic_numbers = torch.cat(
-            [torch.tensor(atom.get_atomic_numbers()) for atom in samples], dim=0
-        ).float()
-        batch_samples = torch.arange(len(samples)).repeat_interleave(len(samples[0]))
-        samples_emb = embedder(
-            positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples
-        )
-
+        # if only one unique identifier, plot all samples and ref together (as the 
+        # embedder will have same shape for all)
         pca = PCA(n_components=2)
-        y_2d = pca.fit_transform(ref_emb)
-        x_2d = pca.transform(samples_emb)
+        y_2d = pca.fit_transform(ref_emb.view(len(refs), -1))
+        x_2d = pca.transform(samples_emb.view(len(samples), -1))
 
         fig, ax = plt.subplots(figsize=(6, 6))
         fig.suptitle(f"PCA variance: {sum(pca.explained_variance_ratio_):.2f}")
@@ -952,46 +960,25 @@ def pca_plot(ref, samples, embedder, identifier="smiles", save_path=None):
             ax = axes[i]
 
             # Get reference embedding
-            ref_i = [atom for atom in ref if atom.info[identifier] == identifier_value]
+            ref_mask_i = torch.tensor([i for i, atom in enumerate(refs) if atom.info[identifier] == identifier_value])
+            ref_emb_mask_i = torch.isin(ref_mask, ref_mask_i)
+            ref_emb_i = ref_emb[ref_emb_mask_i]
 
-            if len(ref_i) == 1:
+            if len(ref_mask_i) == 1:
                 logger.debug(
                     f"Only one reference sample, {identifier}={identifier_value}, skipping..."
                 )
                 unused_axes.append(i)
                 continue
-
-            ref_pos = torch.cat(
-                [torch.tensor(atom.get_positions()) for atom in ref_i], dim=0
-            ).float()
-            ref_atomic_numbers = torch.cat(
-                [torch.tensor(atom.get_atomic_numbers()) for atom in ref_i], dim=0
-            ).float()
-            batch_ref_i = torch.arange(len(ref_i)).repeat_interleave(len(ref_i[0]))
-            ref_emb = embedder(
-                positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref_i
-            )
-
+            
             # Get samples embedding
-            samples_i = [
-                atom for atom in samples if atom.info[identifier] == identifier_value
-            ]
-            samples_pos = torch.cat(
-                [torch.tensor(atom.get_positions()) for atom in samples_i], dim=0
-            ).float()
-            samples_atomic_numbers = torch.cat(
-                [torch.tensor(atom.get_atomic_numbers()) for atom in samples_i], dim=0
-            ).float()
-            batch_samples_i = torch.arange(len(samples_i)).repeat_interleave(
-                len(samples_i[0])
-            )
-            samples_emb = embedder(
-                positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples_i
-            )
+            samples_mask_i = torch.tensor([i for i, atom in enumerate(samples) if atom.info[identifier] == identifier_value])
+            samples_emb_mask_i = torch.isin(samples_mask, samples_mask_i)
+            samples_emb_i = samples_emb[samples_emb_mask_i]
 
             pca = PCA(n_components=2)
-            y_2d = pca.fit_transform(ref_emb)
-            x_2d = pca.transform(samples_emb)
+            y_2d = pca.fit_transform(ref_emb_i.view(len(ref_mask_i), -1))
+            x_2d = pca.transform(samples_emb_i.view(len(samples_mask_i), -1))
 
             ax.plot(x_2d[:, 0], x_2d[:, 1], "ro", label="Samples")
             ax.plot(y_2d[:, 0], y_2d[:, 1], "bx", label="Dataset")

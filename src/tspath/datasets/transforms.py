@@ -119,7 +119,9 @@ class FeaturizeMolecule(BaseTransform):
             chiral_index, chiral_nbr_index, chiral_tag = self.get_chiral_centers(
                 smiles
             )
-            bonded_edge_index, edge_attr, shortest_hops = self.get_edge_index(smiles, True, True)
+            bonded_edge_index, edge_attr, shortest_hops = self.get_edge_index(
+                smiles, use_edge_feat=True, use_shortest_hops=False
+            )
 
             data.node_attr = node_attr
             data.chiral_index = chiral_index
@@ -128,9 +130,6 @@ class FeaturizeMolecule(BaseTransform):
             data.shortest_hops = shortest_hops
             data.bonded_edge_index = bonded_edge_index
             data.edge_attr = edge_attr
-        else:
-            data.bonded_edge_index = torch.empty((2, 0)).long()
-            data.edge_attr = None
         return data
     
     def get_mol(self, smiles: str) -> Mol:
@@ -235,8 +234,10 @@ class BoltzmannWeightingConformers(BaseTransform):
         positions = positions.view(num_conformers, num_atoms, 3)  # Reshape to [num_conformers, num_atoms, 3]
         # Sort after boltzmann weighting
         sorted_indices = torch.argsort(boltzmann_weights.view(-1), descending=True )[: self.keep_top_n]
+        data.x_conf = data.x_conf[: self.keep_top_n * num_atoms]
         data.pos = positions[sorted_indices].view(-1, 3)  # Reshape back to [num_conformers*num_atoms, 3]
         data.boltzmann_weights = boltzmann_weights[sorted_indices]
         data.energy = data.energy[sorted_indices]
         data.num_conformers = data.num_conformers.clamp(max=self.keep_top_n)
+        data.conformer_index = data.conformer_index[: self.keep_top_n * num_atoms]
         return data

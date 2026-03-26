@@ -2,5 +2,5 @@
 # Embedding space
 _target_: tspath.generative.DriftingField
 temperatures: [0.02, 0.05, 0.2]
-normalize_over_x: true
+normalize_over_x: false
 normalize_drift: true

@@ -83,7 +83,6 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         dataset_atoms,
         thresholds=[0.1, 0.2, 0.5],
         num_workers=8,
-        same_order=False,
         worker_fn_type="rmsd_wo_h",
     )
 
@@ -133,10 +132,10 @@ dataset = ConformerDataset(
 dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
-model_type = "painn"
-aligned = True
-permuted = True
-brute_force_permutations = True
+model_type = "dit_naive"
+aligned = False
+permuted = False
+brute_force_permutations = False
 model_dict = {
     "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
@@ -150,12 +149,14 @@ model_dict = {
         sphere_channels_mlp=512,
         max_radius=11.0,
     ),
+    "dit_perm_eq": DiT(positional_encoding_bool=False, relative_positional_embedding_bool=False, max_radius=11.0), #positional_encoding_bool=True breaks permutation equivariance, 
+    "dit_naive": DiT(positional_encoding_bool=True, relative_positional_embedding_bool=False, max_radius=11.0), #positional_encoding_bool=True breaks permutation equivariance, 
     "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9),
 }
 model = model_dict[model_type]
 model.to(device)
 
-only_pos_drift = True
+only_pos_drift = False
 drift_str = "all_drift"
 if only_pos_drift:
     drift_str = "pos_drift"

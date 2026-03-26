@@ -98,7 +98,11 @@ class DriftingMolecules(pl.LightningModule):
         # Repeat each graph in the batch n_neg_per_pos times to create a new batch for sampling
         data_list = batch.to_data_list()
         repeated_list = [data for data in data_list for _ in range(n_neg_per_pos)]
-        batch_negative = Batch.from_data_list(repeated_list)
+        batch_negative = Batch.from_data_list(repeated_list, exclude_keys=[
+            # Exlucde all conformer broadcasted properties
+            "x_conf", "pos", "energy", "boltzmann_weights", "conformer_index"
+            ]
+        )
 
         # Sample from the prior 
         z = self.prior_sampler.sample(
@@ -112,35 +116,23 @@ class DriftingMolecules(pl.LightningModule):
 
     def _compute_drift_coordinate_space(self, x, batch_pos, batch_neg, step):
         """Compute the drift in coordinate space and the corresponding loss."""
-        # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch_pos.num_atoms * batch_pos.num_conformers
-        conformer_batch = torch.arange(
-            batch_pos.num_graphs, device=x.device
-        ).repeat_interleave(batch_sizes)
+        # We got n_pos graphs, where each have n_conformers (n_conf_i*n_atom_i)
         y_pos = batch_pos.pos.clone()
-        z_pos = batch_pos.x.clone()
+        z_pos = batch_pos.x_conf.clone()
 
         # Per class compute the drift seperately
         V_total = torch.zeros_like(x)
         V_pos_total = torch.zeros_like(x)
         for i in range(batch_pos.num_graphs):
-            # positions have shape n_conformers*n_atoms, 3
-            mask_pos = conformer_batch == i
+            # Get all conformers that correspond to the current positive sample
+            mask_pos = batch_pos.x_conf_batch == i
             y_i_pos = y_pos[mask_pos]
-
-            # atomic numbers have shape n_atoms
-            mask_pos = batch_pos.batch == i
-            z_i_pos = z_pos[mask_pos].repeat(batch_pos.num_conformers[i])
+            z_i_pos = z_pos[mask_pos]
 
             # search negative samples corresponding to the current positive sample
-            mask_neg = torch.isin(
-                batch_neg.batch,
-                torch.arange(
-                    i * self.n_neg_per_pos,
-                    (i + 1) * self.n_neg_per_pos,
-                    device=batch_neg.batch.device,
-                ),
-            )
+            start = i * self.n_neg_per_pos
+            end = (i + 1) * self.n_neg_per_pos
+            mask_neg = (batch_neg.batch >= start) & (batch_neg.batch < end)
             x_i = x[mask_neg]
             z_i_neg = batch_neg.x[mask_neg]
 
@@ -180,51 +172,51 @@ class DriftingMolecules(pl.LightningModule):
 
     def _compute_drift_embedded_space(self, x, batch_pos, batch_neg, step):
         """Compute the drift in embedded space and the corresponding loss."""
-        # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch_pos.num_atoms * batch_pos.num_conformers
-        conformer_batch = torch.arange(
-            batch_pos.num_graphs, device=x.device
-        ).repeat_interleave(batch_sizes)
+        # Create batch mask treating each conformer as seperate graph
+        batch_mask_pos = batch_pos.conformer_index
         y_pos = batch_pos.pos.clone()
-        z_pos = batch_pos.x.clone()
+        z_pos = batch_pos.x_conf.clone()
+        conformer_offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()
 
+        # Call the embedder for the whole batch. Embedding output is one flatten vector
+        # and a mask indicating which embedding belong to which batch element
+        with torch.no_grad():
+            y_pos_embedded, mask_pos = self.embedder(
+                positions=y_pos, Z=z_pos, batch=batch_mask_pos
+            )
+            
+        x_embedded, mask_x = self.embedder(
+            positions=x, Z=batch_neg.x, batch=batch_neg.batch
+        )
+                
         # Per class compute the drift seperately
-        loss = 0.0
+        loss = torch.tensor(0.0, device=x.device)
         for i in range(batch_pos.num_graphs):
-            # positions have shape n_conformers*n_atoms, 3
-            mask_pos = conformer_batch == i
-            y_i_pos = y_pos[mask_pos]
-
-            # atomic numbers have shape n_atoms
-            mask_pos = batch_pos.batch == i
-            z_i_pos = z_pos[mask_pos].repeat(batch_pos.num_conformers[i])
-
-            # Embedding of y samples
-            batch_i_pos = torch.arange(
-                batch_pos.num_conformers[i], device=x.device
-            ).repeat_interleave(batch_pos.num_atoms[i])
-            with torch.no_grad():
-                y_i_pos_embedded = self.embedder(
-                    positions=y_i_pos, Z=z_i_pos, batch=batch_i_pos
-                )
+            # Get all embeddings corresponding to the current positive conformers
+            start = conformer_offsets[i]
+            end = conformer_offsets[i+1]
+            mask_pos_i = torch.isin(
+                mask_pos, 
+                torch.arange(start, end, device=mask_pos.device)
+            )
+            
+            # Reshape to (n_conformers_i, embed_dim_i)
+            y_i_pos_embedded = y_pos_embedded[mask_pos_i].view(
+                batch_pos.num_conformers[i], -1
+            )
 
             # search negative samples corresponding to the current positive sample
-            mask_neg = torch.isin(
-                batch_neg.batch,
-                torch.arange(
-                    i * self.n_neg_per_pos,
-                    (i + 1) * self.n_neg_per_pos,
-                    device=x.device,
-                ),
+            start = i * self.n_neg_per_pos
+            end = (i + 1) * self.n_neg_per_pos
+            mask_neg_i = torch.isin(
+                mask_x, 
+                torch.arange(start, end, device=mask_pos.device)
             )
-            x_i = x[mask_neg]
-            z_i_neg = batch_neg.x[mask_neg]
-
-            # Embedding of x samples
-            batch_i_neg = torch.arange(
-                self.n_neg_per_pos, device=x.device
-            ).repeat_interleave(batch_pos.num_atoms[i])
-            x_i_embedded = self.embedder(positions=x_i, Z=z_i_neg, batch=batch_i_neg)
+            
+            # Reshape to (n_neg_per_pos, embed_dim_i)
+            x_i_embedded = x_embedded[mask_neg_i].view(
+                self.n_neg_per_pos, -1
+            )
 
             # Call the drift
             V, V_pos, V_neg, *_ = self.drifting_field(
@@ -427,28 +419,9 @@ class DriftingMolecules(pl.LightningModule):
     
     def _get_pos_atoms(self, batch_pos):
         """Treating each conformer as a separate graph in the batch"""
-        
         batch_pos_ = batch_pos.clone()
-        # get positive atoms (consiting of sum n_i_conformers_per_graph)
-        z_split = torch.split(batch_pos.x, batch_pos.num_atoms.tolist())
-        z_pos = torch.cat(
-            [
-                z_i.repeat(n_conf_i)
-                for z_i, n_conf_i in zip(z_split, batch_pos.num_conformers)
-            ]
-        )
-
-        # treat each conformer as a separate graph in the batch for evaluation
-        offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()[:-1]
-        conformer_batch = torch.cat(
-            [
-                torch.arange(n_conf_i, device=z_pos.device).repeat_interleave(n_atom_i) + offsets[i]
-                for i, (n_conf_i, n_atom_i )in enumerate(zip(batch_pos.num_conformers, batch_pos.num_atoms))
-            ]
-        )
-        
-        batch_pos_.batch = conformer_batch
-        batch_pos_.x = z_pos
+        batch_pos_.batch = batch_pos.conformer_index
+        batch_pos_.x = batch_pos.x_conf
 
         batch_pos_.smiles = [ 
             smi for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers) 

@@ -9,6 +9,7 @@ batch_size: 2
 num_workers: 0
 persistent_workers: false
 pin_memory: false
+follow_batch: [x_conf] # creates additional batch mask for each conformer
 
 # Define training and validation datasets and dataloaders
 train_dataset:
@@ -45,6 +46,7 @@ train_dataloader:
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
   pin_memory: ${dataset.pin_memory}
+  follow_batch: ${dataset.follow_batch}
   shuffle: True
 
 val_dataloader:
@@ -53,6 +55,7 @@ val_dataloader:
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
   pin_memory: ${dataset.pin_memory}
+  follow_batch: ${dataset.follow_batch}
   shuffle: False
 
 test_dataloader:
@@ -61,4 +64,5 @@ test_dataloader:
   num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
   pin_memory: ${dataset.pin_memory}
+  follow_batch: ${dataset.follow_batch}
   shuffle: False

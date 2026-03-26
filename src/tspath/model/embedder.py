@@ -335,7 +335,7 @@ class GaussianMomentEmbedder(nn.Module):
         self,
         n_contr: int = 8,
         n_basis: int = 7,
-        max_radius: float = 6.0,
+        max_radius: float = 15.0,
         n_radial: int = 5,
         use_atom_type_embeddings: bool = False,
         reduced_dim: Optional[int] = None,
@@ -351,7 +351,7 @@ class GaussianMomentEmbedder(nn.Module):
             n_contr (int, optional):
               Number of contractions to compute (up to 8). Defaults to 8.
             max_radius (float, optional):
-              Maximum radius for the radial basis functions. Defaults to 6.0.
+              Maximum radius for the radial basis functions. Defaults to 15.0.
             use_atom_type_embeddings (bool, optional):
               Whether to use atom type embeddings in the radial function. Defaults to False.
             reduced_dim (Optional[int], optional):
@@ -381,7 +381,7 @@ class GaussianMomentEmbedder(nn.Module):
     def forward(
         self,
         positions: Tensor,
-        batch: Tensor,
+        batch: Optional[Tensor] = None,
         Z: Optional[Tensor] = None,
         edge_index: Optional[Tensor] = None,
         **kwargs
@@ -405,6 +405,8 @@ class GaussianMomentEmbedder(nn.Module):
               number of contractions. The shape depends on the number of contractions
               and the radial basis functions.
         """
+        if batch is None:
+            batch = torch.zeros(positions.shape[0], dtype=torch.long, device=positions.device)
         if edge_index is None:
             edge_index = radius_graph(positions, r=self.r_max, batch=batch)
             
@@ -493,18 +495,31 @@ class GaussianMomentEmbedder(nn.Module):
         if self.aggregation is None:
             return gaussian_moments
         else:
-            return scatter(gaussian_moments, batch, dim=0, reduce=self.aggregation)
+            # aggregate the moments for each graph in the batch using the specified 
+            # aggregation method and flatten them. Createa a mask to identify which 
+            # entries in the aggregated tensor correspond to which batch.
+            B = batch.max().item() + 1
+            aggregated = scatter(
+                gaussian_moments, batch, dim=0, reduce=self.aggregation
+            ).view(-1)
+            mask = torch.arange(B).repeat_interleave(gaussian_moments.shape[1]) 
+            return aggregated, mask
 
 class DistanceEmbedder(nn.Module):
-    def __init__(self, invariant=False):
+    
+    def __init__(self, r_max: Optional[float]=None, invariant=True):
         super().__init__()
         self.invariant = invariant
+        if r_max is None:
+            r_max = 1e6
+        self.r_max = r_max
         
     def forward(
         self, 
         positions: Tensor, 
-        batch: Tensor,
-        Z: Optional[Tensor] = None, 
+        batch: Optional[Tensor] = None,
+        Z: Optional[Tensor] = None,
+        edge_index: Optional[Tensor] = None,
         invariant: Optional[bool] = None,
         **kwargs
     ):
@@ -514,40 +529,57 @@ class DistanceEmbedder(nn.Module):
         Args:
             positions (Tensor): 
                 Tensor of shape (B*n_atoms, 3) containing the positions of the atoms.
-            batch (Tensor):
+            batch (Tensor, optional):
                 Tensor of shape (B*n_atoms,) containing the batch indices for each atom.
             Z (Tensor, optional): 
                 Tensor of shape (B*n_atoms) containing the atomic numbers of the atoms.
                 Needed if `invariant` is True to compute the invariant embedding. 
+            edge_index (Tensor, optional):
+              Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
             invariant (bool, optional): 
                 If True, the embedding will be invariant to permutations of atoms. 
                 If False, the embedding will be based on the full distance matrix. 
                 If None, it will use the class attribute `self.invariant`.
+                
+        Output:
+            dist (Tensor): Tensor of shape (n_edges,) containing the distances for each edge.
+            edge_batch (Tensor): Tensor of shape (n_edges,) containing the batch index for each edge.
         """
-        if invariant is None:
+        if invariant is not None:
             # if desired overwrite invariant attribute with forward argument
             self.invariant = invariant
-            
-        # reshape positions to (B, n_atoms, 3) and compute pairwise distances
-        B = batch.max().item() + 1
-        n_atoms = positions.shape[0] // B
-        pos = positions.view(B, n_atoms, 3)
+        if batch is None:
+            batch = torch.zeros(positions.shape[0], dtype=torch.long, device=positions.device)
+        if edge_index is None:
+            row, col = radius_graph(positions, r=self.r_max, batch=batch)
+            # mask out all symmetric entries (keep only one of (i,j) and (j,i))
+            mask = row < col
+            row, col = row[mask], col[mask]
         
-        # Compute full distance matrix
-        distance = torch.cdist(pos, pos)
-        if self.invariant:
-            z = Z.view(B, n_atoms)
-            unique_types = torch.unique(z)
-            d = []
-            for Zi in unique_types:
-                for Zj in unique_types:
-                    mask_i = (z == Zi)[:, :, None]  # (B, N,1)
-                    mask_j = (z == Zj)[:, None, :]  # (B, 1,N)
-                    pair_mask = mask_i & mask_j     # (B, N, N)
-                    d_ = distance[pair_mask].view(B, -1)
-                    d_ = torch.sort(d_, dim=1)[0]
-                    d.append(d_)
-            d = torch.cat(d, dim=1)
-            return d
-        else:
-            return distance.view(B, -1)
+        # compute distances for the edges (assuming fully connected graph, reconstructs 
+        # the full distance matrix)
+        dist = (positions[row] - positions[col]).norm(dim=-1)
+        
+        # get batch indices for the edges
+        edge_batch = batch[row]
+        
+        if not self.invariant:
+            return dist, edge_batch
+        
+        # sort edges within the same pair_type to make it permutation invariant
+        Zi, Zj = Z[row], Z[col]
+
+        # sorting key: (graph, pair_type, distance)
+        Zmax_val = Z.max() + 1
+        pair_type = Zi * Zmax_val + Zj
+        max_dist = dist.max().detach() + 1.0
+        group_id = edge_batch * (Zmax_val**2) + pair_type
+        key = group_id * max_dist + dist
+        
+        # apply permutation
+        perm = torch.argsort(key)
+        dist_sorted = dist[perm]
+        edge_batch_sorted = edge_batch[perm]
+        assert (edge_batch_sorted[1:] >= edge_batch_sorted[:-1]).all()
+
+        return dist_sorted, edge_batch_sorted

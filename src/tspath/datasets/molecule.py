@@ -15,9 +15,18 @@ import datamol as dm
 import os
 import glob
 from rdkit.Chem import rdMolDescriptors
+from torch_geometric.data import Data
 
 logger = logging.getLogger(__name__)
 
+class ConformerData(Data):
+    def __inc__(self, key, value, *args, **kwargs):
+        if key == 'conformer_index':
+            # Instead of adding n_atoms, we add the number of conformers 
+            # present in the current data object.
+            return self.num_conformers 
+        return super().__inc__(key, value, *args, **kwargs)
+    
 class MoleculeDataset(InMemoryDataset):
     def __init__(
         self,
@@ -290,14 +299,18 @@ class ConformerDataset(InMemoryDataset):
             logger.warning(f"Skipping {smiles} due to disconnected components")
             return None
         
-        data = Data(
+        num_conformers = positions.shape[0]
+        num_atoms = positions.shape[1]
+        data = ConformerData(
             x=atomic_numbers,  # [num_atoms]
+            x_conf=atomic_numbers.repeat(num_conformers),  # [num_conformers*num_atoms]
             charges=atomic_charges,  # [num_atoms]
             pos=positions.view(-1, 3),  # [num_conformers*num_atoms, 3]
             energy=energies,  # [num_conformers, 1]
             boltzmann_weights=boltzmann_weights,  # [num_conformers, 1]
-            num_atoms=torch.tensor(len(atomic_numbers), dtype=torch.long),
-            num_conformers=positions.shape[0],
+            conformer_index=torch.arange(num_conformers).repeat_interleave(num_atoms),  # [num_conformers*num_atoms]
+            num_atoms=torch.tensor(num_atoms, dtype=torch.long),
+            num_conformers=num_conformers,
             smiles=smiles,
             formula=formula,
         )
