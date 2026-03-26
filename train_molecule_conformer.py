@@ -99,7 +99,7 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         write(f"{plot_dir}/step_{step_str}.png", atoms_samples[0])
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
         pca_plot(
-            ref=dataset_atoms,
+            refs=dataset_atoms,
             samples=atoms_samples,
             embedder=DistanceEmbedder(invariant=True),
             save_path=f"{plot_dir}/step_{step_str}_pca.png",
@@ -120,7 +120,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset_name = "geom_qm9"
 split_identifier = "geomol"
 split_identifier = "geomol_debug"
-# split_identifier = "geomol_debug_bigger"
+split_identifier = "geomol_debug_bigger"
 
 dataset = ConformerDataset(
     source=dataset_name,
@@ -150,7 +150,12 @@ model_dict = {
         max_radius=11.0,
     ),
     "dit_perm_eq": DiT(positional_encoding_bool=False, relative_positional_embedding_bool=False, max_radius=11.0), #positional_encoding_bool=True breaks permutation equivariance, 
-    "dit_naive": DiT(positional_encoding_bool=True, relative_positional_embedding_bool=False, max_radius=11.0), #positional_encoding_bool=True breaks permutation equivariance, 
+    "dit_naive": DiT(
+        positional_encoding_bool=True, # break permutation equivariance
+        relative_positional_embedding_bool=True, # break rotation equivariance
+        absolute_positional_embedding_bool=True, # break translation and rotation equivariance
+        max_radius=11.0)
+    ,
     "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9),
 }
 model = model_dict[model_type]
@@ -165,7 +170,7 @@ print(
 )
 
 normalize_drift = True
-temperatures = [0.05]
+temperatures = [0.02, 0.05, 0.2]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
 outdir = f"runs/conformer/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
@@ -198,13 +203,14 @@ dataloader = GeometricDataLoader(
     batch_size=batch_size_pos,
     shuffle=True,
     generator=torch.Generator().manual_seed(42),
+    follow_batch=["x_conf"]
 )
 
 
 losses = []
 model.train()
 
-n_steps = 15_000
+n_steps = 2_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingWarmupRestarts(
@@ -221,56 +227,44 @@ scheduler = CosineAnnealingWarmupRestarts(
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
 step_count = 0
 for epoch in pbar:
-    for batch_idx, batch in enumerate(dataloader):
+    for batch_idx, batch_pos in enumerate(dataloader):
         optimizer.zero_grad()
-        batch = batch.to(device)
+        batch_pos = batch_pos.to(device)
 
-        # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch.num_atoms * batch.num_conformers
-        conformer_idx = torch.arange(
-            batch.num_graphs, device=batch_sizes.device
-        ).repeat_interleave(batch_sizes)
-        y_pos = batch.pos.clone()
-        z_pos = batch.x.clone()
+        # We got n_pos graphs, where each have n_conformers (n_conf_i*n_atom_i)
+        y_pos = batch_pos.pos.clone()
+        z_pos = batch_pos.x_conf.clone()
 
         # Sample n_neg priors per graph
         batch_neg = create_batch_object(
-            batch, n_samples=n_neg_per_pos
+            batch_pos, n_samples=n_neg_per_pos
         )
 
         # Call the model
         x = model(batch_neg)
 
-        # Per Class compute the drift seperately
+        # Per class compute the drift seperately
         V_total = torch.zeros_like(x)
         V_pos_total = torch.zeros_like(x)
-        for i in range(batch.num_graphs):
-            # positions have shape n_conformers*n_atoms, 3
-            mask_pos = conformer_idx == i
+        for i in range(batch_pos.num_graphs):
+            # Get all conformers that correspond to the current positive sample
+            mask_pos = batch_pos.x_conf_batch == i
             y_i_pos = y_pos[mask_pos]
-
-            # atomic numbers have shape n_atoms
-            mask_pos = batch.batch == i
-            z_i_pos = z_pos[mask_pos].repeat(batch.num_conformers[i])
-
+            z_i_pos = z_pos[mask_pos]
+            
             # search negative samples corresponding to the current positive sample
-            mask_neg = torch.isin(
-                batch_neg.batch,
-                torch.arange(
-                    i * n_neg_per_pos,
-                    (i + 1) * n_neg_per_pos,
-                    device=batch_neg.batch.device,
-                ),
-            )
+            start = i * n_neg_per_pos
+            end = (i + 1) * n_neg_per_pos
+            mask_neg = (batch_neg.batch >= start) & (batch_neg.batch < end)
             x_i = x[mask_neg]
             z_i_neg = batch_neg.x[mask_neg]
 
-            # Call the drift (atomic numbers will be repeated for negative samples)
+            # Compute the drift
             V, V_pos, V_neg, *_ = drifting_field(
                 x_i.detach(),  # avoid unnecessary gradient tracking
                 y_i_pos,
                 x_i.detach(),  # avoid unnecessary gradient tracking
-                batch.num_atoms[i],
+                batch_pos.num_atoms[i],
                 atomic_numbers_pos=z_i_pos,
                 atomic_numbers_neg=z_i_neg,
             )
@@ -305,10 +299,10 @@ for epoch in pbar:
         if step_count % (n_steps // 10) == 0 and step_count > 0:
             # Sample in total 1000 samples. This will produce per batch item n_samples,
             # which will result in 1000 samples overall
-            n_samples = 1000 // batch.num_graphs
+            n_samples = 1000 // batch_pos.num_graphs
             visualize(
                 model,
-                batch,
+                batch_pos,
                 current_step=step_count,
                 n_samples=n_samples,
                 outdir=outdir,
@@ -318,9 +312,9 @@ for epoch in pbar:
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
-n_samples = 1000 // batch.num_graphs
+n_samples = 1000 // batch_pos.num_graphs
 atoms_samples = visualize(
-    model, batch, current_step="final", n_samples=n_samples, outdir=outdir
+    model, batch_pos, current_step="final", n_samples=n_samples, outdir=outdir
 )
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 

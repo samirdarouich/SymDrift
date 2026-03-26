@@ -167,6 +167,7 @@ class DriftingMolecules(pl.LightningModule):
                 on_epoch=(step != "train"),
                 prog_bar=False,
                 batch_size=batch_neg.num_graphs,
+                sync_dist=True,
             )
         return loss
 
@@ -242,6 +243,7 @@ class DriftingMolecules(pl.LightningModule):
                 on_epoch=(step != "train"),
                 prog_bar=False,
                 batch_size=batch_neg.num_graphs,
+                sync_dist=True,
             )
         return loss
 
@@ -410,6 +412,7 @@ class DriftingMolecules(pl.LightningModule):
                     on_epoch=(step != "train"),
                     prog_bar=False,
                     batch_size=batch_sampling.num_graphs,
+                    sync_dist=True,
                 )
 
         if was_training:
@@ -466,6 +469,7 @@ class Drifting(pl.LightningModule):
                 on_epoch=(step != "train"),
                 prog_bar=False,
                 batch_size=batch_size,
+                sync_dist=True,
             )
         return loss
 
