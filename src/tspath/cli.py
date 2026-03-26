@@ -1,5 +1,6 @@
 import logging
 import os
+import socket
 import uuid
 import json
 
@@ -23,6 +24,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 @hydra.main(config_path="configs", version_base="1.2", config_name="base")
 def train(cfg):
 
+    log.info("Running on host: " + str(socket.gethostname()))
     log.info("Starting training for run: {}".format(cfg.run.id))
     if cfg.get("print_config", True):
         fields = (
@@ -98,6 +100,7 @@ def train(cfg):
 @hydra.main(config_path="configs", version_base="1.2", config_name="base")
 def sample(cfg):
 
+    log.info("Running on host: " + str(socket.gethostname()))
     log.info("Starting inference for run: {}".format(cfg.run.id))
     if cfg.get("print_config", True):
         fields = (

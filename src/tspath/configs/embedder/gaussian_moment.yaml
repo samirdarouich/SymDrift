@@ -11,7 +11,7 @@ n_basis: 4
 n_contr: 4
 
 # maximum distance for the radial basis functions
-max_radius: 11.0
+max_radius: 15.0
 
 # if pair wise embeddings should be learned to scale the radial functions
-use_atom_type_embeddings: true
+use_atom_type_embeddings: false

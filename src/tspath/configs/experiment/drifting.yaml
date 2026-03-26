@@ -59,6 +59,8 @@ generative_model:
 trainer:
   max_epochs: 1000
   gradient_clip_val: ${model.gradient_clip_val}
+  strategy: auto
+  accelerator: auto
 
 callbacks:
   lr_monitor:
