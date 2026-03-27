@@ -165,28 +165,22 @@ if embedder_type == "gm":
     embedder = GaussianMomentEmbedder(
         n_radial=n_radial,
         n_basis=n_basis,
-        max_radius=11.0,
+        max_radius=15.0,
         n_contr=n_contr,
-        use_atom_type_embeddings=True,
+        use_atom_type_embeddings=False, # no learnable atom type embeddings
     )
     embedder.to(device)
 
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": model.parameters(), "lr": 5e-5},
-            {"params": embedder.parameters(), "lr": 1e-4},
-        ],
-        weight_decay=0.0,
-    )
     embedder_str = (
         f"embedder_gm/n_radial_{n_radial}_n_basis_{n_basis}_n_contr_{n_contr}"
     )
 elif embedder_type == "distance":
     #! Invariant distance embedder
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     embedder_str = "embedder_distance"
     embedder = DistanceEmbedder(invariant=True)
 
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 
 ## Define the prior sampler (harmonic or gaussian)
 sampler_type = "harmonic"
@@ -238,63 +232,63 @@ scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
 pbar = tqdm(range(n_epochs), total=n_epochs, desc="Training")
 step_count = 0
 for epoch in pbar:
-    for batch_idx, batch in enumerate(dataloader):
+    for batch_idx, batch_pos in enumerate(dataloader):
         optimizer.zero_grad()
-        batch = batch.to(device)
+        batch_pos = batch_pos.to(device)
 
-        # We got n_pos graphs, where each have n_conformers
-        batch_sizes = batch.num_atoms * batch.num_conformers
-        conformer_idx = torch.arange(
-            batch.num_graphs, device=batch_sizes.device
-        ).repeat_interleave(batch_sizes)
-        y_pos = batch.pos.clone()
-        z_pos = batch.x.clone()
+        # Create batch mask treating each conformer as seperate graph
+        batch_mask_pos = batch_pos.conformer_index
+        y_pos = batch_pos.pos.clone()
+        z_pos = batch_pos.x_conf.clone()
+        conformer_offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()
 
         # Sample n_neg priors per graph
-        batch_neg = create_batch_object(batch, n_samples=n_neg_per_pos)
+        batch_neg = create_batch_object(batch_pos, n_samples=n_neg_per_pos)
 
         # Call the model
         x = model(batch_neg)
+        
+        # Call the embedder for the whole batch. Embedding output is one flatten vector
+        # and a mask indicating which embedding belong to which batch element
+        with torch.no_grad():
+            y_pos_embedded, mask_pos = embedder(
+                positions=y_pos, Z=z_pos, batch=batch_mask_pos
+            )
+            
+        x_embedded, mask_x = embedder(
+            positions=x, Z=batch_neg.x, batch=batch_neg.batch
+        )
 
-        # Per Class compute the drift seperately
-        loss = 0.0
-        for i in range(batch.num_graphs):
-            # positions have shape n_conformers*n_atoms, 3
-            mask_pos = conformer_idx == i
-            y_i_pos = y_pos[mask_pos]
-
-            # atomic numbers have shape n_atoms
-            mask_pos = batch.batch == i
-            z_i_pos = z_pos[mask_pos].repeat(batch.num_conformers[i])
-
-            # Embedding of y samples
-            batch_i_pos = torch.arange(
-                batch.num_conformers[i], device=device
-            ).repeat_interleave(batch.num_atoms[i])
-            with torch.no_grad():
-                y_i_pos_embedded = embedder(
-                    positions=y_i_pos, Z=z_i_pos, batch=batch_i_pos
-                )
+        # Per class compute the drift seperately
+        loss = torch.tensor(0.0, device=x.device)
+        for i in range(batch_pos.num_graphs):
+            # Get all embeddings corresponding to the current positive conformers
+            start = conformer_offsets[i]
+            end = conformer_offsets[i+1]
+            mask_pos_i = torch.isin(
+                mask_pos, 
+                torch.arange(start, end, device=mask_pos.device)
+            )
+            
+            # Reshape to (n_conformers_i, embed_dim_i)
+            y_i_pos_embedded = y_pos_embedded[mask_pos_i].view(
+                batch_pos.num_conformers[i], -1
+            )
 
             # search negative samples corresponding to the current positive sample
-            mask_neg = torch.isin(
-                batch_neg.batch,
-                torch.arange(
-                    i * n_neg_per_pos,
-                    (i + 1) * n_neg_per_pos,
-                    device=batch_neg.batch.device,
-                ),
+            start = i * n_neg_per_pos
+            end = (i + 1) * n_neg_per_pos
+            mask_neg_i = torch.isin(
+                mask_x, 
+                torch.arange(start, end, device=mask_pos.device)
             )
-            x_i = x[mask_neg]
-            z_i_neg = batch_neg.x[mask_neg]
-
-            # Embedding of x samples
-            batch_i_neg = torch.arange(n_neg_per_pos, device=device).repeat_interleave(
-                batch.num_atoms[i]
+            
+            # Reshape to (n_neg_per_pos, embed_dim_i)
+            x_i_embedded = x_embedded[mask_neg_i].view(
+                n_neg_per_pos, -1
             )
-            x_i_embedded = embedder(positions=x_i, Z=z_i_neg, batch=batch_i_neg)
 
-            # Call the drift (atomic numbers will be repeated for negative samples)
+            # Call the drift
             V, V_pos, V_neg, *_ = drifting_field(
                 x_i_embedded.detach(),
                 y_i_pos_embedded,
@@ -310,8 +304,6 @@ for epoch in pbar:
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        if embedder_type == "gm":
-            torch.nn.utils.clip_grad_norm_(embedder.parameters(), max_norm=1.0)
 
         optimizer.step()
         losses.append(loss.item())
@@ -325,10 +317,10 @@ for epoch in pbar:
         if step_count % (n_steps // 10) == 0 and step_count > 0:
             # Sample in total 1000 samples. This will produce per batch item n_samples,
             # which will result in 1000 samples overall
-            n_samples = 1000 // batch.num_graphs
+            n_samples = 1000 // batch_pos.num_graphs
             visualize(
                 model,
-                batch,
+                batch_pos,
                 current_step=step_count,
                 n_samples=n_samples,
                 outdir=outdir,
@@ -341,9 +333,9 @@ for epoch in pbar:
     # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
     #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
 
-n_samples = 1000 // batch.num_graphs
+n_samples = 1000 // batch_pos.num_graphs
 atoms_samples = visualize(
-    model, batch, current_step="final", n_samples=n_samples, outdir=outdir
+    model, batch_pos, current_step="final", n_samples=n_samples, outdir=outdir
 )
 torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/final_model.pt")
 

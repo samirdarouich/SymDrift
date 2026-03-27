@@ -81,13 +81,13 @@ def train(cfg):
                 state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
         generative_process.model.load_state_dict(state_dict)
 
-    diff_trainer = pl.Trainer(
+    generative_trainer = pl.Trainer(
         callbacks=callbacks,
         logger=loggers,
         default_root_dir=os.path.join(cfg.run.id),
         **cfg.trainer,
     )
-    diff_trainer.fit(
+    generative_trainer.fit(
         generative_process,
         train_dataloader,
         val_dataloader,

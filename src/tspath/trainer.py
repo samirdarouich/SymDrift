@@ -279,7 +279,7 @@ class DriftingMolecules(pl.LightningModule):
         ):
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
-            max_num_conformers = batch.num_conformers.max().item()
+            max_num_conformers = max(batch.num_conformers.max().item(), 32)
             self.sample(
                 batch, 
                 step="train", 
@@ -300,7 +300,7 @@ class DriftingMolecules(pl.LightningModule):
         ):
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
-            max_num_conformers = batch.num_conformers.max().item()
+            max_num_conformers = max(batch.num_conformers.max().item(), 32)
             self.sample(
                 batch, 
                 step="val", 
@@ -373,7 +373,8 @@ class DriftingMolecules(pl.LightningModule):
         metrics = {**metrics_val, **metrics_cov}
         
         # Save samples
-        if save_folder is not None:
+        is_global_zero = (self.trainer is None) or self.trainer.is_global_zero
+        if save_folder is not None and is_global_zero:
             os.makedirs(save_folder, exist_ok=True)
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])

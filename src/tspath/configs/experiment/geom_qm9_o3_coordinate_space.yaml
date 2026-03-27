@@ -6,7 +6,7 @@ defaults:
   - override /drifting_field: coordinate_space
 
 run:
-  experiment: geom_qm9_o3_coordinate_space
+  experiment: geom_qm9
 
 generative_model:
   sample_every_epoch: 100

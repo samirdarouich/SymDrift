@@ -5,7 +5,7 @@ defaults:
   - override /dataset: geom_qm9
 
 run:
-  experiment: geom_qm9_o3_embedded_space
+  experiment: geom_qm9
 
 generative_model:
   sample_every_epoch: 100
