@@ -5,6 +5,7 @@ defaults:
   - override /dataset: rdb7
   - override /drifting_field: coordinate_space
   - override /model: gotennet
+  - override /prior: gaussian
 
 run:
   experiment: rdb7

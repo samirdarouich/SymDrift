@@ -1,9 +1,9 @@
 import torch
 from torch_geometric.utils import get_laplacian, scatter, to_dense_adj
-from tspath.utils import batch_center_systems, sample_noise_like
+from tspath.utils import batch_center_systems, sample_noise_like, RankedLogger
 import logging
 
-logger = logging.getLogger(__name__)
+logger = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = ["GaussianSampler", "HarmonicSampler"]
 

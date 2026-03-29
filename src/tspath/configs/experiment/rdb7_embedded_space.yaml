@@ -4,6 +4,7 @@ defaults:
   - drifting
   - override /dataset: rdb7
   - override /model: gotennet
+  - override /prior: gaussian
 
 run:
   experiment: rdb7

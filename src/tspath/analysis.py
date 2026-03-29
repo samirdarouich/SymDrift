@@ -27,9 +27,10 @@ from rdkit.Chem import rdMolAlign
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 from tspath.datasets import ToyMoleculeDataset
+from tspath.utils import RankedLogger
 from rdkit.Geometry import Point3D
 
-logger = logging.getLogger(__name__)
+logger = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = [
     "generate_bonds_data",
@@ -771,18 +772,18 @@ WORKER_FN_DICT = {
 }
 
 def evaluate_covmat(
-    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None
+    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None, identifier="smiles"
 ):
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     for ref in refs:
-        ref_sample_dict[ref.info["smiles"]]["refs"].append(ref)
+        ref_sample_dict[ref.info[identifier]]["refs"].append(ref)
     for pred in preds:
-        smi = pred.info["smiles"]
+        smi = pred.info[identifier]
         # Only keep a certain ratio of predictions per reference
         if ratio is not None:
             if len(ref_sample_dict[smi]["preds"]) >= len(ref_sample_dict[smi]["refs"]) * ratio:
                 continue
-        ref_sample_dict[pred.info["smiles"]]["preds"].append(pred)
+        ref_sample_dict[pred.info[identifier]]["preds"].append(pred)
 
     rmsd_results = {
         smiles: np.ones(

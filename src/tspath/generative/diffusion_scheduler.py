@@ -6,9 +6,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from tspath.utils import sample_isotropic_Gaussian, sample_noise_like
+from tspath.utils import sample_isotropic_Gaussian, sample_noise_like, RankedLogger
 
-logger = logging.getLogger(__name__)
+logger = RankedLogger(__name__, rank_zero_only=True)
+
 __all__ = [
     "CosineSchedule",
     "PolynomialSchedule",

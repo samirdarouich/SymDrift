@@ -12,12 +12,12 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from tspath.analysis import evaluate_covmat, print_covmat_results
-from tspath.utils import print_config
+from tspath.utils import print_config, RankedLogger
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
 OmegaConf.register_new_resolver("replace", lambda s, old, new: s.replace(old, new))
 
-log = logging.getLogger(__name__)
+log = RankedLogger(__name__, rank_zero_only=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

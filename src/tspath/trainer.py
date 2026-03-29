@@ -357,7 +357,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # Compute metrics (validity)
         metrics_val = get_validity(atoms_pred)
-        
+        breakpoint()
         # Compute metrics (coverage and matching)
         if threshold is not None:
             results = evaluate_covmat(
@@ -367,6 +367,7 @@ class DriftingMolecules(pl.LightningModule):
                 num_workers=0, 
                 worker_fn_type="rmsd_rdkit_wo_h",
                 ratio=2.0, # only keep at most 2*n_conformers predictions per reference
+                identifier=self.identifier,
             )
             df, metrics_cov = print_covmat_results(results, threshold=threshold)
         else:
@@ -382,7 +383,7 @@ class DriftingMolecules(pl.LightningModule):
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
             for i, atoms in enumerate(atoms_pred):
-                identifier_str = atoms.info[self.identifier].replace("/", "_").replace(" ", "_")
+                identifier_str = str(atoms.info[self.identifier]).replace("/", "_").replace(" ", "_")
                 sample_folder = (
                     f"{save_folder}/{self.identifier}_{identifier_str}"
                 )
