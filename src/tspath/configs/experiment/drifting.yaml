@@ -53,6 +53,12 @@ generative_model:
   # Folder to save generated samples during training (if none, samples will not be saved)
   save_folder: generated_samples
 
+  # RMSD threshold to compute coverage and machting metrics
+  threshold: null
+
+  # Use RDKIT to compute the RMSD without considering hydrogens
+  worker_fn_type: rmsd_rdkit_wo_h
+
   # Path to pretrained model checkpoint for fine-tuning
   pretrained: null 
 

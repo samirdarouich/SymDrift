@@ -1,12 +1,8 @@
 # @package _global_
 
 defaults:
-  - drifting
-  - override /dataset: geom_qm9
+  - geom_qm9_o3_embedded_space
   - override /drifting_field: coordinate_space
-
-run:
-  experiment: geom_qm9
 
 generative_model:
   sample_every_epoch: 100

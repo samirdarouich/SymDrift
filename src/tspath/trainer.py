@@ -22,7 +22,7 @@ from tspath.utils import (
     batch_inputs_to_atoms,
 )
 
-__all__ = ["DriftingMolecules", "Drifting"]
+__all__ = ["DriftingMolecules"]
 
 class DriftingMolecules(pl.LightningModule):
     def __init__(
@@ -37,6 +37,7 @@ class DriftingMolecules(pl.LightningModule):
         identifier: str = "smiles",
         save_folder: Optional[str] = "samples",
         threshold: Optional[float] = 0.5,
+        worker_fn_type: str = "rmsd_rdkit_wo_h",
         **kwargs,
     ):
         """
@@ -65,6 +66,8 @@ class DriftingMolecules(pl.LightningModule):
                 The folder where to save generated samples and visualizations.
             threshold: float
                 The RMSD threshold to use for evaluating coverage and matching during sampling.
+            worker_fn_type: str
+                The type of function to use for parallel evaluation of coverage and matching.
             **kwargs:
                 Additional hyperparameters to save.
         """
@@ -80,6 +83,7 @@ class DriftingMolecules(pl.LightningModule):
         self.identifier = identifier
         self.save_folder = save_folder
         self.threshold = threshold
+        self.worker_fn_type = worker_fn_type
 
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
@@ -357,7 +361,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # Compute metrics (validity)
         metrics_val = get_validity(atoms_pred)
-        breakpoint()
+
         # Compute metrics (coverage and matching)
         if threshold is not None:
             results = evaluate_covmat(
@@ -365,7 +369,7 @@ class DriftingMolecules(pl.LightningModule):
                 atoms_positive, 
                 thresholds=np.arange(0.05, 3.05, 0.05), 
                 num_workers=0, 
-                worker_fn_type="rmsd_rdkit_wo_h",
+                worker_fn_type=self.worker_fn_type,
                 ratio=2.0, # only keep at most 2*n_conformers predictions per reference
                 identifier=self.identifier,
             )
@@ -438,125 +442,3 @@ class DriftingMolecules(pl.LightningModule):
             batch_pos_, pos_key="pos", info_keys=[self.identifier]
         )
         return atoms_positive
-
-
-class Drifting(pl.LightningModule):
-    def _step(self, y, step):
-
-        # Sample prior noise
-        z = torch.randn_like(y)
-
-        # generate samples
-        x = self.model(z)
-
-        # drifting field
-        v_total, *_ = self.drifting_field(
-            x=x,
-            y_pos=y,
-            y_neg=x,
-        )
-
-        # stop-gradient target
-        x_drifted = (x + v_total).detach()
-
-        # Compute loss
-        loss = torch.nn.functional.mse_loss(x, x_drifted)
-
-        # Log metrics
-        metrics = {"loss": loss}
-        batch_size = y.shape[0]
-        for metric_name, metric in metrics.items():
-            self.log(
-                f"{step}/{metric_name}",
-                metric,
-                on_step=(step == "train"),
-                on_epoch=(step != "train"),
-                prog_bar=False,
-                batch_size=batch_size,
-                sync_dist=True,
-            )
-        return loss
-
-    @torch.no_grad()
-    def sample(self, n_samples, y, step=None, **kwargs):
-        """Generate samples by integrating the learned flow field."""
-
-        was_training = self.model.training
-        self.model.eval()
-
-        start_time = time.time()
-
-        # Sample prior noise (always the same)
-        torch.manual_seed(42)
-        z = torch.randn(n_samples, *y.shape[1:], device=y.device)
-
-        # generate samples
-        x = self.model(z)
-
-        elapsed_time = time.time() - start_time
-
-        if was_training:
-            self.model.train()
-
-        return x
-
-    def visualize(self, y, step, n_samples=1000, outdir=None):
-        """Plot generated samples vs groundtruth and save/log the figure."""
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        # Get current epoch
-        epoch = self.current_epoch
-
-        # Generate samples from noise
-        x = self.sample(n_samples, y, step=step)
-
-        y_np = y.detach().cpu().numpy()
-        x_np = x.detach().cpu().numpy()
-
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        axes[0].scatter(y_np[:, 0], y_np[:, 1], s=3, alpha=0.5, color="steelblue")
-        axes[0].set_title("Groundtruth")
-        axes[0].set_aspect("equal")
-
-        axes[1].scatter(x_np[:, 0], x_np[:, 1], s=3, alpha=0.5, color="tomato")
-        axes[1].set_title(f"Generated (epoch {epoch})")
-        axes[1].set_aspect("equal")
-
-        plt.tight_layout()
-
-        if outdir is not None:
-            os.makedirs(f"{outdir}/{step}", exist_ok=True)
-            fig.savefig(
-                f"{outdir}/{step}/epoch_{epoch:05d}.png", dpi=100, bbox_inches="tight"
-            )
-
-        # Log to WandB if available
-        if self.logger is not None:
-            try:
-                import wandb
-
-                self.logger.experiment.log(
-                    {f"{outdir}/samples_{step}": wandb.Image(fig)}, epoch=epoch
-                )
-            except Exception:
-                pass
-
-        plt.close(fig)
-
-    def training_step(self, batch, batch_idx):
-        loss = self._step(batch, "train")
-        if (
-            (self.current_epoch % self.sample_every_epoch == 0)
-            and (batch_idx == 0)
-            and (self.current_epoch > 0)
-        ):
-            self.visualize(batch, step="train", outdir="visualizations")
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        loss = self._step(batch, "val")
-        return loss

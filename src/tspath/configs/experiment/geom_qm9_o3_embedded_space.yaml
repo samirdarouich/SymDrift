@@ -10,5 +10,8 @@ run:
 generative_model:
   sample_every_epoch: 100
 
+  # RMSD threshold to compute coverage and machting metrics
+  threshold: 0.5
+
 trainer:
   max_epochs: 1000

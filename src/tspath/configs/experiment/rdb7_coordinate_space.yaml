@@ -1,14 +1,8 @@
 # @package _global_
 
 defaults:
-  - drifting
-  - override /dataset: rdb7
+  - rdb7_embedded_space
   - override /drifting_field: coordinate_space
-  - override /model: gotennet
-  - override /prior: gaussian
-
-run:
-  experiment: rdb7
 
 generative_model:
   sample_every_epoch: 100

@@ -16,8 +16,6 @@ from tspath.model.gotennet.ops import (
     AtomCGREmbedding,
     CosineCutoff,
     Dense,
-    Distance,
-    EdgeCGREmbedding,
     EdgeInit,
     NodeInit,
     TensorInit,
@@ -575,10 +573,6 @@ class GotenNet(nn.Module):
         self.cutoff = self.cutoff_fn.cutoff
         self.edge_order = edge_order
 
-        self.distance = Distance(
-            self.cutoff, max_num_neighbors=max_num_neighbors, loop=True
-        )
-
         self.neighbor_embedding = NodeInit(
             [self.hidden_dim // 2, self.hidden_dim],
             node_attr_dim,
@@ -607,8 +601,6 @@ class GotenNet(nn.Module):
         self.radial_basis = radial_basis(cutoff=self.cutoff, n_rbf=num_distance_basis)
 
         self.atom_cgr_embedding = AtomCGREmbedding(node_attr_dim, sphere_channels)
-        self.edge_cgr_embedding = EdgeCGREmbedding(self.hidden_dim)
-
         self.tensor_init = TensorInit(l=lmax)
 
         self.gata = nn.ModuleList(
@@ -652,7 +644,7 @@ class GotenNet(nn.Module):
         )
 
         self.atomwise_3D_out_layer = Atomwise3DOut(
-            n_in=sphere_channels, n_hidden=sphere_channels//2, activation=F.silu
+            n_in=sphere_channels, n_hidden=sphere_channels // 2, activation=F.silu
         )
 
         self.reset_parameters()
@@ -682,7 +674,7 @@ class GotenNet(nn.Module):
         x_t_N_3 = data.pos
         bonded_edge_index, edge_type, batch_N = (
             data.bonded_edge_index,
-            data.edge_attr.view(-1), #code expects flatten edge_attr
+            data.edge_attr.view(-1),  # code expects flatten edge_attr
             data.batch,
         )
         r_feat, p_feat, atom_type = data.r_node_attr, data.p_node_attr, data.x.long()
@@ -722,7 +714,7 @@ class GotenNet(nn.Module):
         edge_emb_E_Z = self.edge_embedding(
             edge_index, edge_attr_E_Rbf, edge_type_r, edge_type_p
         )
-        
+
         # ----- Time & Step size embedding -----
         if self.time_embedding is not None:
             t_G = data.t
