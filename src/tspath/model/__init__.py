@@ -6,4 +6,5 @@ from .embedder import GaussianMomentEmbedder, DistanceEmbedder
 from .gvp import GVPModel
 from .dit.dit import DiT
 from .torchmdnet import TorchMDDynamics
-from .scheduler import CosineAnnealingWarmupRestarts
+from .gotennet.gotennet import GotenNet
+from .scheduler import CosineAnnealingWarmupRestarts, ReduceLROnPlateau

@@ -1,16 +1,18 @@
-from typing import Callable, Dict, Optional, Union, List, Sequence, Tuple
 import math
+from typing import Callable, List, Optional, Sequence, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.init import xavier_uniform_
-from torch.nn.init import zeros_
-from torch_scatter import scatter_add
-from tspath.utils import batch_center_systems
-from tspath.model.utils import extend_bond_index
+from torch.nn.init import xavier_uniform_, zeros_
 from torch_geometric.nn import MessagePassing
+from torch_scatter import scatter_add
+
+from tspath.model.utils import extend_bond_index
+from tspath.utils import batch_center_systems
 
 __all__ = ["PaiNN", "PaiNNInteraction", "PaiNNMixing"]
+
 
 def replicate_module(
     module_factory: Callable[[], nn.Module], n: int, share_params: bool
@@ -20,6 +22,7 @@ def replicate_module(
     else:
         module_list = nn.ModuleList([module_factory() for i in range(n)])
     return module_list
+
 
 class Dense(nn.Linear):
     r"""Fully connected linear layer with activation function.
@@ -63,6 +66,7 @@ class Dense(nn.Linear):
         y = F.linear(input, self.weight, self.bias)
         y = self.activation(y)
         return y
+
 
 class GatedEquivariantBlock(nn.Module):
     """
@@ -125,6 +129,7 @@ class GatedEquivariantBlock(nn.Module):
             s_out = self.sactivation(s_out)
 
         return s_out, v_out
+
 
 def build_gated_equivariant_mlp(
     n_in: int,
@@ -205,6 +210,7 @@ def build_gated_equivariant_mlp(
     out_net = nn.Sequential(*layers)
     return out_net
 
+
 def gaussian_rbf(inputs: torch.Tensor, offsets: torch.Tensor, widths: torch.Tensor):
     coeff = -0.5 / torch.pow(widths, 2)
     diff = inputs[..., None] - offsets
@@ -243,6 +249,7 @@ class GaussianRBF(nn.Module):
 
     def forward(self, inputs: torch.Tensor):
         return gaussian_rbf(inputs, self.offsets, self.widths)
+
 
 def cosine_cutoff(input: torch.Tensor, cutoff: torch.Tensor):
     r""" Behler-style cosine cutoff.
@@ -294,6 +301,7 @@ class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
     """
+
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -316,12 +324,16 @@ class TimestepEmbedder(nn.Module):
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
         freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+            -math.log(max_period)
+            * torch.arange(start=0, end=half, dtype=torch.float32)
+            / half
         ).to(device=t.device)
         args = t[:, None].float() * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            embedding = torch.cat(
+                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+            )
         return embedding
 
     def forward(self, t):
@@ -329,6 +341,7 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
+
 
 class NeighborEmbedding(MessagePassing):
     def __init__(self, hidden_channels, num_rbf, cutoff_upper, max_z=100):
@@ -366,7 +379,8 @@ class NeighborEmbedding(MessagePassing):
 
     def message(self, x_j, W):
         return x_j * W
-    
+
+
 class PaiNNInteraction(nn.Module):
     r"""PaiNN interaction block for modeling equivariant interactions of atomistic systems."""
 
@@ -539,7 +553,6 @@ class PaiNN(nn.Module):
             if neighbor_embedding
             else None
         )
-        
 
         # initialize embeddings
         if nuclear_embedding is None:
@@ -578,13 +591,13 @@ class PaiNN(nn.Module):
             self.n_interactions,
             shared_interactions,
         )
-        
+
         if self.use_noise_schedule_sigma_encoding:
             self.noise_schedule_sigma_embedding = TimestepEmbedder(
                 hidden_size=self.n_atom_basis,
                 frequency_embedding_size=256,
             )
-            
+
         self.readout_layer = None
         if read_out_layer:
             self.readout_layer = build_gated_equivariant_mlp(
@@ -618,7 +631,7 @@ class PaiNN(nn.Module):
             cutoff=self.cutoff,
             max_neighbors=self.max_neighbors,
         )
-        
+
         data.edge_index = edge_index
         idx_j, idx_i = edge_index
 
@@ -643,19 +656,22 @@ class PaiNN(nn.Module):
         q = self.embedding(atomic_numbers)
         for embedding in self.electronic_embeddings:
             q = q + embedding(q, data)
-            
+
         # update atomic embeddings given the graph structure and edge features
         if self.neighbor_embedding is not None:
             q = self.neighbor_embedding(
-                atomic_numbers, q, edge_index, d_ij, 
-                torch.cat([phi_ij.squeeze(1), edge_type.unsqueeze(-1)], dim=-1)
+                atomic_numbers,
+                q,
+                edge_index,
+                d_ij,
+                torch.cat([phi_ij.squeeze(1), edge_type.unsqueeze(-1)], dim=-1),
             )
 
         # noise schedule sigma encoding
         if self.use_noise_schedule_sigma_encoding:
             noise_schedule_sigma_enbedding = self.noise_schedule_sigma_embedding(data.t)
             q = q + noise_schedule_sigma_enbedding
-            
+
         # compute interaction blocks and update atomic embeddings
         q = q.unsqueeze(1)
         qs = q.shape
@@ -667,11 +683,11 @@ class PaiNN(nn.Module):
 
         if self.readout_layer is None:
             return q, mu
-        
+
         # predict invariant/equivariant output
         _, x = self.readout_layer((q, mu))
         x = torch.squeeze(x, -1)
         x = batch_center_systems(x, data.batch, dim=0)
-        
+
         # prevent 0 positions collapse
         return x + data.pos

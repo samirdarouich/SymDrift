@@ -8,7 +8,7 @@ model:
   activation_fn: silu
 
   radial_basis_bool: false
-  num_radial_basis: 8
+  num_distance_basis: 8
 
   # graph conditioning network
   mgn_activation_fn: silu
@@ -42,5 +42,6 @@ scheduler:
   min_lr: 1e-5
   warmup_steps: 2_000
   gamma: 1.00
+  interval: step
 
 gradient_clip_val: 1.0

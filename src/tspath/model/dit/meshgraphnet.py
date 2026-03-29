@@ -41,7 +41,7 @@ class MeshGraphNetLayer(nn.Module):
         edge_attr = self.edge_mlp(edge_input)
 
         # ---- aggregate messages ----
-        agg = scatter_add(edge_attr, col, dim=0)  # (num_nodes, num_edge_features)
+        agg = scatter_add(edge_attr, col, dim=0, dim_size=x.size(0))  # (num_nodes, num_edge_features)
 
         # ---- node update ----
         node_input = self.layer_norm_node(torch.cat([x, agg], dim=-1))

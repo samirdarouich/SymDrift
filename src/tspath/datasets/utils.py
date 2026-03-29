@@ -1,22 +1,40 @@
 # allowable multiple choice node and edge features
-from copy import deepcopy
-import pickle
 import os
-import numpy as np
-import torch
-from rdkit import Chem
-from rdkit.Chem.rdchem import BondType as BT
-from rdkit.Chem.rdchem import ChiralType
-from rdkit.Chem.rdchem import Conformer
-from rdkit.Geometry import Point3D
-from rdkit.Chem import rdmolops
+import pickle
+from copy import deepcopy
+from typing import Optional
+
 import numpy as np
 import pyximport
+import torch
+from rdkit import Chem
+from rdkit.Chem import rdmolops
+from rdkit.Chem.rdchem import ChiralType, Conformer
+from rdkit.Geometry import Point3D
+from torch_geometric.data import Data
+
 pyximport.install(setup_args={"include_dirs": np.get_include()})
 from . import algos
 
+
+__all__ = [
+    "chirality",
+    "allowable_features",
+    "get_atomic_number_and_charge",
+    "GetNumRings",
+    "safe_index",
+    "atom_to_feature_vector",
+    "bond_to_feature_vector",
+    "compute_edge_index",
+    "get_neighbor_ids",
+    "get_chiral_tensors",
+    "build_conformer",
+    "load_pkl",
+    "check_disconnected_components",
+    "ConformerData",
+]
+
 # similar to GeoMol
-BOND_TYPES = {t: i for i, t in enumerate(BT.names.values())}
 chirality = {
     ChiralType.CHI_TETRAHEDRAL_CW: -1.0,
     ChiralType.CHI_TETRAHEDRAL_CCW: 1.0,
@@ -60,8 +78,10 @@ def get_atomic_number_and_charge(mol: Chem.Mol):
         [[atom.GetAtomicNum(), atom.GetFormalCharge()] for atom in mol.GetAtoms()]
     )
 
+
 def GetNumRings(atom):
     return sum([atom.IsInRingSize(i) for i in range(3, 7)])
+
 
 def safe_index(l, e):
     """
@@ -71,7 +91,8 @@ def safe_index(l, e):
         return l.index(e)
     except Exception as e:
         return len(l) - 1
-    
+
+
 def atom_to_feature_vector(atom):
     """Node Invariant Features for an Atom."""
     atom_feature = [
@@ -101,15 +122,18 @@ def atom_to_feature_vector(atom):
     ]
     return atom_feature
 
+
 def bond_to_feature_vector(bond):
     """
     Converts rdkit bond object to feature list of indices
     :param mol: rdkit bond object
     :return: list
     """
+    # in case of no bond, assign "misc" category  
+    bond_type = str(bond.GetBondType()) if bond is not None else "misc"
     bond_feature = [
         safe_index(
-            allowable_features["possible_bond_type_list"], str(bond.GetBondType())
+            allowable_features["possible_bond_type_list"], bond_type
         ),
         # allowable_features['possible_bond_stereo_list'].index(str(bond.GetStereo())),
         # allowable_features['possible_is_conjugated_list'].index(bond.GetIsConjugated()),
@@ -118,33 +142,43 @@ def bond_to_feature_vector(bond):
 
 
 def compute_edge_index(
-    mol, no_reverse: bool = False, with_edge_attr=False, with_shortest_hops=False
+    mol,
+    no_reverse: bool = False,
+    with_edge_attr=False,
+    with_shortest_hops=False,
+    edge_index: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Computes edge index from mol object"""
-    edge_list = []
-    bond_types = []
-    for bond in mol.GetBonds():
-        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        edge_list.append((i, j))
-        bond_types.append(bond_to_feature_vector(bond))
-
-        if not no_reverse:
-            edge_list.append((j, i))
+    if edge_index is not None:
+        bond_types = []
+        for i, j in zip(*edge_index):
+            b = mol.GetBondBetweenAtoms(int(i), int(j))
+            bond_types.append(bond_to_feature_vector(b))
+    else:
+        edge_list = []
+        bond_types = []
+        for bond in mol.GetBonds():
+            i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            edge_list.append((i, j))
             bond_types.append(bond_to_feature_vector(bond))
 
-    if len(edge_list) == 0:
-        return torch.empty((2, 0)).long()
+            if not no_reverse:
+                edge_list.append((j, i))
+                bond_types.append(bond_to_feature_vector(bond))
 
-    edge_index = torch.from_numpy(np.array(edge_list).T).long()
+        if len(edge_list) == 0:
+            return torch.empty((2, 0)).long()
+
+        edge_index = torch.from_numpy(np.array(edge_list).T).long()
 
     shortest_hops = None
     if with_shortest_hops:
         num_atoms = mol.GetNumAtoms()
         adj_matrix = rdmolops.GetAdjacencyMatrix(mol)
         shortest_path_result, _ = algos.floyd_warshall(adj_matrix)
-        mask = ~np.eye(num_atoms, dtype=np.bool_) # get rid of self interactions
+        mask = ~np.eye(num_atoms, dtype=np.bool_)  # get rid of self interactions
         shortest_hops = torch.from_numpy(shortest_path_result[mask]).long()
-        
+
     if with_edge_attr:
         edge_attr = torch.tensor(bond_types, dtype=torch.float32)  # (num_edges, 1)
         return edge_index, edge_attr, shortest_hops
@@ -182,9 +216,7 @@ def get_chiral_tensors(mol):
             if (chirality[atom.GetChiralTag()] != 0 and len(atom.GetNeighbors()) == 4)
         ],
         dtype=torch.int32,
-    ).view(
-        1, -1
-    )  # (1, n_chiral_centers)
+    ).view(1, -1)  # (1, n_chiral_centers)
     # (n_chiral_centers, 4)
     chiral_nbr_index = torch.tensor(
         [
@@ -193,9 +225,7 @@ def get_chiral_tensors(mol):
             if (chirality[atom.GetChiralTag()] != 0 and len(atom.GetNeighbors()) == 4)
         ],
         dtype=torch.int32,
-    ).view(
-        1, -1
-    )  # (1, n_chiral_centers * 4)
+    ).view(1, -1)  # (1, n_chiral_centers * 4)
     # (n_chiral_centers,)
     chiral_tag = torch.tensor(
         [
@@ -226,6 +256,7 @@ def load_pkl(file_path: str):
         raise FileNotFoundError(f"File {file_path} does not exist.")
     with open(file_path, "rb") as f:
         return pickle.load(f)
+
 
 def check_disconnected_components(mol):
     """Check for disconnected components using Union-Find algorithm."""
@@ -263,3 +294,11 @@ def check_disconnected_components(mol):
         components[root].append(node)
 
     return list(components.values())
+
+class ConformerData(Data):
+    def __inc__(self, key, value, *args, **kwargs):
+        if key == 'conformer_index':
+            # Instead of adding n_atoms, we add the number of conformers 
+            # present in the current data object.
+            return self.num_conformers 
+        return super().__inc__(key, value, *args, **kwargs)

@@ -9,23 +9,14 @@ import logging
 from collections import defaultdict
 from typing import Optional
 from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM, RemoveCOMConformer, FeaturizeMolecule, BoltzmannWeightingConformers
-from tspath.datasets.utils import load_pkl, check_disconnected_components
-from tspath.utils import inputs_to_atoms
+from tspath.datasets.utils import load_pkl, check_disconnected_components, ConformerData
+from tspath.utils import inputs_to_atoms, RankedLogger
 import datamol as dm
 import os
 import glob
 from rdkit.Chem import rdMolDescriptors
-from torch_geometric.data import Data
 
-logger = logging.getLogger(__name__)
-
-class ConformerData(Data):
-    def __inc__(self, key, value, *args, **kwargs):
-        if key == 'conformer_index':
-            # Instead of adding n_atoms, we add the number of conformers 
-            # present in the current data object.
-            return self.num_conformers 
-        return super().__inc__(key, value, *args, **kwargs)
+logger = RankedLogger(__name__, rank_zero_only=True)
     
 class MoleculeDataset(InMemoryDataset):
     def __init__(
@@ -167,19 +158,9 @@ class ConformerDataset(InMemoryDataset):
             self._apply_split(split, split_identifier)
     
     def _cache_indices(self):
-        self.comp_to_indices = defaultdict(list)
-        self.file_identifier_to_indices = {}
-
-        # Direct access to in-memory data
-        for idx, formula, file_id in zip(
-            range(len(self)), 
-            self.formula, 
-            self.file_identifier
-        ):
-            self.comp_to_indices[formula].append(idx)
-            self.file_identifier_to_indices[file_id] = idx
-
-        self.compositions = sorted(self.comp_to_indices.keys())
+        self.file_identifier_to_indices = dict(
+            zip(self.file_identifier, range(len(self.file_identifier)))
+        )
         self.file_identifiers = sorted(self.file_identifier_to_indices.keys())
     
     @property

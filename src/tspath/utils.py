@@ -1,20 +1,21 @@
-import torch
-from ase import Atoms
-
-from typing import Union, Dict, Sequence, Optional, Tuple
+import itertools
+import logging
+from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import rich
+import torch
 import yaml
+from ase import Atoms
+from lightning_utilities.core.rank_zero import rank_prefixed_message, rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
 from rich.syntax import Syntax
 from rich.tree import Tree
 from torch_scatter import scatter_mean
-import itertools
 
 __all__ = [
-    "print_config", 
-    "batch_center_systems", 
+    "print_config",
+    "batch_center_systems",
     "get_canonical_elementwise_permutations",
     "get_brute_force_permutations",
     "get_x_y_pairs",
@@ -30,9 +31,11 @@ __all__ = [
 def empty(*args, **kwargs):
     pass
 
+
 def todict(config: Union[DictConfig, Dict]):
     config_dict = yaml.safe_load(OmegaConf.to_yaml(config, resolve=True))
     return config_dict
+
 
 @rank_zero_only
 def print_config(
@@ -75,7 +78,8 @@ def print_config(
         branch.add(Syntax(branch_content, "yaml"))
 
     rich.print(tree)
-    
+
+
 def batch_center_systems(systems: torch.Tensor, batch: torch.Tensor, dim: int = 0):
     """
     center batch of systems moleculewise to have zero center of geometry
@@ -93,6 +97,7 @@ def batch_center_systems(systems: torch.Tensor, batch: torch.Tensor, dim: int = 
     mean = mean.movedim(dim, 0)[batch].movedim(0, dim)
 
     return systems - mean
+
 
 def get_canonical_elementwise_permutations(canonical_atomic_numbers):
     """
@@ -115,8 +120,7 @@ def get_canonical_elementwise_permutations(canonical_atomic_numbers):
     ]
 
     element_perms = [
-        list(itertools.permutations(indices))
-        for indices in element_indices
+        list(itertools.permutations(indices)) for indices in element_indices
     ]
 
     all_perms = []
@@ -138,7 +142,6 @@ def get_brute_force_permutations(x, y, atomic_numbers=None):
     # 1) Canonicalize atom ordering
     # -------------------------------------------------
     if atomic_numbers is not None:
-
         sort_idx = torch.argsort(atomic_numbers, dim=1)
         inv_sort_idx = torch.argsort(sort_idx, dim=1)
 
@@ -154,11 +157,7 @@ def get_brute_force_permutations(x, y, atomic_numbers=None):
         )  # (P,n)
 
     else:
-
-        perms = torch.tensor(
-            list(itertools.permutations(range(n))),
-            device=device
-        )
+        perms = torch.tensor(list(itertools.permutations(range(n))), device=device)
 
         sort_idx = None
         inv_sort_idx = None
@@ -184,34 +183,40 @@ def get_brute_force_permutations(x, y, atomic_numbers=None):
 
     return x_flat, y_flat, perms, sort_idx, inv_sort_idx
 
+
 def get_x_y_pairs(x, y, atomic_numbers=None):
     """
-    x: (N, n_atoms, d), 
+    x: (N, n_atoms, d),
     y: (M, n_atoms, d)
-    atomic_numbers: (n_atoms,) atomic numbers of each atom in target structure. Only 
+    atomic_numbers: (n_atoms,) atomic numbers of each atom in target structure. Only
     permute within same atomic number if provided.
-    
+
     returns:
     x_flat, y_flat of shape (N*M, n_atoms, d) for all pairs
     """
     assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
     N, n_atoms, d = x.shape
     M = y.shape[0]
-    
+
     # Create all N x M pairs and flatten to (N*M, n_atoms, d)
     x_pairs = x[:, None, :, :].expand(N, M, n_atoms, d)
     y_pairs = y[None, :, :, :].expand(N, M, n_atoms, d)
     x_flat = x_pairs.reshape(N * M, n_atoms, d)
     y_flat = y_pairs.reshape(N * M, n_atoms, d)
-    
+
     atomic_numbers_b = None
     if atomic_numbers is not None:
-        assert atomic_numbers.shape == (M*n_atoms,), f"Atomic numbers should have shape (M*n_atoms,) not {atomic_numbers.shape}"
-        atomic_numbers_b = atomic_numbers.view(M, n_atoms).repeat(N, 1)  # (N*M, n_atoms)
-    
+        assert atomic_numbers.shape == (M * n_atoms,), (
+            f"Atomic numbers should have shape (M*n_atoms,) not {atomic_numbers.shape}"
+        )
+        atomic_numbers_b = atomic_numbers.view(M, n_atoms).repeat(
+            N, 1
+        )  # (N*M, n_atoms)
+
     return x_flat, y_flat, atomic_numbers_b
 
-def inputs_to_atoms(inputs, pos_key='pos', info_keys=[]):
+
+def inputs_to_atoms(inputs, pos_key="pos", info_keys=[]):
     """
     Converts a single input to an ASE Atoms object.
 
@@ -234,7 +239,8 @@ def inputs_to_atoms(inputs, pos_key='pos', info_keys=[]):
     atoms = Atoms(positions=R, numbers=Z, info=info)
     return atoms
 
-def batch_inputs_to_atoms(batch, pos_key='pos', info_keys=[]):
+
+def batch_inputs_to_atoms(batch, pos_key="pos", info_keys=[]):
     """
     Converts a batch of inputs to a list of ASE Atoms objects.
 
@@ -292,6 +298,7 @@ def sample_noise(
 
     return noise
 
+
 def sample_noise_like(
     x: torch.Tensor,
     batch: Optional[torch.Tensor],
@@ -306,15 +313,17 @@ def sample_noise_like(
     """
     return sample_noise(x.shape, batch, device=x.device, dtype=x.dtype)
 
+
 def sample_noise_like_2d(pos: torch.Tensor, batch: torch.Tensor):
     """
-    Sample 2d Gaussian noise and add zero z-component. 
+    Sample 2d Gaussian noise and add zero z-component.
     Center the noise to have zero center of geometry.
     """
     z = torch.randn(pos.shape[0], 2, device=pos.device)
     z = batch_center_systems(z, batch)  # zero center of geometry
     z = torch.cat([z, torch.zeros(z.shape[0], 1, device=z.device)], dim=1)
     return z
+
 
 def sample_isotropic_Gaussian(
     mean: torch.Tensor,
@@ -341,3 +350,54 @@ def sample_isotropic_Gaussian(
     sample = mean + std * noise
 
     return sample, noise
+
+
+class RankedLogger(logging.LoggerAdapter):
+    """A multi-GPU-friendly python command line logger."""
+
+    def __init__(
+        self,
+        name: str = __name__,
+        rank_zero_only: bool = False,
+        extra: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        """Initializes a multi-GPU-friendly python command line logger that logs on all processes
+        with their rank prefixed in the log message.
+
+        :param name: The name of the logger. Default is ``__name__``.
+        :param rank_zero_only: Whether to force all logs to only occur on the rank zero process. Default is `False`.
+        :param extra: (Optional) A dict-like object which provides contextual information. See `logging.LoggerAdapter`.
+        """
+        logger = logging.getLogger(name)
+        super().__init__(logger=logger, extra=extra)
+        self.rank_zero_only = rank_zero_only
+
+    def log(
+        self, level: int, msg: str, rank: Optional[int] = None, *args, **kwargs
+    ) -> None:
+        """Delegate a log call to the underlying logger, after prefixing its message with the rank
+        of the process it's being logged from. If `'rank'` is provided, then the log will only
+        occur on that rank/process.
+
+        :param level: The level to log at. Look at `logging.__init__.py` for more information.
+        :param msg: The message to log.
+        :param rank: The rank to log at.
+        :param args: Additional args to pass to the underlying logging function.
+        :param kwargs: Any additional keyword args to pass to the underlying logging function.
+        """
+        if self.isEnabledFor(level):
+            msg, kwargs = self.process(msg, kwargs)
+            current_rank = getattr(rank_zero_only, "rank", None)
+            if current_rank is None:
+                raise RuntimeError(
+                    "The `rank_zero_only.rank` needs to be set before use"
+                )
+            msg = rank_prefixed_message(msg, current_rank)
+            if self.rank_zero_only:
+                if current_rank == 0:
+                    self.logger.log(level, msg, *args, **kwargs)
+            else:
+                if rank is None:
+                    self.logger.log(level, msg, *args, **kwargs)
+                elif current_rank == rank:
+                    self.logger.log(level, msg, *args, **kwargs)

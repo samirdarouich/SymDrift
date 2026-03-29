@@ -3,7 +3,10 @@
 import math
 
 import torch
+from torch.optim.lr_scheduler import ReduceLROnPlateau as ReduceLROnPlateauBase
 from torch.optim.lr_scheduler import _LRScheduler
+
+__all__ = ["CosineAnnealingWarmupRestarts", "ReduceLROnPlateau"]
 
 
 class CosineAnnealingWarmupRestarts(_LRScheduler):
@@ -28,6 +31,8 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         warmup_steps: int = 0,
         gamma: float = 1.0,
         last_epoch: int = -1,
+        interval: str = "step",
+        **kwargs,
     ):
         assert warmup_steps < first_cycle_steps
 
@@ -42,6 +47,7 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.cur_cycle_steps = first_cycle_steps  # first cycle step size
         self.cycle = 0  # cycle count
         self.step_in_cycle = last_epoch  # step size of the current cycle
+        self.interval = interval
 
         super(CosineAnnealingWarmupRestarts, self).__init__(optimizer, last_epoch)
 
@@ -122,3 +128,25 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self.last_epoch = math.floor(epoch)
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group["lr"] = lr
+
+
+class ReduceLROnPlateau(ReduceLROnPlateauBase):
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        factor,
+        patience,
+        min_lr,
+        interval="epoch",
+        monitor="val/loss",
+        **kwargs,
+    ):
+        super().__init__(
+            optimizer,
+            factor=factor,
+            patience=patience,
+            min_lr=min_lr,
+            **kwargs,
+        )
+        self.interval = interval
+        self.monitor = monitor

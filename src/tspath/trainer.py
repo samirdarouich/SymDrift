@@ -85,7 +85,9 @@ class DriftingMolecules(pl.LightningModule):
         optimizer = self.hparams.optimizer(self.parameters())
         if self.hparams.get("scheduler") is not None:
             scheduler = self.hparams.scheduler(optimizer)
-            return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+            interval = scheduler.interval
+            monitor = getattr(scheduler, "monitor", None)
+            return [optimizer], [{"scheduler": scheduler, "interval": interval, "monitor": monitor}]
         else:
             return optimizer
 
@@ -254,10 +256,10 @@ class DriftingMolecules(pl.LightningModule):
             batch_pos, n_neg_per_pos=self.n_neg_per_pos
         )
 
-        # Predict using the model
+        # Generate target samples using the model
         x = self.model(batch_neg)
 
-        # Per Class compute the drift seperately
+        # Compute the drift seperately per class 
         if self.embedder is not None:
             loss = self._compute_drift_embedded_space(x, batch_pos, batch_neg, step)
         else:

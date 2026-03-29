@@ -41,5 +41,6 @@ scheduler:
   warmup_steps: 0
   gamma: 0.05
   last_epoch: -1
+  interval: step
 
 gradient_clip_val: 1.0

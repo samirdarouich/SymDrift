@@ -121,7 +121,7 @@ class DiT(nn.Module):
         embed_shortest_hops_bool=False,
         act_dense_correct_bool=True,
         radial_basis_bool=False,
-        num_radial_basis=8,
+        num_distance_basis=8,
         max_frequency=2 * math.pi,
         parity_switch: Optional[str] = None,
     ):
@@ -159,7 +159,7 @@ class DiT(nn.Module):
             embed_distances_bool=relative_positional_embedding_bool,
             embed_shortest_hops_bool=embed_shortest_hops_bool,
             radial_basis_bool=radial_basis_bool,
-            num_radial_basis=num_radial_basis,
+            num_radial_basis=num_distance_basis,
             max_frequency=max_frequency,
         )
 

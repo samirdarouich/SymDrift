@@ -1,0 +1,17 @@
+# @package _global_
+
+defaults:
+  - drifting
+  - override /dataset: rdb7
+  - override /drifting_field: coordinate_space
+  - override /model: gotennet
+
+run:
+  experiment: rdb7
+
+generative_model:
+  sample_every_epoch: 100
+  embedder: null # we work in coordinate space, so no need for an embedder
+
+trainer:
+  max_epochs: 1000

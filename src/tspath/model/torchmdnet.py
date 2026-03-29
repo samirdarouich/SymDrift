@@ -1029,7 +1029,7 @@ class TorchMDDynamics(nn.Module):
 
         # run the potentially wrapped representation model
         x, v, z, pos = self.representation_model(
-            z=data.x,
+            z=data.x.long(),
             pos=data.pos,
             node_attr=data.get("node_attr", None),
             edge_index=edge_index,

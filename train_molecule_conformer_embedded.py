@@ -84,8 +84,8 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         dataset_atoms,
         thresholds=np.arange(0.05, 3.05, 0.05),
         num_workers=8,
-        same_order=False,
-        worker_fn_type="rmsd_wo_h",
+        worker_fn_type="rmsd_rdkit_wo_h",
+        ratio=2.0, # only keep at most 2*n_conformers predictions per reference
     )
 
     df, metrics = print_covmat_results(results, threshold=0.2)
@@ -102,9 +102,9 @@ def visualize(model, batch, current_step, n_samples=None, outdir=None):
         write(f"{plot_dir}/step_{step_str}.xyz", atoms_samples)
         df.to_csv(f"{plot_dir}/step_{step_str}_covmat_results.csv", index=False)
         pca_plot(
-            ref=dataset_atoms,
+            refs=dataset_atoms,
             samples=atoms_samples,
-            embedder=DistanceEmbedder(invariant=True),
+            embedder=embedder,
             save_path=f"{plot_dir}/step_{step_str}_pca.png",
         )
         with open(f"{plot_dir}/step_{step_str}_stats.json", "w") as f:
@@ -135,20 +135,10 @@ dataset = ConformerDataset(
 dataset_atoms = dataset.get_dataset_as_atoms()
 metrics_dataset = get_validity(dataset_atoms)
 
-model_type = "torchmd"
+model_type = "painn"
 model_dict = {
     "painn": PaiNN(sphere_channels=256, num_layers=9, max_radius=11.0),
     "egnn": EGNN(sphere_channels=256, num_layers=5),
-    "mlp": MLP(
-        input_dim=4 * 6, hidden_dim=256, num_layers=9, output_dim=3 * 6
-    ),  # d=4*n_atoms
-    "dit": DiT(
-        sphere_channels=256,
-        num_layers=9,
-        num_heads=8,
-        sphere_channels_mlp=512,
-        max_radius=11.0,
-    ),
     "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9, max_radius=11.0),
 }
 model = model_dict[model_type]
@@ -156,12 +146,12 @@ model.to(device)
 
 
 ## define the embedder (GM or distance)
-embedder_type = "distance"
+embedder_type = "gm"
 if embedder_type == "gm":
     #! GM descriptor
     n_radial = 4
-    n_basis = 4
-    n_contr = 4  # distances # 8 distances + angle
+    n_basis = 8
+    n_contr = 8  # distances # 8 distances + angle
     embedder = GaussianMomentEmbedder(
         n_radial=n_radial,
         n_basis=n_basis,
@@ -199,7 +189,7 @@ print(f"Dataset: {dataset_name}, Model: {model_type},  drift: {drift_str}")
 normalize_drift = True
 temperatures = [0.02, 0.05, 0.2]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/conformer_test/dataset_{dataset_name}/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
+outdir = f"runs/geom_qm9/split_{split_identifier}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/{embedder_str}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
@@ -224,7 +214,7 @@ dataloader = GeometricDataLoader(
 losses = []
 model.train()
 
-n_steps = 500  # 500_000
+n_steps = 5_000
 n_epochs = n_steps // len(dataloader)
 
 scheduler = CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=1e-6)
@@ -315,9 +305,8 @@ for epoch in pbar:
         )
 
         if step_count % (n_steps // 10) == 0 and step_count > 0:
-            # Sample in total 1000 samples. This will produce per batch item n_samples,
-            # which will result in 1000 samples overall
-            n_samples = 1000 // batch_pos.num_graphs
+            # Sample per positive graph n_samples conformers and visualize results
+            n_samples = 32
             visualize(
                 model,
                 batch_pos,
@@ -330,10 +319,8 @@ for epoch in pbar:
     # Update learning rate scheduler at the end of each epoch
     scheduler.step()
 
-    # if (epoch < 101 and epoch % 5 == 0) or (epoch>100 and epoch % 20 == 0):
-    #     torch.save({"state_dict": model.state_dict()}, f"{ckpt_dir}/epoch_{epoch}.pt")
-
-n_samples = 1000 // batch_pos.num_graphs
+# Sample per positive graph n_samples conformers and visualize results
+n_samples = 32
 atoms_samples = visualize(
     model, batch_pos, current_step="final", n_samples=n_samples, outdir=outdir
 )

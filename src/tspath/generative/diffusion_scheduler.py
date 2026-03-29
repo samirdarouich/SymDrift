@@ -1,20 +1,21 @@
+import logging
 from abc import abstractmethod
 from typing import Dict, Optional, Tuple, Union
 
-import torch
-import logging
-
 import numpy as np
+import torch
 from torch import nn
-from tspath.utils import batch_center_systems, sample_isotropic_Gaussian
+
+from tspath.utils import sample_isotropic_Gaussian, sample_noise_like
 
 logger = logging.getLogger(__name__)
 __all__ = [
-    "CosineSchedule", 
-    "PolynomialSchedule", 
+    "CosineSchedule",
+    "PolynomialSchedule",
     "NoiseSchedule",
     "GaussianDDPM",
     "VPGaussianDDPM",
+    "KarrasEDMScheduler",
 ]
 
 
@@ -414,6 +415,7 @@ class LinearSchedule(NoiseSchedule):
             **kwargs,
         )
 
+
 class GaussianDDPM:
     """
     Base class for DDPM models using Gaussian diffusion kernels.
@@ -532,9 +534,7 @@ class GaussianDDPM:
         mean, std = self.transition_kernel(x_t, t_next, **kwargs)
 
         # sample x_t+1.
-        x_next, noise = sample_isotropic_Gaussian(
-            mean, std, batch=batch, **kwargs
-        )
+        x_next, noise = sample_isotropic_Gaussian(mean, std, batch=batch, **kwargs)
 
         return x_next, noise
 
@@ -564,9 +564,7 @@ class GaussianDDPM:
         mean, std = self.perturbation_kernel(x_0, t)
 
         # sample by Gaussian diffusion.
-        x_t, noise = sample_isotropic_Gaussian(
-            mean, std, batch=batch, **kwargs
-        )
+        x_t, noise = sample_isotropic_Gaussian(mean, std, batch=batch, **kwargs)
 
         return x_t, noise
 
@@ -593,19 +591,19 @@ class GaussianDDPM:
         t = torch.randint(
             0,
             self.get_T(),
-            size=(batch_size,1),
+            size=(batch_size, 1),
             dtype=torch.long,
             device=x_0.device,
         )[batch]
 
         # diffuse x_0 to x_t
         x_t, noise = self.diffuse(x_0, batch, t, **kwargs)
-        
+
         # normalize t to [0, 1]
         t = self.normalize_time(t)
 
         return x_t, t, noise
-    
+
     def sample_prior(
         self, x: torch.Tensor, batch: Optional[torch.Tensor], **kwargs
     ) -> torch.Tensor:
@@ -621,9 +619,7 @@ class GaussianDDPM:
         mean, std = self.prior(x, **kwargs)
 
         # sample from the prior.
-        x_T, _ = sample_isotropic_Gaussian(
-            mean, std, batch=batch, **kwargs
-        )
+        x_T, _ = sample_isotropic_Gaussian(mean, std, batch=batch, **kwargs)
 
         return x_T
 
@@ -653,9 +649,7 @@ class GaussianDDPM:
         mean, std = self.reverse_kernel(x_t, noise, t)
 
         # sample by Gaussian diffusion.
-        x_t, _ = sample_isotropic_Gaussian(
-            mean, std, batch=batch, **kwargs
-        )
+        x_t, _ = sample_isotropic_Gaussian(mean, std, batch=batch, **kwargs)
 
         return x_t
 
@@ -766,27 +760,26 @@ class VPGaussianDDPM(GaussianDDPM):
         mu = inv_sqrt_alpha_t * (x_t - (beta_t * inv_sqrt_beta_t_bar) * noise)
 
         return mu, sigma_t
-    
-    
+
     @torch.no_grad()
     def sample(
-        self, 
-        num_steps, 
-        model, 
-        batch, 
-        conditioned=True, 
+        self,
+        num_steps,
+        model,
+        batch,
+        conditioned=True,
         guidance_scale=0.0,
         t_start=None,
-        x_start=None
-        ):
-        
+        x_start=None,
+    ):
+
         if x_start is not None:
             assert t_start is not None, "t_start must be provided if x_start is given."
             x = x_start.clone()
         else:
             x = self.sample_prior(batch.pos, batch=batch.batch)
             t_start = self.get_T() - 1
-        
+
         batch_size = x.size(0)
         trajectories = [x.clone()]
         timesteps = torch.linspace(
@@ -794,18 +787,20 @@ class VPGaussianDDPM(GaussianDDPM):
         )
 
         for i in timesteps:
-            t = torch.full((batch_size, 1), i, device=x.device) # current timestep in integer
+            t = torch.full(
+                (batch_size, 1), i, device=x.device
+            )  # current timestep in integer
             batch.pos = x
-            batch.t = self.normalize_time(t) # normalized timestep in [0, 1]
+            batch.t = self.normalize_time(t)  # normalized timestep in [0, 1]
             eps_pred = self.get_epsilon(
                 model, batch, conditioned=conditioned, guidance_scale=guidance_scale
             )
-            
+
             x = self.reverse_step(x, eps_pred, batch.batch, t)
             trajectories.append(x.clone())
 
         return x, trajectories
-    
+
     @torch.no_grad()
     def get_epsilon(self, model, batch, conditioned=True, guidance_scale=0.0):
         if guidance_scale > 0.0:
@@ -813,10 +808,236 @@ class VPGaussianDDPM(GaussianDDPM):
             # Get both conditional and unconditional predictions
             eps_unconditioned = model(batch, conditioned=False)
             eps_conditioned = model(batch, conditioned=True)
-            
+
             # Combine them using classifier-free guidance
-            eps = eps_unconditioned + guidance_scale * (eps_conditioned - eps_unconditioned)
+            eps = eps_unconditioned + guidance_scale * (
+                eps_conditioned - eps_unconditioned
+            )
         else:
             eps = model(batch, conditioned=conditioned)
-        
+
         return eps
+
+
+class KarrasEDMScheduler:
+    """
+    Karras EDM scheduler operating in continuous sigma-space.
+
+    This scheduler implements:
+    - noising: x_t = x_0 + sigma * eps
+    - sampling: Euler + 2nd-order correction in sigma-space
+    """
+
+    def __init__(
+        self,
+        sigma_min: float = 0.002,
+        sigma_max: float = 80.0,
+        rho: float = 7.0,
+        sigma_data: float = 0.5,
+        P_mean: float = -1.2,
+        P_std: float = 1.2,
+    ):
+        if sigma_min <= 0:
+            raise ValueError(f"sigma_min must be > 0, got {sigma_min}")
+        if sigma_max <= sigma_min:
+            raise ValueError(
+                f"sigma_max must be larger than sigma_min, got {sigma_max} <= {sigma_min}"
+            )
+        if rho <= 0:
+            raise ValueError(f"rho must be > 0, got {rho}")
+
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.rho = rho
+        self.sigma_data = sigma_data
+        self.P_mean = P_mean
+        self.P_std = P_std
+
+    def sample_sigma(
+        self,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Sample per-graph sigma values from the EDM log-normal training distribution."""
+        rnd = torch.randn(batch_size, device=device, dtype=dtype)
+        return torch.exp(self.P_mean + self.P_std * rnd)
+
+    def _get_sigma_schedule(
+        self,
+        num_steps: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        sigma_min: Optional[float] = None,
+        sigma_max: Optional[float] = None,
+        rho: Optional[float] = None,
+    ) -> torch.Tensor:
+        if num_steps < 1:
+            raise ValueError(f"num_steps must be >= 1, got {num_steps}")
+
+        sigma_min = self.sigma_min if sigma_min is None else sigma_min
+        sigma_max = self.sigma_max if sigma_max is None else sigma_max
+        rho = self.rho if rho is None else rho
+
+        if num_steps == 1:
+            return torch.tensor([sigma_max, 0.0], device=device, dtype=dtype)
+
+        step_indices = torch.arange(num_steps, dtype=dtype, device=device)
+        sigma_steps = (
+            sigma_max ** (1 / rho)
+            + step_indices
+            / (num_steps - 1)
+            * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))
+        ) ** rho
+
+        return torch.cat([sigma_steps, torch.zeros_like(sigma_steps[:1])])
+
+    def perturbation_kernel(
+        self, x_0: torch.Tensor, sigma: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return mean/std for p(x_t|x_0)=N(x_0, sigma^2 I)."""
+        return x_0, sigma
+
+    def diffuse(
+        self,
+        x_0: torch.Tensor,
+        batch: Optional[torch.Tensor],
+        sigma: Union[float, torch.Tensor],
+        **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Diffuse x_0 at a given sigma to obtain x_t and the sampled noise."""
+        if not isinstance(sigma, torch.Tensor):
+            sigma = torch.tensor(sigma, device=x_0.device, dtype=x_0.dtype)
+        else:
+            sigma = sigma.to(device=x_0.device, dtype=x_0.dtype)
+
+        if sigma.ndim == 0:
+            sigma_nodes = sigma.view(1, 1).expand(x_0.shape[0], 1)
+        elif sigma.ndim == 1:
+            if batch is None:
+                if sigma.numel() != x_0.shape[0]:
+                    raise ValueError(
+                        "With batch=None, 1D sigma must have one entry per node."
+                    )
+                sigma_nodes = sigma[:, None]
+            else:
+                sigma_nodes = sigma[batch][:, None]
+        elif sigma.ndim == 2:
+            sigma_nodes = sigma
+        else:
+            raise ValueError(f"Unsupported sigma shape: {sigma.shape}")
+
+        mean, std = self.perturbation_kernel(x_0, sigma_nodes)
+        x_t, noise = sample_isotropic_Gaussian(mean, std, batch=batch, **kwargs)
+        return x_t, noise
+
+    def _predict_backbone(self, model, batch, conditioned=True, guidance_scale=0.0):
+        """Predict model output with optional classifier-free guidance."""
+        if guidance_scale > 0.0:
+            eps_unconditioned = model(batch, conditioned=False)
+            eps_conditioned = model(batch, conditioned=True)
+            return eps_unconditioned + guidance_scale * (
+                eps_conditioned - eps_unconditioned
+            )
+
+        try:
+            return model(batch, conditioned=conditioned)
+        except TypeError:
+            return model(batch)
+
+    def _denoise(self, model, batch, x: torch.Tensor, sigma_nodes: torch.Tensor):
+        """Apply EDM preconditioning around a raw backbone model call."""
+        sigma_sq = sigma_nodes**2
+        sigma_data_sq = self.sigma_data**2
+        c_skip = sigma_data_sq / (sigma_sq + sigma_data_sq)
+        c_out = sigma_nodes * self.sigma_data / torch.sqrt(sigma_sq + sigma_data_sq)
+        c_in = 1.0 / torch.sqrt(sigma_sq + sigma_data_sq)
+        c_noise = torch.log(sigma_nodes) / 4.0
+
+        batch.pos = c_in * x
+        batch.t = c_noise
+
+        F_x = self._predict_backbone(model, batch)
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x.to(x.dtype)
+
+    @torch.no_grad()
+    def sample(
+        self,
+        num_steps: int,
+        model,
+        batch,
+        sigma_min: Optional[float] = None,
+        sigma_max: Optional[float] = None,
+        rho: Optional[float] = None,
+        S_churn: float = 0.0,
+        S_min: float = 0.0,
+        S_max: float = float("inf"),
+        S_noise: float = 1.0,
+        dtype: torch.dtype = torch.float32,
+        seed: Optional[int] = None,
+        x_start: Optional[torch.Tensor] = None,
+        return_trajectory: bool = False,
+    ):
+        """Sample from EDM with Karras schedule using Euler + Heun correction."""
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        sigma_steps = self._get_sigma_schedule(
+            num_steps=num_steps,
+            device=batch.pos.device,
+            dtype=dtype,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            rho=rho,
+        )
+
+        if x_start is None:
+            noise = sample_noise_like(batch.pos, batch.batch)
+            x_next = noise.to(dtype) * sigma_steps[0]
+        else:
+            x_next = x_start.to(device=batch.pos.device, dtype=dtype)
+
+        trajectories = [x_next.clone()] if return_trajectory else None
+        for i, (sigma_cur, sigma_next) in enumerate(
+            zip(sigma_steps[:-1], sigma_steps[1:])
+        ):
+            x_cur = x_next
+
+            if S_churn > 0 and S_min <= sigma_cur <= S_max:
+                gamma = min(S_churn / num_steps, np.sqrt(2) - 1)
+                sigma_hat = sigma_cur + gamma * sigma_cur
+                x_hat = x_cur + torch.sqrt(
+                    sigma_hat**2 - sigma_cur**2
+                ) * S_noise * sample_noise_like(x_cur, batch.batch)
+            else:
+                sigma_hat = sigma_cur
+                x_hat = x_cur
+
+            sigma_hat_nodes = sigma_hat.view(1, 1).expand(x_hat.shape[0], 1)
+            denoised_hat = self._denoise(model, batch, x_hat, sigma_hat_nodes)
+
+            d_cur = (x_hat - denoised_hat) / torch.clamp(sigma_hat, min=1e-12)
+            x_next = x_hat + (sigma_next - sigma_hat) * d_cur
+
+            if i < num_steps - 1:
+                sigma_next_nodes = sigma_next.view(1, 1).expand(x_next.shape[0], 1)
+                denoised_next = self._denoise(
+                    model,
+                    batch,
+                    x_next,
+                    sigma_next_nodes,
+                )
+                d_prime = (x_next - denoised_next) / torch.clamp(
+                    sigma_next, min=1e-12
+                )
+                x_next = x_hat + (sigma_next - sigma_hat) * (
+                    0.5 * d_cur + 0.5 * d_prime
+                )
+
+            if return_trajectory:
+                trajectories.append(x_next.clone())
+
+        if return_trajectory:
+            return x_next, trajectories
+        return x_next
