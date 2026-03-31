@@ -1,0 +1,47 @@
+method: bayes
+name: rdb7_embedded_space
+
+metric:
+  name: val/AMR-P_mean
+  goal: minimize
+
+parameters:
+
+  model.optimizer.lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
+
+  model.optimizer.weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-2
+
+  model.scheduler.patience:
+    distribution: int_uniform
+    min: 10
+    max: 200
+  
+  model.model.sphere_channels:
+    values: [128, 256]
+  
+  model.model.num_layers:
+    values: [4, 6, 8, 10, 12]
+
+  model.model.attn_dropout:
+    values: [0.0, 0.05, 0.1, 0.15]
+  
+  model.model.num_distance_basis:
+    values: [16, 32, 48, 64]
+
+command:
+  - ${env}
+  - tspath_train
+  - experiment=rdb7_embedded_space
+  - run.id="sweep_${uuid:1}"
+  - prior=gaussian
+  - trainer.max_epochs=201
+  - generative_model.n_neg_per_pos=32
+  - generative_model.sample_every_epoch=100
+  - dataset.batch_size=6
+  - ${args_no_hyphens}
