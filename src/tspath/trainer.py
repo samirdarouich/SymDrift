@@ -380,8 +380,7 @@ class DriftingMolecules(pl.LightningModule):
         metrics = {**metrics_val, **metrics_cov}
         
         # Save samples
-        is_global_zero = (self.trainer is None) or self.trainer.is_global_zero
-        if save_folder is not None and is_global_zero:
+        if save_folder is not None and self.is_global_zero():
             os.makedirs(save_folder, exist_ok=True)
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])
@@ -442,3 +441,6 @@ class DriftingMolecules(pl.LightningModule):
             batch_pos_, pos_key="pos", info_keys=[self.identifier]
         )
         return atoms_positive
+    
+    def is_global_zero(self):
+        return (self._trainer is None) or self.trainer.is_global_zero

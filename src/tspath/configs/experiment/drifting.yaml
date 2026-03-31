@@ -59,6 +59,9 @@ generative_model:
   # Use RDKIT to compute the RMSD without considering hydrogens
   worker_fn_type: rmsd_rdkit_wo_h
 
+  # No of samples during evaluation
+  no_of_samples: null
+
   # Path to pretrained model checkpoint for fine-tuning
   pretrained: null 
 
