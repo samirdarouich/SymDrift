@@ -4,7 +4,7 @@
 name: geom_qm9
 root: ${run.work_dir}/data/${dataset.name}
 identifier: smiles
-split_identifier: geomol
+split_identifier: geomol_cleaned
 batch_size: 2
 num_workers: 0
 persistent_workers: false

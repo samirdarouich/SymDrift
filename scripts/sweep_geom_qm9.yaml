@@ -1,0 +1,47 @@
+method: bayes
+name: geom_qm9_embedded_space
+
+metric:
+  name: val/AMR-P_mean
+  goal: minimize
+
+parameters:
+
+  model.optimizer.lr:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+
+  model.optimizer.weight_decay:
+    distribution: log_uniform_values
+    min: 1e-9
+    max: 1e-2
+  
+  model.model.sphere_channels:
+    values: [128, 160, 256]
+  
+  model.model.num_layers:
+    values: [4, 6, 8, 10, 12, 16, 20]
+
+  model.scheduler.first_cycle_steps:
+    values: []
+
+# 106412 total training samples
+# they trained 4 GPUS with BZ 128 for 500 epochs ~ 208 steps/epoch --> 104000 steps
+# they report to reduce the lr after half the training
+# 4*32 --> 832 steps/epoch --> 42432 steps for 51 epochs --> so make cycle 21_200
+command:
+  - ${env}
+  - tspath_train
+  - experiment=geom_qm9_o3_embedded_space
+  - run.id="sweep_${uuid:1}"
+  - prior=harmonic
+  - trainer.max_epochs=51
+  - generative_model.n_neg_per_pos=32
+  - generative_model.sample_every_epoch=50
+  - dataset.batch_size=32
+  - model.scheduler.first_cycle_steps=21_200
+  - +trainer.devices=4
+  - +trainer.limit_val_batches=100
+  - +limit_train_batches=1000
+  - ${args_no_hyphens}

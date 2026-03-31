@@ -3,7 +3,7 @@ model:
   _target_: tspath.model.TorchMDDynamics
   sphere_channels: 160
   max_radius: 11.0
-  num_layers: 9
+  num_layers: 20
   num_distance_basis: 64
   rbf_type: expnorm
   trainable_rbf: true
@@ -22,7 +22,7 @@ model:
   output_layer_norm: true
   # used to switch parity of predictions (to correct chirality)
   parity_switch: null # post_hoc 
-  # use embedding for time conditioning
+  # dont use embedding for time conditioning
   use_noise_schedule_sigma_encoding: false
 
 optimizer:
@@ -37,7 +37,7 @@ scheduler:
   first_cycle_steps: 250_000
   cycle_mult: 1.0
   max_lr: 7e-4
-  min_lr: 1e-5
+  min_lr: 1e-8
   warmup_steps: 0
   gamma: 0.05
   last_epoch: -1
