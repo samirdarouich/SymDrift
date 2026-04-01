@@ -19,8 +19,10 @@ from tspath.generative import (
 )
 from tspath.model import DistanceEmbedder, GaussianMomentEmbedder
 from tspath.utils import (
-    batch_inputs_to_atoms,
+    batch_inputs_to_atoms, RankedLogger, Queue
 )
+
+logger = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = ["DriftingMolecules"]
 
@@ -38,6 +40,7 @@ class DriftingMolecules(pl.LightningModule):
         save_folder: Optional[str] = "samples",
         threshold: Optional[float] = 0.5,
         worker_fn_type: str = "rmsd_rdkit_wo_h",
+        grad_norm_max_val: float = 100.0,
         **kwargs,
     ):
         """
@@ -68,6 +71,8 @@ class DriftingMolecules(pl.LightningModule):
                 The RMSD threshold to use for evaluating coverage and matching during sampling.
             worker_fn_type: str
                 The type of function to use for parallel evaluation of coverage and matching.
+            grad_norm_max_val: float
+                The maximum value for the gradient norm when applying adaptive gradient clipping.
             **kwargs:
                 Additional hyperparameters to save.
         """
@@ -84,7 +89,12 @@ class DriftingMolecules(pl.LightningModule):
         self.save_folder = save_folder
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
-
+        self.grad_norm_max_val = grad_norm_max_val
+        
+        # gradient clipping queue
+        self.gradnorm_queue = Queue()
+        self.gradnorm_queue.add(3000)  # starting value
+    
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
         if self.hparams.get("scheduler") is not None:
@@ -444,3 +454,29 @@ class DriftingMolecules(pl.LightningModule):
     
     def is_global_zero(self):
         return (self._trainer is None) or self.trainer.is_global_zero
+    
+    
+    def configure_gradient_clipping(
+        self, optimizer, gradient_clip_val, gradient_clip_algorithm
+    ):
+        """Gradient Clipping as done in the official EDM implementation."""
+        # Allow gradient norm to be 150% + 2 * stdev of the recent history.
+        max_grad_norm = min(
+            1.5 * self.gradnorm_queue.mean() + 2 * self.gradnorm_queue.std(),
+            self.grad_norm_max_val,  # do not increase the gradient norm beyond 100
+        )
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.parameters(), max_grad_norm, norm_type=2.0
+        )
+
+        if float(grad_norm) > max_grad_norm and grad_norm < self.grad_norm_max_val:
+            # only update if grad_norm is not too large
+            self.gradnorm_queue.add(max_grad_norm)
+        else:
+            self.gradnorm_queue.add(grad_norm.cpu().item())
+
+        if float(grad_norm) > max_grad_norm:
+            logger.info(
+                f"Clipped gradient with value {grad_norm:.1f} "
+                f"while allowed {max_grad_norm:.1f}"
+            )

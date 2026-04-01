@@ -59,6 +59,9 @@ generative_model:
   # Use RDKIT to compute the RMSD without considering hydrogens
   worker_fn_type: rmsd_rdkit_wo_h
 
+  # Maximum value for adaptive gradient clipping (compare EDM)
+  grad_norm_max_val: ${model.grad_norm_max_val}
+
   # No of samples during evaluation
   no_of_samples: null
 
@@ -67,7 +70,6 @@ generative_model:
 
 trainer:
   max_epochs: 1000
-  gradient_clip_val: ${model.gradient_clip_val}
   strategy: auto
   accelerator: auto
 

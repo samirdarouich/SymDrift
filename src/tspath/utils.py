@@ -1,7 +1,7 @@
 import itertools
 import logging
 from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
-
+import numpy as np
 import rich
 import torch
 import yaml
@@ -25,6 +25,8 @@ __all__ = [
     "sample_noise_like",
     "sample_noise_like_2d",
     "sample_isotropic_Gaussian",
+    "RankedLogger",
+    "Queue",
 ]
 
 
@@ -401,3 +403,23 @@ class RankedLogger(logging.LoggerAdapter):
                     self.logger.log(level, msg, *args, **kwargs)
                 elif current_rank == rank:
                     self.logger.log(level, msg, *args, **kwargs)
+
+# Gradient clipping
+class Queue:
+    def __init__(self, max_len=50):
+        self.items = []
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.items)
+
+    def add(self, item):
+        self.items.insert(0, item)
+        if len(self) > self.max_len:
+            self.items.pop()
+
+    def mean(self):
+        return np.mean(self.items)
+
+    def std(self):
+        return np.std(self.items)

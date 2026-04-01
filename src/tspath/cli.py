@@ -92,6 +92,7 @@ def train(cfg):
         train_dataloader,
         val_dataloader,
         ckpt_path=cfg.run.ckpt_path,
+        weights_only=False,
     )
 
     log.info("Training completed.")
@@ -106,6 +107,7 @@ def sample(cfg):
         fields = (
             "run",
             "generative_model",
+            "model",
             "dataset",
             "seed",
         )

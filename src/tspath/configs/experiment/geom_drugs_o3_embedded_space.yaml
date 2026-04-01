@@ -20,13 +20,13 @@ model.optimizer:
   weight_decay: 1e-10
 
 # ETFLOW train wiht 8 GPUS and bz 64 for 250 epochs
-# QM9 train size: 243473 samples / (8*64) = 476 steps/epoch 
+# DRUGS train size: 243473 samples / (8*64) = 476 steps/epoch 
 # leading to 119_000 steps after 250 epochs
 # they dont reduce.
 model.scheduler:
   first_cycle_steps: 119_000 
   max_lr: 1.0e-3
-  min_lr: 1e-7
+  min_lr: 1.0e-7
 
 dataset:
   batch_size: 64

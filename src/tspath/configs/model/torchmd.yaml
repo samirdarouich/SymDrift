@@ -28,19 +28,20 @@ model:
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 7.0e-4
-  weight_decay: 1e-8
+  betas: [0.95, 0.999]
+  lr: 1.0e-3
+  weight_decay: 1e-10
 
 scheduler:
   _target_: tspath.model.CosineAnnealingWarmupRestarts
   _partial_: true
   first_cycle_steps: 250_000
   cycle_mult: 1.0
-  max_lr: 7e-4
-  min_lr: 1e-8
+  max_lr: 1.0e-3
+  min_lr: 1.0e-7
   warmup_steps: 0
   gamma: 0.05
   last_epoch: -1
   interval: step
 
-gradient_clip_val: 1.0
+grad_norm_max_val: 100

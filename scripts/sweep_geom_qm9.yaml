@@ -23,8 +23,6 @@ parameters:
   model.model.num_layers:
     values: [4, 6, 8, 10, 12, 16, 20]
 
-  model.scheduler.first_cycle_steps:
-    values: []
 
 # 106412 total training samples
 # they trained 4 GPUS with BZ 128 for 500 epochs ~ 208 steps/epoch --> 104000 steps
@@ -39,9 +37,7 @@ command:
   - trainer.max_epochs=51
   - generative_model.n_neg_per_pos=32
   - generative_model.sample_every_epoch=50
-  - dataset.batch_size=32
+  - dataset.batch_size=4
   - model.scheduler.first_cycle_steps=21_200
-  - +trainer.devices=4
   - +trainer.limit_val_batches=100
-  - +limit_train_batches=1000
   - ${args_no_hyphens}
