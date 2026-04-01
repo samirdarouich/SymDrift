@@ -9,7 +9,7 @@ run:
   experiment: geom_qm9
 
 generative_model:
-  sample_every_epoch: 100
+  sample_every_epoch: 20
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.5
@@ -25,12 +25,12 @@ model.optimizer:
 # they reduce after 100 epochs --> 20_800 steps
 model.scheduler:
   first_cycle_steps: 20_800 
-  max_lr: 8e-4
-  min_lr: 1e-7
+  max_lr: 8.0e-4
+  min_lr: 1.0e-7
 
 dataset:
   batch_size: 128
 
 trainer:
-  max_epochs: 1000
+  max_epochs: 200
   devices: 4

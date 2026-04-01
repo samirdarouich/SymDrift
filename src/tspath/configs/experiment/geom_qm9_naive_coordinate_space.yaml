@@ -1,8 +1,8 @@
 # @package _global_
 
 defaults:
-  - geom_qm9_o3_coordinate_space
-  - override /model: dit_naive
+  - geom_qm9_naive_embedded_space
+  - override /drifting_field: coordinate_space
 
 # Naive drift not respect any symmetry of the system. This works if the model 
 # also does not respect any symmetry (naive DiT)
@@ -10,6 +10,3 @@ drifting_field:
   aligned: false
   permuted: false
   brute_force_permutations: false 
-
-trainer:
-  max_epochs: 1000
