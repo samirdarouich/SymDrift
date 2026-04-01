@@ -44,4 +44,5 @@ scheduler:
   gamma: 1.00
   interval: step
 
-gradient_clip_val: 1.0
+# No gradient clipping
+grad_norm_max_val: null 

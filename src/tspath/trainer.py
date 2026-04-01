@@ -460,6 +460,13 @@ class DriftingMolecules(pl.LightningModule):
         self, optimizer, gradient_clip_val, gradient_clip_algorithm
     ):
         """Gradient Clipping as done in the official EDM implementation."""
+        
+        # In case no max grad norm value is set, use the default Lightning implementation
+        if self.grad_norm_max_val is None:
+            return super().configure_gradient_clipping(
+                optimizer, gradient_clip_val, gradient_clip_algorithm
+            )
+    
         # Allow gradient norm to be 150% + 2 * stdev of the recent history.
         max_grad_norm = min(
             1.5 * self.gradnorm_queue.mean() + 2 * self.gradnorm_queue.std(),

@@ -39,5 +39,4 @@ scheduler:
   monitor: "val/loss"
   interval: epoch
 
-
-gradient_clip_val: 5.0
+grad_norm_max_val: 5.0

@@ -87,7 +87,7 @@ dataset_name = "carbon_chain"
 augment_with_rotations = False
 augment_with_permutations = False
 
-n_atoms = 5
+n_atoms = 3
 r0 = 2.0
 theta0 = 120.0
 factor = 1.25
@@ -125,10 +125,10 @@ if dataset_name == "carbon_chain":
 pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
-model_type = "egnn"
-aligned = False
-permuted = False
-brute_force_permutations = False
+model_type = "dit_naive"
+aligned = True
+permuted = True
+brute_force_permutations = True
 model_dict = {
     "painn": PaiNN(
         sphere_channels=256,
@@ -137,13 +137,18 @@ model_dict = {
     "egnn": EGNN(num_distance_basis=0),
     "mlp": MLP(input_dim=n_atoms * 3 , hidden_dim=256, num_layers=9, output_dim=n_atoms * 2), #2d and atomic number as input
     "dit_perm_eq": DiT(mgn_num_node_features=1, positional_encoding_bool=False, relative_positional_embedding_bool=False, max_radius=0), #positional_encoding_bool=True breaks permutation equivariance, 
-    "dit_naive": DiT(mgn_num_node_features=1, positional_encoding_bool=True, relative_positional_embedding_bool=False, max_radius=0), #positional_encoding_bool=True breaks permutation equivariance, 
+    "dit_naive": DiT(
+        mgn_num_node_features=1, 
+        positional_encoding_bool=True, # break permutation equivariance
+        relative_positional_embedding_bool=True, # break rotation equivariance
+        absolute_positional_embedding_bool=True, # break translation and rotation equivariance
+    ),
     "torchmd": TorchMDDynamics(sphere_channels=160, num_layers=9, max_radius=11.0, node_attr_dim=1),
 }
 model = model_dict[model_type]
 model.to(device)
 
-only_pos_drift = False
+only_pos_drift = True
 drift_str = "all_drift"
 if only_pos_drift:
     drift_str = "pos_drift"
