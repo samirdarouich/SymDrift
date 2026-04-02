@@ -8,30 +8,31 @@ defaults:
 run:
   experiment: geom_qm9
 
-generative_model:
-  sample_every_epoch: 100
-
-  # RMSD threshold to compute coverage and machting metrics
-  threshold: 0.5
-
 # Taken from ETFLOW SI A.4
-model.optimizer:
-  lr: 1.0e-3
-  weight_decay: 1e-10
-
 # ETFLOW train wiht 8 GPUS and bz 64 for 250 epochs
 # DRUGS train size: 243473 samples / (8*64) = 476 steps/epoch 
 # leading to 119_000 steps after 250 epochs
 # they dont reduce.
-model.scheduler:
-  first_cycle_steps: 119_000 
-  max_lr: 1.0e-3
-  min_lr: 1.0e-7
+model:
+  optimizer:
+    lr: 1.0e-3
+    weight_decay: 1e-10
+
+  scheduler:
+    first_cycle_steps: 119_000 
+    max_lr: 1.0e-3
+    min_lr: 1.0e-7
+
+generative_model:
+  sample_every_epoch: 100
+
+  # RMSD threshold to compute coverage and machting metrics
+  threshold: 0.75
 
 dataset:
   batch_size: 64
 
 trainer:
   max_epochs: 250
-  devices: 4
+  devices: 8
   limit_train_batches: 5000 # should not be important as only 476 batches per epoch

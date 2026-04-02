@@ -483,7 +483,7 @@ class DriftingMolecules(pl.LightningModule):
             self.gradnorm_queue.add(grad_norm.cpu().item())
 
         if float(grad_norm) > max_grad_norm:
-            logger.info(
+            logger.debug(
                 f"Clipped gradient with value {grad_norm:.1f} "
                 f"while allowed {max_grad_norm:.1f}"
             )

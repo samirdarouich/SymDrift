@@ -262,6 +262,8 @@ class FeaturizeMolecule(BaseTransform):
     def get_atom_features(self, smiles: str, use_ogb_feat: bool = True) -> torch.Tensor:
         # compute atom features
         mol = self.get_mol(smiles)
+        if mol is None:
+            breakpoint()
         atom_features = self.get_atom_features_from_mol(mol, use_ogb_feat=use_ogb_feat)
         return atom_features
 

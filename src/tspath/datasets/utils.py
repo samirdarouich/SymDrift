@@ -271,7 +271,7 @@ def check_disconnected_components(mol):
         edge_index.append([i, j])
         edge_index.append([j, i])  # Add reverse edge for undirected graph
     edge_index = torch.tensor(edge_index, dtype=torch.long).t()
-
+    
     def find(x):
         if parent[x] != x:
             parent[x] = find(parent[x])
@@ -294,6 +294,115 @@ def check_disconnected_components(mol):
         components[root].append(node)
 
     return list(components.values())
+
+  
+def get_atomic_numbers_from_mol(mol):
+    atomic_numbers = [atom.GetAtomicNum() for atom in mol.GetAtoms()]
+    return np.array(atomic_numbers, dtype=np.int8)
+
+def check_smiles(smiles, smiles_mol):
+    # filter mols rdkit can't intrinsically handle
+    if smiles_mol is None:
+        return False
+
+    # skip conformers with fragments
+    if '.' in smiles:
+        return False
+    
+    # skip mols with atoms with more than 4 neighbors for now
+    num_neighbors = [len(a.GetNeighbors()) for a in smiles_mol.GetAtoms()]
+    if np.max(num_neighbors) > 4:
+        return False
+            
+    return True
+
+
+def get_mol_properties(mol):
+    num_atoms = mol.GetNumAtoms()
+    num_bonds = mol.GetNumBonds()
+    atomic_numbers = np.array(get_atomic_numbers_from_mol(mol))
+    bonds = np.array([
+        [bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()]
+        for bond in mol.GetBonds()
+    ])
+
+    return num_atoms, num_bonds, atomic_numbers, bonds
+
+
+def check_conformer(conformer_mol, num_atoms, num_bonds, atomic_numbers, bonds):
+    edge_case = False
+
+    # mark mols with fragments as edge cases
+    if len(Chem.GetMolFrags(conformer_mol)) > 1:
+        edge_case = True
+
+    # skip mols with atoms with more than 4 neighbors for now
+    # this is in line with the MCF preprocessing 
+    # here: https://github.com/apple/ml-mcf/blob/main/process_data.py
+    num_neighbors = [len(a.GetNeighbors()) for a in conformer_mol.GetAtoms()]
+    if np.max(num_neighbors) > 4:
+        return "invalid"
+
+    # mark mols that appear to be not a real conformer as edge cases
+    # this ensures the same connectivity structure across all mols
+    other_num_atoms, other_num_bonds, other_atomic_numbers, other_bonds = get_mol_properties(conformer_mol)
+    if num_atoms != other_num_atoms:
+        edge_case = True
+
+    if num_bonds != other_num_bonds:
+        edge_case = True
+
+    if not edge_case:
+        # being here means number of atoms and bonds are matching
+        target = np.zeros(num_atoms)
+        if not np.allclose(atomic_numbers - other_atomic_numbers, target):
+            edge_case = True
+
+        target = np.zeros((num_bonds, 2))
+        if not np.allclose(bonds - other_bonds, target):
+            edge_case = True
+
+    if edge_case:
+        return "edge_case"
+    return "valid"
+
+# taken from: https://github.com/ML4MolSim/dit_mc/blob/4b1615c523a36fa107bc6c86ddeee5544b78c2a6/tf_datasets/geom/preprocessing.py
+def filter_mols(mol_dict):
+    confs = mol_dict['conformers']
+    smiles = mol_dict['smiles']
+
+    mol = Chem.MolFromSmiles(smiles)
+
+    # filter smiles mol
+    if not check_smiles(smiles, mol):
+        return []
+
+    # we load the first conformer to get the properties
+    # maybe we should rather load it directly from the smiles mol?
+    mol = confs[0]['rd_mol']
+    num_atoms, num_bonds, atomic_numbers, bonds = get_mol_properties(mol)
+    
+    mols = []
+    for conf in confs:
+        mol = conf['rd_mol']
+        result = check_conformer(mol, num_atoms, num_bonds, atomic_numbers, bonds)
+        edge_case = False
+        
+        if result == "invalid":
+            continue
+        elif result == "edge_case":
+            edge_case = True
+
+        mols.append(
+            {
+                "rd_mol": mol, 
+                "edge_case": edge_case, 
+                "boltzmannweight": conf['boltzmannweight'], 
+                "totalenergy": conf['totalenergy']
+            }
+        )
+    return mols
+
 
 class ConformerData(Data):
     def __inc__(self, key, value, *args, **kwargs):

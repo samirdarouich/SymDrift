@@ -9,7 +9,7 @@ import logging
 from collections import defaultdict
 from typing import Optional
 from tspath.datasets.transforms import RandomPermute, RandomRotate, RemoveCOM, RemoveCOMConformer, FeaturizeMolecule, BoltzmannWeightingConformers
-from tspath.datasets.utils import load_pkl, check_disconnected_components, ConformerData
+from tspath.datasets.utils import check_disconnected_components, load_pkl, filter_mols, ConformerData
 from tspath.utils import inputs_to_atoms, RankedLogger
 import datamol as dm
 import os
@@ -232,11 +232,26 @@ class ConformerDataset(InMemoryDataset):
         
         # Load molecule data
         mol_dict = load_pkl(pkl_path)
-        confs = mol_dict["conformers"]
-        mols = [conf["rd_mol"] for conf in confs]
+        
+        # Filter out invalid molecules and conformers (this return also if conformer is an edge case)
+        filtered_confs = filter_mols(mol_dict)
+        
+        if len(filtered_confs) == 0:
+            smiles = mol_dict['smiles']
+            logger.warning(f"Smiles '{smiles}' did not pass the filters. Skipping.")
+            return None
         
         # Get SMILES with atom indices (use first mol as they're all same)
-        mol = mols[0]
+        mol = filtered_confs[0]["rd_mol"]
+        
+        # Check for disconnected components
+        components = check_disconnected_components(mol)
+        
+        if len(components) > 1:
+            smiles = mol_dict['smiles']
+            logger.warning(f"Skipping {smiles} due to disconnected components")
+            return None
+        
         smiles = dm.to_smiles(
             mol,
             canonical=False,
@@ -244,6 +259,13 @@ class ConformerDataset(InMemoryDataset):
             with_atom_indices=True,
             isomeric=True,
         )
+        
+        # Check that we can convert back to mol from the smiles (sanity check)
+        mol_reverse = dm.to_mol(smiles, remove_hs=False, ordered=True)
+        if mol_reverse is None:
+            logger.warning(f"Could not convert SMILES back to mol for {smiles}. Skipping.")
+            return None
+        
         formula = rdMolDescriptors.CalcMolFormula(mol)
         
         atomic_numbers = torch.tensor(
@@ -257,8 +279,9 @@ class ConformerDataset(InMemoryDataset):
         positions = []
         energies = []
         boltzmann_weights = []
+        edge_case_conformers = []
 
-        for conf in confs:
+        for conf in filtered_confs:
             mol = conf["rd_mol"]
             pos = torch.from_numpy(mol.GetConformer().GetPositions()).float()
             energy = torch.tensor([conf["totalenergy"]]).float()
@@ -267,18 +290,13 @@ class ConformerDataset(InMemoryDataset):
             positions.append(pos)
             energies.append(energy)
             boltzmann_weights.append(weight)
+            edge_case_conformers.append(conf['edge_case'])
 
         # Stack conformer data
         positions = torch.stack(positions)  # [num_conformers, num_atoms, 3]
         energies = torch.stack(energies)  # [num_conformers, 1]
         boltzmann_weights = torch.stack(boltzmann_weights)  # [num_conformers, 1]
-
-        # Check for disconnected components
-        components = check_disconnected_components(mol)
-        
-        if len(components) > 1:
-            logger.warning(f"Skipping {smiles} due to disconnected components")
-            return None
+        edge_case_conformers = torch.tensor(edge_case_conformers, dtype=torch.bool)  # [num_conformers]
         
         num_conformers = positions.shape[0]
         num_atoms = positions.shape[1]
@@ -291,6 +309,7 @@ class ConformerDataset(InMemoryDataset):
             boltzmann_weights=boltzmann_weights,  # [num_conformers, 1]
             conformer_index=torch.arange(num_conformers).repeat_interleave(num_atoms),  # [num_conformers*num_atoms]
             num_atoms=torch.tensor(num_atoms, dtype=torch.long),
+            edge_case_conformers=edge_case_conformers,
             num_conformers=num_conformers,
             smiles=smiles,
             formula=formula,
