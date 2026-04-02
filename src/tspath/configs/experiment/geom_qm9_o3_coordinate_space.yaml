@@ -5,8 +5,4 @@ defaults:
   - override /drifting_field: coordinate_space
 
 generative_model:
-  sample_every_epoch: 100
   embedder: null # we work in coordinate space, so no need for an embedder
-
-trainer:
-  max_epochs: 1000

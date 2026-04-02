@@ -10,3 +10,6 @@ drifting_field:
   aligned: false
   permuted: false
   brute_force_permutations: false 
+
+generative_model:
+  embedder: null # we work in coordinate space, so no need for an embedder

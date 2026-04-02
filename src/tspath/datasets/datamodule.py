@@ -67,12 +67,12 @@ class GeometricInMemoryDataModule(pl.LightningDataModule):
                 "train", self.train_transform
             )
             self.val_dataset = self._build_split_dataset("val", self.val_transform)
-
         if stage in (None, "test"):
             self.test_dataset = self._build_split_dataset("test", self.test_transform)
-        
         elif stage == "train":
-            self.train_dataset = self._build_split_dataset("train", self.train_transform)
+            self.train_dataset = self._build_split_dataset(
+                "train", self.train_transform
+            )
         elif stage == "val":
             self.val_dataset = self._build_split_dataset("val", self.val_transform)
 
