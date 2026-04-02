@@ -24,7 +24,7 @@ test_transform: null
 
 # Define datamodule
 datamodule:
-  _target_: tspath.datasets.GeometricInMemoryDataModule
+  _target_: tspath.datasets.DataModule
   dataset:
     _target_: tspath.datasets.ReactionDataset
     root: ${dataset.root}

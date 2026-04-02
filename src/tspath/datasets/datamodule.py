@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os.path as osp
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
 import pytorch_lightning as pl
-from torch_geometric.data import InMemoryDataset
+from torch_geometric.data import Dataset, InMemoryDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import BaseTransform
 
@@ -14,7 +14,7 @@ from tspath.utils import RankedLogger
 logger = RankedLogger(__name__, rank_zero_only=True)
 
 
-class GeometricInMemoryDataModule(pl.LightningDataModule):
+class DataModule(pl.LightningDataModule):
     """Lightning datamodule for PyG InMemoryDataset split handling.
 
     This module loads a single base dataset and builds train/val/test subset views
@@ -23,7 +23,7 @@ class GeometricInMemoryDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        dataset: InMemoryDataset,
+        dataset: Union[InMemoryDataset, Dataset],
         split_identifier: Optional[str] = None,
         train_transform: Optional[List[Callable]] = None,
         val_transform: Optional[List[Callable]] = None,

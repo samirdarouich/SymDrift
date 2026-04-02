@@ -1,13 +1,13 @@
 import glob
 import os
 import os.path as osp
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 import datamol as dm
 import torch
 from ase.io import read
 from rdkit.Chem import rdMolDescriptors
-from torch_geometric.data import Data, InMemoryDataset
+from torch_geometric.data import Data, Dataset, InMemoryDataset
 from torch_geometric.transforms import Compose
 from tqdm import tqdm
 
@@ -27,6 +27,8 @@ from tspath.datasets.utils import (
 from tspath.utils import RankedLogger, inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
+
+__all__ = ["MoleculeDataset", "ConformerDatasetInMemory", "ConformerDatasetDisk"]
 
 
 class MoleculeDataset(InMemoryDataset):
@@ -119,38 +121,8 @@ class MoleculeDataset(InMemoryDataset):
         return atoms_list
 
 
-class ConformerDataset(InMemoryDataset):
-    def __init__(
-        self,
-        source,
-        root,
-        transform=None,
-        pre_transform=Compose([RemoveCOMConformer(), FeaturizeMolecule()]),
-        pre_filter=None,
-        **kwargs,
-    ):
-        self.source = source
-        super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
-
-        logger.info(
-            f"Loaded dataset from {self.processed_paths[0]} with {len(self)} samples."
-        )
-        self._cache_indices()
-
-    def _cache_indices(self):
-        self.split_identifier_to_index = dict(
-            zip(self.file_identifier, range(len(self.file_identifier)))
-        )
-        self.split_identifiers = sorted(self.split_identifier_to_index.keys())
-
-    @property
-    def raw_file_names(self):
-        return glob.glob(osp.join(self.raw_dir, "*.pickle"))
-
-    @property
-    def processed_file_names(self):
-        return [f"{self.source}.pt"]
+class ConformerShared:
+    """Containing shared logic for both InMemory and Disk-based Conformer Datasets."""
 
     def get_ase_atoms(self, idx):
         data = self.get(idx)
@@ -172,17 +144,6 @@ class ConformerDataset(InMemoryDataset):
             atoms = self.get_ase_atoms(idx)
             atoms_list.extend(atoms)
         return atoms_list
-
-    def process(self):
-        data_list = []
-        for pkl_path in tqdm(self.raw_paths, desc="Processing conformer pickles"):
-            data = self.process_mol(pkl_path)
-            if data is not None:
-                data.file_identifier = os.path.basename(pkl_path).split(".pickle")[0]
-                if self.pre_transform is not None:
-                    data = self.pre_transform(data)
-                data_list.append(data)
-        torch.save(self.collate(data_list), self.processed_paths[0])
 
     def process_mol(self, pkl_path):
 
@@ -278,3 +239,188 @@ class ConformerDataset(InMemoryDataset):
         )
 
         return data
+
+
+class ConformerDatasetInMemory(ConformerShared, InMemoryDataset):
+    def __init__(
+        self,
+        source,
+        root,
+        transform=None,
+        pre_transform=Compose([RemoveCOMConformer(), FeaturizeMolecule()]),
+        pre_filter=None,
+        **kwargs,
+    ):
+        self.source = source
+        super().__init__(root, transform, pre_transform, pre_filter)
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+
+        logger.info(
+            f"Loaded dataset from {self.processed_paths[0]} with {len(self)} samples."
+        )
+        self._cache_indices()
+
+    def _cache_indices(self):
+        self.split_identifier_to_index = dict(
+            zip(self.file_identifier, range(len(self.file_identifier)))
+        )
+        self.split_identifiers = sorted(self.split_identifier_to_index.keys())
+
+    @property
+    def raw_file_names(self):
+        return glob.glob(osp.join(self.raw_dir, "*.pickle"))
+
+    @property
+    def processed_file_names(self):
+        return [f"{self.source}.pt"]
+
+    def process(self):
+        data_list = []
+        for pkl_path in tqdm(self.raw_paths, desc="Processing conformer pickles"):
+            data = self.process_mol(pkl_path)
+            if data is not None:
+                data.file_identifier = os.path.basename(pkl_path).split(".pickle")[0]
+                if self.pre_transform is not None:
+                    data = self.pre_transform(data)
+                data_list.append(data)
+        torch.save(self.collate(data_list), self.processed_paths[0])
+
+
+class ConformerDatasetDisk(ConformerShared, Dataset):
+    def __init__(
+        self,
+        source,
+        root,
+        transform=None,
+        pre_transform=Compose([RemoveCOMConformer(), FeaturizeMolecule()]),
+        pre_filter=None,
+        shard_size: int = 1024,
+        shard_cache_size: int = 2,
+        **kwargs,
+    ):
+        self.source = source
+        self.shard_size = max(1, int(shard_size))
+        self.shard_cache_size = max(0, int(shard_cache_size))
+        self._shard_cache = OrderedDict()
+        super().__init__(root, transform, pre_transform, pre_filter)
+
+        # After initialization/processing, load the metadata to get dataset length and identifiers
+        meta_path = osp.join(self.processed_dir, "meta.pt")
+        if osp.exists(meta_path):
+            self.meta_dict = torch.load(meta_path, weights_only=False)
+            self.file_identifier = self.meta_dict["file_identifier"]
+            self.index_to_shard = self.meta_dict["index_to_shard"]
+            self.shard_files = self.meta_dict["shard_files"]
+            self._cache_indices()
+            logger.info(
+                f"Loaded dataset from {self.processed_dir} with {len(self)} samples."
+            )
+        else:
+            raise FileNotFoundError(
+                "Metadata file not found. Processing might have failed."
+            )
+
+    def _cache_indices(self):
+        self.split_identifier_to_index = dict(
+            zip(self.file_identifier, range(len(self.file_identifier)))
+        )
+        self.split_identifiers = sorted(self.split_identifier_to_index.keys())
+
+    @property
+    def raw_file_names(self):
+        files = sorted(glob.glob(osp.join(self.raw_dir, "*.pickle")))
+        return [os.path.basename(f) for f in files]
+
+    @property
+    def processed_file_names(self):
+        # We use a single metadata file as the completion marker for PyG
+        return ["meta.pt"]
+
+    def len(self):
+        return self.meta_dict["length"]
+
+    def get(self, idx):
+        shard_name, local_idx = self.index_to_shard[idx]
+        shard_data = self._load_shard(shard_name)
+        data = shard_data[local_idx]
+        # Protect cached shard objects from in-place transform mutations.
+        if hasattr(data, "clone"):
+            return data.clone()
+        return data
+
+    def _load_shard(self, shard_name):
+        if shard_name in self._shard_cache:
+            self._shard_cache.move_to_end(shard_name)
+            return self._shard_cache[shard_name]
+
+        shard_path = osp.join(self.processed_dir, shard_name)
+        payload = torch.load(shard_path, weights_only=False)
+        if isinstance(payload, dict):
+            data_list = payload.get("data_list", [])
+        elif isinstance(payload, list):
+            data_list = payload
+        else:
+            data_list = [payload]
+
+        if self.shard_cache_size > 0:
+            self._shard_cache[shard_name] = data_list
+            while len(self._shard_cache) > self.shard_cache_size:
+                self._shard_cache.popitem(last=False)
+
+        return data_list
+
+    def process(self):
+        shard_idx = 0
+        current_shard_data = []
+        current_shard_identifiers = []
+
+        shard_files = []
+        index_to_shard = []
+        file_identifiers = []
+
+        def flush_shard():
+            nonlocal shard_idx, current_shard_data, current_shard_identifiers
+            if len(current_shard_data) == 0:
+                return
+
+            shard_name = f"shard_{shard_idx:06d}.pt"
+            shard_payload = {
+                "data_list": current_shard_data,
+                "file_identifier": current_shard_identifiers,
+            }
+            torch.save(shard_payload, osp.join(self.processed_dir, shard_name))
+            shard_files.append(shard_name)
+
+            for local_idx in range(len(current_shard_data)):
+                index_to_shard.append((shard_name, local_idx))
+
+            shard_idx += 1
+            current_shard_data = []
+            current_shard_identifiers = []
+
+        for pkl_path in tqdm(self.raw_paths, desc="Processing conformer pickles"):
+            data = self.process_mol(pkl_path)
+            if data is not None:
+                identifier = os.path.basename(pkl_path).split(".pickle")[0]
+                data.file_identifier = identifier
+                if self.pre_transform is not None:
+                    data = self.pre_transform(data)
+
+                current_shard_data.append(data)
+                current_shard_identifiers.append(identifier)
+                file_identifiers.append(identifier)
+
+                if len(current_shard_data) >= self.shard_size:
+                    flush_shard()
+
+        flush_shard()
+
+        # Save metadata to track total length and file identifiers
+        meta_dict = {
+            "length": len(file_identifiers),
+            "file_identifier": file_identifiers,
+            "index_to_shard": index_to_shard,
+            "shard_files": shard_files,
+            "shard_size": self.shard_size,
+        }
+        torch.save(meta_dict, osp.join(self.processed_dir, "meta.pt"))

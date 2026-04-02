@@ -32,9 +32,9 @@ test_transform: null
 
 # Define datamodule
 datamodule:
-  _target_: tspath.datasets.GeometricInMemoryDataModule
+  _target_: tspath.datasets.DataModule
   dataset:
-    _target_: tspath.datasets.ConformerDataset
+    _target_: tspath.datasets.ConformerDatasetInMemory
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}
