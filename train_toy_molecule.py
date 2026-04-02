@@ -125,7 +125,7 @@ if dataset_name == "carbon_chain":
 pos_dataset = torch.stack([data.pos for data in dataset])
 n_atoms = pos_dataset.shape[1]
 
-model_type = "dit_naive"
+model_type = "egnn"
 aligned = True
 permuted = True
 brute_force_permutations = True
@@ -148,7 +148,7 @@ model_dict = {
 model = model_dict[model_type]
 model.to(device)
 
-only_pos_drift = True
+only_pos_drift = False
 drift_str = "all_drift"
 if only_pos_drift:
     drift_str = "pos_drift"
@@ -156,7 +156,7 @@ if only_pos_drift:
 normalize_drift = True
 temperatures = [0.15]
 temp_str = "_".join([f"{t:.2f}" for t in temperatures])
-outdir = f"runs/toy_molecule/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}/{drift_str}"
+outdir = f"runs/toy_molecule_test/dataset_{dataset_name}/{model_type}/temp_{temp_str}/norm_{normalize_drift}/augment_rot_{augment_with_rotations}_augment_perm_{augment_with_permutations}/aligned_{aligned}_permuted_{permuted}_brute_force_{brute_force_permutations}/{drift_str}"
 ckpt_dir = f"{outdir}/checkpoints"
 plot_dir = f"{outdir}/plots"
 os.makedirs(ckpt_dir, exist_ok=True)
@@ -168,6 +168,7 @@ drifting_field = EquivariantDriftingField(
     aligned=aligned,
     permuted=permuted,
     brute_force_permutations=brute_force_permutations,
+    normalize_over_x=True
 )
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
 
@@ -199,10 +200,11 @@ for epoch in pbar:
 
         # sample negative samples for each positive sample in the batch
         batch_neg = create_batch_object(batch=batch, n_samples=n_neg_per_pos)
-
-        x = model(batch_neg)
         
         if epoch == 20 and batch_idx == 0:
+            
+            x = model(batch_neg)
+            
             # test permutation equivariance
             with torch.no_grad():
                 N = batch_neg.x.size(0)
@@ -232,11 +234,29 @@ for epoch in pbar:
                 mse_rot = torch.mean(diff**2)
                 if mse_rot > 1e-6:
                     print(f"Warning: Rotation equivariance test failed with MSE {mse_rot.item():.2e}")
+            
+            
+            # dx/dtheta should be the same for the original and the permuted input
+            loss = (x**2).sum() # dummy loss to check gradients
+            loss.backward()
+            graidents = [param.grad for param in model.parameters() if param.grad is not None]
+            
+            optimizer.zero_grad()
+            # test rotation equivariance
+            rot = torch.tensor([[0.0, -1.0], [1.0, 0.0]], device=device) # 90 degree rotation
+            batch_neg_rot = batch_neg.clone()
+            batch_neg_rot.pos = torch.cat([batch_neg.pos[:,:2] @ rot.T, torch.zeros_like(batch_neg.pos[:,2:])], dim=-1)
+            x_rot = model(batch_neg_rot)
+            
+            loss = (x_rot**2).sum() # dummy loss to check gradients
+            loss.backward()
+            graidents_rot = [param.grad for param in model.parameters() if param.grad is not None]
+            
+            assert all([torch.allclose(g, g_rot, atol=1e-6) for g, g_rot in zip(graidents, graidents_rot)]), "Warning: Rotation equivariance test failed for gradients."
+
+            optimizer.zero_grad()
         
-        # if x[..., 2].abs().max() > 1e-4:
-        #     print(
-        #         "Warning: Non-zero z-component in model prediction, which should be zero for 2D data."
-        #     )
+        x = model(batch_neg)
         
         # Get drifting field in 2D as 3D rotations could include reflections in 2D which are not valid
         V, V_pos, V_neg, *_ = drifting_field(

@@ -229,19 +229,19 @@ class DriftingMolecules(pl.LightningModule):
                 mask_x, 
                 torch.arange(start, end, device=mask_pos.device)
             )
-            
+
+            # Reshape to (n_neg_per_pos, embed_dim_i)
             try:
-                # Reshape to (n_neg_per_pos, embed_dim_i)
                 x_i_embedded = x_embedded[mask_neg_i].view(
                     self.n_neg_per_pos, -1
                 )
             except Exception as e:
-                breakpoint()
-                print(f"Error reshaping embedded tensors for graph {i}: {e}")
-                print(f"mask_pos_i sum: {mask_pos_i.sum()}, expected: {batch_pos.num_conformers[i]}")
-                print(f"mask_neg_i sum: {mask_neg_i.sum()}, expected: {self.n_neg_per_pos}")
+                logger.warning(
+                    "Generated samples are unrealistic. Biggest absolute value in x:"
+                    f"{x.abs().max().item():.2f}"
+                )
                 raise e
-
+                
             # Call the drift
             V, V_pos, V_neg, *_ = self.drifting_field(
                 x_i_embedded.detach(),
