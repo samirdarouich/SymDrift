@@ -1,7 +1,5 @@
 import os.path as osp
-from typing import Optional
 
-import numpy as np
 import torch
 from ase.io import read
 from torch_geometric.data import InMemoryDataset
@@ -12,7 +10,7 @@ from tspath.datasets.transforms import (
     AlignReaction,
     FeaturizeReaction,
     RemoveCOMReaction,
-    TargetReaction
+    TargetReaction,
 )
 from tspath.datasets.utils import ConformerData
 from tspath.utils import RankedLogger
@@ -26,11 +24,14 @@ class ReactionDataset(InMemoryDataset):
         source,
         root,
         identifier: str = "rxn",
-        split=None,  # 'train' | 'val' | 'test'
-        split_identifier: Optional[str] = None,
         transform=None,
         pre_transform=Compose(
-            [RemoveCOMReaction(), AlignReaction(), TargetReaction(), FeaturizeReaction()]
+            [
+                RemoveCOMReaction(),
+                AlignReaction(),
+                TargetReaction(),
+                FeaturizeReaction(),
+            ]
         ),
         pre_filter=None,
     ):
@@ -43,34 +44,11 @@ class ReactionDataset(InMemoryDataset):
             f"Loaded dataset from {self.processed_paths[0]} with {self.len()} samples."
         )
 
-        # load split if specified
-        if split is not None:
-            self._apply_split(split, split_identifier)
-
     def _cache_indices(self):
-        self.rxn_to_index = dict(
+        self.split_identifier_to_index = dict(
             zip(self.rxn.tolist(), range(len(self.rxn)))
         )
-        self.rxns = sorted(self.rxn_to_index.keys())
-    
-    def _apply_split(self, split, split_identifier: Optional[str] = None):
-        if split_identifier is not None:
-            filename = f"split_{self.source}_{split_identifier}.npz"
-        else:
-            filename = f"split_{self.source}.npz"
-        split_dict = np.load(osp.join(self.raw_dir, filename))
-
-        assert split in split_dict, f"Split '{split}' not in split file"
-
-        indices = split_dict[split]
-        indices = torch.as_tensor(indices, dtype=torch.long)
-
-        logger.info(f"Applying split '{split}' with {len(indices)} samples.")
-
-        # re-slices data & slices correctly
-        self.data, self.slices = self.collate(
-            [self.get(self.rxn_to_index[i.item()]) for i in indices]
-        )
+        self.split_identifiers = sorted(self.split_identifier_to_index.keys())
 
     @property
     def raw_file_names(self):
@@ -98,7 +76,7 @@ class ReactionDataset(InMemoryDataset):
                 smiles = f"{r_smiles}>>{p_smiles}"
             # make the dataobject in a "conformer" friendly way
             num_atoms = len(mol_ts)
-            num_conformers = 1 
+            num_conformers = 1
             data = ConformerData(
                 x=torch.tensor(mol_ts.numbers, dtype=torch.float),
                 x_conf=torch.tensor(
@@ -116,7 +94,7 @@ class ReactionDataset(InMemoryDataset):
                 r_smiles=mol_r.info.get("smiles", None),
                 p_smiles=mol_p.info.get("smiles", None),
                 smiles=smiles,
-                formula = mol_ts.get_chemical_formula()
+                formula=mol_ts.get_chemical_formula(),
             )
 
             if self.pre_transform is not None:

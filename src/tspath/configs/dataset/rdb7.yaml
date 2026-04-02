@@ -1,65 +1,45 @@
-# Dataset configuration for GEOM Drugs dataset
+# Dataset configuration for RDB7 dataset
 
-# Dataset specific parameters
+# Dataset specific parameters (assume data lies in the run folder under the dataset name e.g. data/geom_qm9 for the geom_qm9 dataset)
 name: rdb7
 root: ${run.work_dir}/data/${dataset.name}
 identifier: rxn
 split_identifier: random
+
 batch_size: 2
 num_workers: 0
 persistent_workers: false
 pin_memory: false
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
+# split used during sampling (can be train/val/test)
+sampling_split: test
 
-# Define training and validation datasets and dataloaders
-train_dataset:
-  _target_: tspath.datasets.ReactionDataset
-  root: ${dataset.root}
-  source: ${dataset.name}
-  split: train
+# Define transforms to apply when loading data
+train_transform: null
+
+val_transform: null
+
+test_transform: null
+
+# Define datamodule
+datamodule:
+  _target_: tspath.datasets.GeometricInMemoryDataModule
+  dataset:
+    _target_: tspath.datasets.ReactionDataset
+    root: ${dataset.root}
+    source: ${dataset.name}
+    identifier: ${dataset.identifier}
   split_identifier: ${dataset.split_identifier}
-  identifier: ${dataset.identifier}
-
-val_dataset:
-  _target_: tspath.datasets.ReactionDataset
-  root: ${dataset.root}
-  source: ${dataset.name}
-  split: val
-  split_identifier: ${dataset.split_identifier}
-  identifier: ${dataset.identifier}
-
-test_dataset:
-  _target_: tspath.datasets.ReactionDataset
-  root: ${dataset.root}
-  source: ${dataset.name}
-  split: test
-  split_identifier: ${dataset.split_identifier}
-  identifier: ${dataset.identifier}
-
-train_dataloader:
-  _target_: torch_geometric.loader.DataLoader
-  batch_size: ${dataset.batch_size}
+  train_transform: ${dataset.train_transform}
+  val_transform: ${dataset.val_transform}
+  test_transform: ${dataset.test_transform}
+  train_batch_size: ${dataset.batch_size}
+  val_batch_size: ${dataset.batch_size}
+  test_batch_size: ${dataset.batch_size}
   num_workers: ${dataset.num_workers}
-  persistent_workers: ${dataset.persistent_workers}
   pin_memory: ${dataset.pin_memory}
-  follow_batch: ${dataset.follow_batch}
-  shuffle: True
-
-val_dataloader:
-  _target_: torch_geometric.loader.DataLoader
-  batch_size: ${dataset.batch_size}
-  num_workers: ${dataset.num_workers}
   persistent_workers: ${dataset.persistent_workers}
-  pin_memory: ${dataset.pin_memory}
   follow_batch: ${dataset.follow_batch}
-  shuffle: False
-
-test_dataloader:
-  _target_: torch_geometric.loader.DataLoader
-  batch_size: ${dataset.batch_size}
-  num_workers: ${dataset.num_workers}
-  persistent_workers: ${dataset.persistent_workers}
-  pin_memory: ${dataset.pin_memory}
-  follow_batch: ${dataset.follow_batch}
-  shuffle: False
+  shuffle_train: true
+  drop_last_train: false

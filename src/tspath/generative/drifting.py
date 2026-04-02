@@ -113,7 +113,7 @@ def minimal_distance_permuted(
     return rmsd, diff_pos
 
 
-class DriftingField(torch.nn.Module):
+class DriftingField:
     def __init__(
         self,
         temperatures=None,
@@ -122,7 +122,6 @@ class DriftingField(torch.nn.Module):
         normalize_drift=True,
         **kwargs,
     ):
-        super().__init__()
         if temperatures is None:
             temperatures = torch.tensor([1.0])
         self.set_temperatures(temperatures)
@@ -138,7 +137,7 @@ class DriftingField(torch.nn.Module):
             temperatures = torch.tensor(temperatures)
         self.temperatures = temperatures
 
-    def forward(self, x, y_pos, y_neg, temperatures=None, **kwargs):
+    def __call__(self, x, y_pos, y_neg, temperatures=None, **kwargs):
         """
         x: [N, D]
         y_pos: [N_pos, D]
@@ -182,6 +181,9 @@ class DriftingField(torch.nn.Module):
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
+            tiny = 1e-12
+            w_pos = w_pos / (w_pos.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
+            w_neg = w_neg / (w_neg.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
@@ -211,7 +213,7 @@ class DriftingField(torch.nn.Module):
         return V, drift_pos, drift_neg, diff_pos, diff_neg, w_pos, w_neg
 
 
-class EquivariantDriftingField(torch.nn.Module):
+class EquivariantDriftingField:
     def __init__(
         self,
         temperatures=None,
@@ -222,7 +224,6 @@ class EquivariantDriftingField(torch.nn.Module):
         permuted=True,
         brute_force_permutations=False,
     ):
-        super().__init__()
         if temperatures is None:
             temperatures = torch.tensor([1.0])
         self.set_temperatures(temperatures)
@@ -257,7 +258,7 @@ class EquivariantDriftingField(torch.nn.Module):
                 "Permuted but not aligned doesn't make sense since permutation is only meaningful with alignment. Please set permuted=False if aligned=False."
             )
 
-    def forward(
+    def __call__(
         self,
         x,
         y_pos,
@@ -359,6 +360,9 @@ class EquivariantDriftingField(torch.nn.Module):
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
+            tiny = 1e-12
+            w_pos = w_pos / (w_pos.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
+            w_neg = w_neg / (w_neg.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the

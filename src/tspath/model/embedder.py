@@ -2,17 +2,15 @@
 
 from typing import Optional
 
-import torch
-import torch.nn as nn
-from torch import Tensor
 import einops
 import numpy as np
-from torch_scatter import scatter_add, scatter
+import torch
+from torch import Tensor
 from torch_geometric.nn import radius_graph
-
-GM_DIM = {3: 94, 4: 198, 5: 360, 6: 593, 7: 910}
+from torch_scatter import scatter, scatter_add
 
 __all__ = ["GaussianMomentEmbedder", "DistanceEmbedder"]
+
 
 def uniform_range(minval: float, maxval: float):
     """
@@ -41,6 +39,7 @@ def uniform_range(minval: float, maxval: float):
         return torch.empty(shape).uniform_(minval, maxval)
 
     return init
+
 
 def tril_2d_indices(n_radial: int) -> Tensor:
     """
@@ -100,7 +99,9 @@ def tril_3d_indices(n_radial: int) -> Tensor:
 
 
 def geometric_moments(
-    radial_function: Tensor, dn: Tensor, idx_i: Tensor,
+    radial_function: Tensor,
+    dn: Tensor,
+    idx_i: Tensor,
 ):
     """
     Compute geometric moments based on radial functions and distance vectors.
@@ -143,10 +144,26 @@ def geometric_moments(
     third_moment = einops.repeat(second_moment, "n r s1 s2 -> n r s1 s2 1") * xyz3
 
     # shape: n_atoms x n_radial x (3)^(moment_number)
-    zero_moment = scatter_add(zero_moment, idx_i, dim=0,)
-    first_moment = scatter_add(first_moment, idx_i, dim=0,)
-    second_moment = scatter_add(second_moment, idx_i, dim=0,)
-    third_moment = scatter_add(third_moment, idx_i, dim=0,)
+    zero_moment = scatter_add(
+        zero_moment,
+        idx_i,
+        dim=0,
+    )
+    first_moment = scatter_add(
+        first_moment,
+        idx_i,
+        dim=0,
+    )
+    second_moment = scatter_add(
+        second_moment,
+        idx_i,
+        dim=0,
+    )
+    third_moment = scatter_add(
+        third_moment,
+        idx_i,
+        dim=0,
+    )
 
     moments = [zero_moment, first_moment, second_moment, third_moment]
 
@@ -188,10 +205,8 @@ def mask_by_neighbor(arr: Tensor, idx: Tensor):
     return arr * mask
 
 
-
-class GaussianBasis(nn.Module):
+class GaussianBasis:
     def __init__(self, n_basis: int = 7, r_min: float = 0.5, r_max: float = 6.0):
-        super().__init__()
         self.n_basis = n_basis
         self.r_min = r_min
         self.r_max = r_max
@@ -209,7 +224,7 @@ class GaussianBasis(nn.Module):
         # Convert to tensor and reshape to 1 x n_basis (broadcast-compatible with dr)
         self.shifts = torch.tensor(shifts).view(1, -1)
 
-    def forward(self, dr: Tensor):
+    def __call__(self, dr: Tensor):
         # Reshape dr to be neighbors x 1 (add an extra dimension for broadcasting)
         dr = dr.view(-1, 1)
 
@@ -220,125 +235,14 @@ class GaussianBasis(nn.Module):
         basis = torch.exp(-self.betta * (distances**2))
         basis = self.rad_norm * basis
         return basis.to(dr.dtype)
-    
-class RadialFunction(nn.Module):
-    def __init__(
-        self,
-        n_radial: int = 5,
-        basis_fn: nn.Module = GaussianBasis(),
-        n_species: int = 119,
-        emb_init: Optional[str] = "uniform",
-        use_embed_norm: bool = True,
-        one_sided_dist: bool = False,
-    ):
-        """
-        A module for computing radial functions used in molecular models.
 
-        The radial function calculates the distance-dependent embedding for atomic pairs,
-        using a Gaussian basis and optional type embeddings for species pairs.
 
-        Args:
-            n_radial (int, optional):
-              Number of radial basis functions to use. Defaults to 5.
-            basis_fn (nn.Module, optional):
-              The basis function, typically a Gaussian basis.
-            n_species (int, optional):
-              Number of unique atomic species. Defaults to 119.
-            emb_init (Optional[str]):
-              Initialization type for embeddings ('uniform' supported).
-            use_embed_norm (bool), optional:
-              Whether to apply normalization to the embeddings.
-            one_sided_dist (bool, optional):
-              If True, distances are considered one-sided (non-negative).
-        """
-        super().__init__()
-        self.basis_fn = basis_fn
-        self.n_radial = n_radial
-        self.n_species = n_species
-        self.emb_init = emb_init
-        self.use_embed_norm = use_embed_norm
-        self.one_sided_dist = one_sided_dist
-
-        self.r_max = self.basis_fn.r_max
-        self.embed_norm = torch.tensor(1.0 / np.sqrt(self.basis_fn.n_basis))
-
-        if self.one_sided_dist:
-            self.lower_bound = 0.0
-        else:
-            self.lower_bound = -1.0
-
-        if self.emb_init is not None:
-            self._n_radial = self.n_radial
-            if self.emb_init == "uniform":
-                emb_initializer = uniform_range(self.lower_bound, 1.0)
-                self.embeddings = nn.Parameter(
-                    emb_initializer(
-                        (
-                            self.n_species,
-                            self.n_species,
-                            self.n_radial,
-                            self.basis_fn.n_basis,
-                        )
-                    )
-                )
-            else:
-                raise ValueError(
-                    "Currently only uniformly initialized embeddings are supported."
-                )
-        else:
-            self._n_radial = self.basis_fn.n_basis
-
-    def forward(self, dr, Z_i=None, Z_j=None):
-        """
-        Forward pass to compute the radial function based on pairwise distances and species.
-
-        Args:
-            dr (torch.Tensor):
-              Distance matrix (n_neighbors, 1).
-            Z_i (torch.Tensor):
-              Atomic species for atoms i.
-            Z_j (torch.Tensor):
-              Atomic species for atoms j.
-
-        Returns:
-            torch.Tensor:
-              The computed radial function for each neighbor (n_neighbors x n_radial).
-        """
-        # Basis function evaluation
-        basis = self.basis_fn(dr)
-
-        if self.emb_init is None:
-            radial_function = basis
-        else:
-            assert Z_i is not None and Z_j is not None, "Atomic species Z_i and Z_j must be provided when using embeddings."
-            species_pair_coeffs = self.embeddings[Z_i, Z_j, ...]
-            if self.use_embed_norm:
-                species_pair_coeffs = self.embed_norm * species_pair_coeffs
-
-            # Compute the radial function with the embedding coefficients
-            radial_function = einops.einsum(
-                species_pair_coeffs,
-                basis,
-                "nbrs radial basis, nbrs basis -> nbrs radial",
-            )
-
-        # Apply a cutoff function to the radial function
-        # dr_clipped = torch.clamp(dr, max=self.r_max)
-        # cos_cutoff = 0.5 * (torch.cos(np.pi * dr_clipped / self.r_max) + 1.0)
-
-        # radial_function = radial_function * cos_cutoff
-
-        return radial_function
-
-class GaussianMomentEmbedder(nn.Module):
+class GaussianMomentEmbedder:
     def __init__(
         self,
         n_contr: int = 8,
         n_basis: int = 7,
         max_radius: float = 15.0,
-        n_radial: int = 5,
-        use_atom_type_embeddings: bool = False,
-        reduced_dim: Optional[int] = None,
         aggregation: Optional[str] = "mean",
     ):
         """
@@ -346,45 +250,30 @@ class GaussianMomentEmbedder(nn.Module):
 
         Args:
             n_radial (int, optional):
-              Number of radial basis functions to use. Defaults to 5. Only relevant if 
+              Number of radial basis functions to use. Defaults to 5. Only relevant if
               use_atom_type_embeddings is True.
             n_contr (int, optional):
               Number of contractions to compute (up to 8). Defaults to 8.
             max_radius (float, optional):
               Maximum radius for the radial basis functions. Defaults to 15.0.
-            use_atom_type_embeddings (bool, optional):
-              Whether to use atom type embeddings in the radial function. Defaults to False.
-            reduced_dim (Optional[int], optional):
-              If specified, reduces the output dimension of the descriptor to this value using a linear layer. Defaults to None (no reduction).
             aggregation (str, optional):
                 Method for aggregating the moments (e.g., 'mean', 'add').
         """
-        super().__init__()
         self.n_contr = n_contr
-        self.radial_fn = RadialFunction(
-            n_radial=n_radial,
-            basis_fn=GaussianBasis(n_basis=n_basis, r_max=max_radius),
-            emb_init="uniform" if use_atom_type_embeddings else None
-        )
+        self.radial_fn = GaussianBasis(n_basis=n_basis, r_max=max_radius)
+        self.n_radial = n_basis
         self.r_max = max_radius
-        self.n_radial = self.radial_fn._n_radial
         self.triang_idxs_2d = tril_2d_indices(self.n_radial)
         self.triang_idxs_3d = tril_3d_indices(self.n_radial)
-        self.reduced_dim = reduced_dim
         self.aggregation = aggregation
 
-        if reduced_dim is not None:
-            self.dim = GM_DIM[self.n_radial]
-            self.reduction_layer = nn.Linear(self.dim, reduced_dim, bias=False)
-            self.dim = reduced_dim
-
-    def forward(
+    def __call__(
         self,
         positions: Tensor,
         batch: Optional[Tensor] = None,
         Z: Optional[Tensor] = None,
         edge_index: Optional[Tensor] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Computes the Gaussian moments for given coordinates, edge indices, and atomic numbers.
@@ -406,20 +295,19 @@ class GaussianMomentEmbedder(nn.Module):
               and the radial basis functions.
         """
         if batch is None:
-            batch = torch.zeros(positions.shape[0], dtype=torch.long, device=positions.device)
+            batch = torch.zeros(
+                positions.shape[0], dtype=torch.long, device=positions.device
+            )
         if edge_index is None:
             edge_index = radius_graph(positions, r=self.r_max, batch=batch)
-            
+
         jj, ii = edge_index[0], edge_index[1]
         rij = positions[jj] - positions[ii]
         distances = torch.norm(rij, dim=-1, keepdim=True)
         coord_diff = rij / (distances + 1e-8)
 
         # Radial function
-        Z_i, Z_j = None, None
-        if Z is not None:
-            Z_i, Z_j = Z[ii].long(), Z[jj].long()
-        radial_function = self.radial_fn(distances, Z_i, Z_j)
+        radial_function = self.radial_fn(distances)
 
         # Compute geometric moments
         moments = geometric_moments(radial_function, coord_diff, ii)
@@ -487,60 +375,55 @@ class GaussianMomentEmbedder(nn.Module):
         # Concatenate the relevant Gaussian moments up to self.n_contr
         gaussian_moments = torch.cat(gaussian_moments[: self.n_contr], dim=-1)
 
-        # Reduce the dimension
-        if self.reduced_dim is not None:
-            gaussian_moments = self.reduction_layer(gaussian_moments)
-
         # Aggregate over the batch dimension if wanted
         if self.aggregation is None:
             return gaussian_moments
         else:
-            # aggregate the moments for each graph in the batch using the specified 
-            # aggregation method and flatten them. Createa a mask to identify which 
+            # aggregate the moments for each graph in the batch using the specified
+            # aggregation method and flatten them. Createa a mask to identify which
             # entries in the aggregated tensor correspond to which batch.
             B = batch.max().item() + 1
             aggregated = scatter(
                 gaussian_moments, batch, dim=0, reduce=self.aggregation
             ).view(-1)
-            mask = torch.arange(B).repeat_interleave(gaussian_moments.shape[1]) 
+            mask = torch.arange(B).repeat_interleave(gaussian_moments.shape[1])
             return aggregated, mask
 
-class DistanceEmbedder(nn.Module):
-    
-    def __init__(self, r_max: Optional[float]=None, invariant=True):
-        super().__init__()
+
+class DistanceEmbedder:
+    def __init__(self, r_max: Optional[float] = None, invariant=True):
         self.invariant = invariant
         if r_max is None:
-            r_max = 1e6
+            r_max = float("inf")
         self.r_max = r_max
-        
-    def forward(
-        self, 
-        positions: Tensor, 
+
+    def __call__(
+        self,
+        positions: Tensor,
         batch: Optional[Tensor] = None,
         Z: Optional[Tensor] = None,
         edge_index: Optional[Tensor] = None,
         invariant: Optional[bool] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Embed the positions of atoms using a distance-based embedding.
-        
+
         Args:
-            positions (Tensor): 
+            positions (Tensor):
                 Tensor of shape (B*n_atoms, 3) containing the positions of the atoms.
             batch (Tensor, optional):
                 Tensor of shape (B*n_atoms,) containing the batch indices for each atom.
-            Z (Tensor, optional): 
+            Z (Tensor, optional):
                 Tensor of shape (B*n_atoms) containing the atomic numbers of the atoms.
-                Needed if `invariant` is True to compute the invariant embedding. 
+                Needed if `invariant` is True to compute the invariant embedding.
             edge_index (Tensor, optional):
               Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
-            invariant (bool, optional): 
-                If True, the embedding will be invariant to permutations of atoms. 
-                If False, the embedding will be based on the full distance matrix. 
+            invariant (bool, optional):
+                If True, the embedding will be invariant to permutations of atoms.
+                If False, the embedding will be based on the full distance matrix.
                 If None, it will use the class attribute `self.invariant`.
-                
+
         Output:
             dist (Tensor): Tensor of shape (n_edges,) containing the distances for each edge.
             edge_batch (Tensor): Tensor of shape (n_edges,) containing the batch index for each edge.
@@ -549,23 +432,25 @@ class DistanceEmbedder(nn.Module):
             # if desired overwrite invariant attribute with forward argument
             self.invariant = invariant
         if batch is None:
-            batch = torch.zeros(positions.shape[0], dtype=torch.long, device=positions.device)
+            batch = torch.zeros(
+                positions.shape[0], dtype=torch.long, device=positions.device
+            )
         if edge_index is None:
             row, col = radius_graph(positions, r=self.r_max, batch=batch)
             # mask out all symmetric entries (keep only one of (i,j) and (j,i))
             mask = row < col
             row, col = row[mask], col[mask]
-        
-        # compute distances for the edges (assuming fully connected graph, reconstructs 
+
+        # compute distances for the edges (assuming fully connected graph, reconstructs
         # the full distance matrix)
         dist = (positions[row] - positions[col]).norm(dim=-1)
-        
+
         # get batch indices for the edges
         edge_batch = batch[row]
-        
+
         if not self.invariant:
             return dist, edge_batch
-        
+
         # sort edges within the same pair_type to make it permutation invariant
         Zi, Zj = Z[row], Z[col]
 
@@ -575,7 +460,7 @@ class DistanceEmbedder(nn.Module):
         max_dist = dist.max().detach() + 1.0
         group_id = edge_batch * (Zmax_val**2) + pair_type
         key = group_id * max_dist + dist
-        
+
         # apply permutation
         perm = torch.argsort(key)
         dist_sorted = dist[perm]

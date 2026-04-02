@@ -47,12 +47,8 @@ def train(cfg):
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision("medium")
 
-    ########## Dataset ##########
-    train_dataset = instantiate(cfg.dataset.train_dataset)
-    val_dataset = instantiate(cfg.dataset.val_dataset)
-
-    train_dataloader = instantiate(cfg.dataset.train_dataloader, dataset=train_dataset)
-    val_dataloader = instantiate(cfg.dataset.val_dataloader, dataset=val_dataset)
+    ########## Datamodule (includes datasets and loaders) ##########
+    datamodule = instantiate(cfg.dataset.datamodule)
 
     ########## Callbacks and Logger ##########
     callbacks, loggers = [], []
@@ -88,9 +84,8 @@ def train(cfg):
         **cfg.trainer,
     )
     generative_trainer.fit(
-        generative_process,
-        train_dataloader,
-        val_dataloader,
+        model=generative_process,
+        datamodule=datamodule,
         ckpt_path=cfg.run.ckpt_path,
         weights_only=False,
     )
@@ -118,10 +113,12 @@ def sample(cfg):
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision("medium")
 
-    ########## Dataset ##########
-    test_dataset = instantiate(cfg.dataset.test_dataset)
-    test_dataloader = instantiate(cfg.dataset.test_dataloader, dataset=test_dataset)
-    atoms_dataset = test_dataset.get_dataset_as_atoms()
+    ########## Datamodule (includes datasets and loaders) ##########
+    datamodule = instantiate(cfg.dataset.datamodule)
+    sampling_split = getattr(cfg.dataset, "sampling_split", "test")
+    datamodule.setup(stage=sampling_split)
+    dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
+    atoms_dataset = getattr(datamodule, f"{sampling_split}_dataset").get_dataset_as_atoms()
 
     generative_process = instantiate(cfg.generative_model)
     log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.pretrained))
@@ -154,7 +151,7 @@ def sample(cfg):
 
     metrics = {}
     atoms_generated = []
-    for batch in tqdm(test_dataloader, desc="Evaluating test dataset"):
+    for batch in tqdm(dataloader, desc=f"Evaluating {sampling_split} dataset"):
         batch = batch.to(device)
         batch_atoms_generated, batch_metrics = generative_process.sample(
             batch_pos=batch,
