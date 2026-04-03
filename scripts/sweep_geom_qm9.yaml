@@ -7,37 +7,40 @@ metric:
 
 parameters:
 
-  model.optimizer.lr:
+  model.scheduler.max_lr:
     distribution: log_uniform_values
     min: 1e-6
     max: 1e-3
+  
+  model.scheduler.min_lr:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-6
 
   model.optimizer.weight_decay:
     distribution: log_uniform_values
-    min: 1e-9
+    min: 1e-10
     max: 1e-2
   
   model.model.sphere_channels:
     values: [128, 160, 256]
   
   model.model.num_layers:
-    values: [4, 6, 8, 10, 12, 16, 20]
+    values: [4, 6, 8, 10, 14, 18, 22]
 
 
-# 106412 total training samples
-# they trained 4 GPUS with BZ 128 for 500 epochs ~ 208 steps/epoch --> 104000 steps
-# they report to reduce the lr after half the training
-# 4*32 --> 832 steps/epoch --> 42432 steps for 51 epochs --> so make cycle 21_200
+# 10590 hyperopt training samples bz 4 on one GPU
+# 105902 / 2*4 == 2648 steps/epoch --> one cycle 25 epochs: 66_200 steps
 command:
   - ${env}
   - tspath_train
   - experiment=geom_qm9_o3_embedded_space
-  - run.id="sweep_${uuid:1}"
-  - prior=harmonic
-  - trainer.max_epochs=51
-  - generative_model.n_neg_per_pos=32
-  - generative_model.sample_every_epoch=50
+  - run.id="geom_qm9_o3_embedded_space_sweep_${uuid:1}"
+  - trainer.max_epochs=50
+  - trainer.devices=1
   - dataset.batch_size=4
-  - model.scheduler.first_cycle_steps=21_200
+  - dataset.split_identifier=geomol_cleaned_hyperopt
+  - model.scheduler.first_cycle_steps=66_200
+  - generative_model.sample_every_epoch=10
   - +trainer.limit_val_batches=100
   - ${args_no_hyphens}
