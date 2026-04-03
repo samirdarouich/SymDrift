@@ -1,16 +1,21 @@
+import json
 import os
 import time
 from typing import Optional, Union
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
-import json
-import numpy as np
 from ase.io import write
 from torch_geometric.data import Batch
 
 from tspath.alignment import get_rmsd_batched_scatter
-from tspath.analysis import get_validity, pca_plot, evaluate_covmat, print_covmat_results
+from tspath.analysis import (
+    evaluate_covmat,
+    get_validity,
+    pca_plot,
+    print_covmat_results,
+)
 from tspath.generative import (
     DriftingField,
     EquivariantDriftingField,
@@ -18,13 +23,12 @@ from tspath.generative import (
     HarmonicSampler,
 )
 from tspath.model import DistanceEmbedder, GaussianMomentEmbedder
-from tspath.utils import (
-    batch_inputs_to_atoms, RankedLogger, Queue
-)
+from tspath.utils import Queue, RankedLogger, batch_inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = ["DriftingMolecules"]
+
 
 class DriftingMolecules(pl.LightningModule):
     def __init__(
@@ -90,18 +94,20 @@ class DriftingMolecules(pl.LightningModule):
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
         self.grad_norm_max_val = grad_norm_max_val
-        
+
         # gradient clipping queue
         self.gradnorm_queue = Queue()
         self.gradnorm_queue.add(3000)  # starting value
-    
+
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters())
         if self.hparams.get("scheduler") is not None:
             scheduler = self.hparams.scheduler(optimizer)
             interval = scheduler.interval
             monitor = getattr(scheduler, "monitor", None)
-            return [optimizer], [{"scheduler": scheduler, "interval": interval, "monitor": monitor}]
+            return [optimizer], [
+                {"scheduler": scheduler, "interval": interval, "monitor": monitor}
+            ]
         else:
             return optimizer
 
@@ -114,13 +120,19 @@ class DriftingMolecules(pl.LightningModule):
         # Repeat each graph in the batch n_neg_per_pos times to create a new batch for sampling
         data_list = batch.to_data_list()
         repeated_list = [data for data in data_list for _ in range(n_neg_per_pos)]
-        batch_negative = Batch.from_data_list(repeated_list, exclude_keys=[
-            # Exlucde all conformer broadcasted properties
-            "x_conf", "pos", "energy", "boltzmann_weights", "conformer_index"
-            ]
+        batch_negative = Batch.from_data_list(
+            repeated_list,
+            exclude_keys=[
+                # Exlucde all conformer broadcasted properties
+                "x_conf",
+                "pos",
+                "energy",
+                "boltzmann_weights",
+                "conformer_index",
+            ],
         )
 
-        # Sample from the prior 
+        # Sample from the prior
         z = self.prior_sampler.sample(
             size=(batch_negative.num_nodes, 3),
             edge_index=batch_negative.bonded_edge_index,
@@ -201,22 +213,21 @@ class DriftingMolecules(pl.LightningModule):
             y_pos_embedded, mask_pos = self.embedder(
                 positions=y_pos, Z=z_pos, batch=batch_mask_pos
             )
-            
+
         x_embedded, mask_x = self.embedder(
             positions=x, Z=batch_neg.x, batch=batch_neg.batch
         )
-                
+
         # Per class compute the drift seperately
         loss = torch.tensor(0.0, device=x.device)
         for i in range(batch_pos.num_graphs):
             # Get all embeddings corresponding to the current positive conformers
             start = conformer_offsets[i]
-            end = conformer_offsets[i+1]
+            end = conformer_offsets[i + 1]
             mask_pos_i = torch.isin(
-                mask_pos, 
-                torch.arange(start, end, device=mask_pos.device)
+                mask_pos, torch.arange(start, end, device=mask_pos.device)
             )
-            
+
             # Reshape to (n_conformers_i, embed_dim_i)
             y_i_pos_embedded = y_pos_embedded[mask_pos_i].view(
                 batch_pos.num_conformers[i], -1
@@ -226,22 +237,12 @@ class DriftingMolecules(pl.LightningModule):
             start = i * self.n_neg_per_pos
             end = (i + 1) * self.n_neg_per_pos
             mask_neg_i = torch.isin(
-                mask_x, 
-                torch.arange(start, end, device=mask_pos.device)
+                mask_x, torch.arange(start, end, device=mask_pos.device)
             )
 
             # Reshape to (n_neg_per_pos, embed_dim_i)
-            try:
-                x_i_embedded = x_embedded[mask_neg_i].view(
-                    self.n_neg_per_pos, -1
-                )
-            except Exception as e:
-                logger.warning(
-                    "Generated samples are unrealistic. Biggest absolute value in x:"
-                    f"{x.abs().max().item():.2f}"
-                )
-                raise e
-                
+            x_i_embedded = x_embedded[mask_neg_i].view(self.n_neg_per_pos, -1)
+
             # Call the drift
             V, V_pos, V_neg, *_ = self.drifting_field(
                 x_i_embedded.detach(),
@@ -280,7 +281,12 @@ class DriftingMolecules(pl.LightningModule):
         # Generate target samples using the model
         x = self.model(batch_neg)
 
-        # Compute the drift seperately per class 
+        if x.isnan().any():
+            raise ValueError(
+                f"NaN values in model output at {self.current_epoch}, step {step}"
+            )
+
+        # Compute the drift seperately per class
         if self.embedder is not None:
             loss = self._compute_drift_embedded_space(x, batch_pos, batch_neg, step)
         else:
@@ -290,7 +296,7 @@ class DriftingMolecules(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self._step(batch, "train")
-        
+
         if loss.isnan():
             raise ValueError(
                 f"NaN loss encountered at {self.current_epoch}, batch {batch_idx}"
@@ -304,13 +310,13 @@ class DriftingMolecules(pl.LightningModule):
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
             max_num_conformers = max(batch.num_conformers.max().item(), 32)
             self.sample(
-                batch, 
-                step="train", 
-                save_folder=save_folder, 
-                save_pca_plot=True, 
-                seed=42, 
-                n_samples=max_num_conformers*2, # at least having 2*n_conformers
-                threshold=self.threshold
+                batch,
+                step="train",
+                save_folder=save_folder,
+                save_pca_plot=True,
+                seed=42,
+                n_samples=max_num_conformers * 2,  # at least having 2*n_conformers
+                threshold=self.threshold,
             )
         return loss
 
@@ -318,20 +324,19 @@ class DriftingMolecules(pl.LightningModule):
         loss = self._step(batch, "val")
         if (
             (self.current_epoch % self.sample_every_epoch == 0)
-            and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
             max_num_conformers = max(batch.num_conformers.max().item(), 32)
             self.sample(
-                batch, 
-                step="val", 
-                save_folder=save_folder, 
-                save_pca_plot=True, 
-                seed=42, 
-                n_samples=max_num_conformers*2, # at least having 2*n_conformers
-                threshold=self.threshold
+                batch,
+                step="val",
+                save_folder=save_folder,
+                save_pca_plot=True,
+                seed=42,
+                n_samples=max_num_conformers * 2,  # at least having 2*n_conformers
+                threshold=self.threshold,
             )
         return loss
 
@@ -345,7 +350,7 @@ class DriftingMolecules(pl.LightningModule):
         save_pca_plot=False,
         seed=None,
         threshold=None,
-        **kwargs
+        **kwargs,
     ):
         """Generate n_neg_per_pos samples per graph"""
         if seed is not None:
@@ -382,12 +387,12 @@ class DriftingMolecules(pl.LightningModule):
         # Compute metrics (coverage and matching)
         if threshold is not None:
             results = evaluate_covmat(
-                atoms_pred, 
-                atoms_positive, 
-                thresholds=np.arange(0.05, 3.05, 0.05), 
-                num_workers=0, 
+                atoms_pred,
+                atoms_positive,
+                thresholds=np.arange(0.05, 3.05, 0.05),
+                num_workers=0,
                 worker_fn_type=self.worker_fn_type,
-                ratio=2.0, # only keep at most 2*n_conformers predictions per reference
+                ratio=2.0,  # only keep at most 2*n_conformers predictions per reference
                 identifier=self.identifier,
             )
             df, metrics_cov = print_covmat_results(results, threshold=threshold)
@@ -395,7 +400,7 @@ class DriftingMolecules(pl.LightningModule):
             df, metrics_cov = None, {}
 
         metrics = {**metrics_val, **metrics_cov}
-        
+
         # Save samples
         if save_folder is not None and self.is_global_zero():
             os.makedirs(save_folder, exist_ok=True)
@@ -403,10 +408,10 @@ class DriftingMolecules(pl.LightningModule):
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
             for i, atoms in enumerate(atoms_pred):
-                identifier_str = str(atoms.info[self.identifier]).replace("/", "_").replace(" ", "_")
-                sample_folder = (
-                    f"{save_folder}/{self.identifier}_{identifier_str}"
+                identifier_str = (
+                    str(atoms.info[self.identifier]).replace("/", "_").replace(" ", "_")
                 )
+                sample_folder = f"{save_folder}/{self.identifier}_{identifier_str}"
                 os.makedirs(sample_folder, exist_ok=True)
                 atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
                 write(f"{sample_folder}/sample.xyz", atoms, append=True)
@@ -414,10 +419,10 @@ class DriftingMolecules(pl.LightningModule):
 
             with open(f"{save_folder}/metrics.json", "w") as f:
                 json.dump({"step": self.global_step, **metrics}, f, indent=4)
-            
+
             if df is not None:
                 df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
-                
+
             if save_pca_plot:
                 pca_plot(
                     atoms_positive,
@@ -443,37 +448,37 @@ class DriftingMolecules(pl.LightningModule):
             self.model.train()
 
         return atoms_pred, metrics
-    
+
     def _get_pos_atoms(self, batch_pos):
         """Treating each conformer as a separate graph in the batch"""
         batch_pos_ = batch_pos.clone()
         batch_pos_.batch = batch_pos.conformer_index
         batch_pos_.x = batch_pos.x_conf
 
-        batch_pos_.smiles = [ 
-            smi for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers) 
-            for _ in range(n_conf_i) 
+        batch_pos_.smiles = [
+            smi
+            for smi, n_conf_i in zip(batch_pos_.smiles, batch_pos_.num_conformers)
+            for _ in range(n_conf_i)
         ]
         atoms_positive = batch_inputs_to_atoms(
             batch_pos_, pos_key="pos", info_keys=[self.identifier]
         )
         return atoms_positive
-    
+
     def is_global_zero(self):
         return (self._trainer is None) or self.trainer.is_global_zero
-    
-    
+
     def configure_gradient_clipping(
         self, optimizer, gradient_clip_val, gradient_clip_algorithm
     ):
         """Gradient Clipping as done in the official EDM implementation."""
-        
+
         # In case no max grad norm value is set, use the default Lightning implementation
         if self.grad_norm_max_val is None:
             return super().configure_gradient_clipping(
                 optimizer, gradient_clip_val, gradient_clip_algorithm
             )
-    
+
         # Allow gradient norm to be 150% + 2 * stdev of the recent history.
         max_grad_norm = min(
             1.5 * self.gradnorm_queue.mean() + 2 * self.gradnorm_queue.std(),

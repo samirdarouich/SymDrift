@@ -16,11 +16,6 @@ parameters:
     distribution: log_uniform_values
     min: 1e-6
     max: 1e-2
-
-  model.scheduler.patience:
-    distribution: int_uniform
-    min: 10
-    max: 200
   
   model.model.sphere_channels:
     values: [128, 256]
@@ -38,10 +33,10 @@ command:
   - ${env}
   - tspath_train
   - experiment=rdb7_embedded_space
-  - run.id="sweep_${uuid:1}"
+  - run.id="rdb7/embedded_space_gaussian/sweep_${uuid:1}"
   - prior=gaussian
-  - trainer.max_epochs=201
-  - generative_model.n_neg_per_pos=32
-  - generative_model.sample_every_epoch=100
+  - trainer.max_epochs=51
+  - generative_model.sample_every_epoch=10
   - dataset.batch_size=6
+  - model.scheduler=null
   - ${args_no_hyphens}
