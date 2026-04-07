@@ -20,9 +20,10 @@ run:
 generative_model:
   _target_: tspath.trainer.DriftingMolecules
   
-  # convert all OmegaConf lists to python lists (for better compatibility
+  # convert all OmegaConf lists to python lists (for better compatibility)
   _convert_: all 
 
+  # Sample every n epochs
   sample_every_epoch: 100
 
   # The drifting field needs to invariant wrt to permutations, translations and rotations
@@ -56,9 +57,15 @@ generative_model:
   # RMSD threshold to compute coverage and machting metrics
   threshold: null
 
+  # Ratio between conformers and generated samples to use for evaluation (if null, all conformers will be used)
+  ratio: null
+
   # Use RDKIT to compute the RMSD without considering hydrogens
   worker_fn_type: rmsd_rdkit_wo_h
 
+  # Number of workers to evaluate the RMSD in parallel (if 0, no parallelization will be used)
+  num_workers: 0
+  
   # Maximum value for adaptive gradient clipping (compare EDM)
   grad_norm_max_val: ${model.grad_norm_max_val}
 

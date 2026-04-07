@@ -2,11 +2,11 @@
 
 defaults:
   - drifting
-  - override /dataset: geom_qm9
+  - override /dataset: geom_drugs
   - override /model: torchmd
 
 run:
-  experiment: geom_qm9
+  experiment: geom_drugs
 
 # Taken from ETFLOW SI A.4
 # ETFLOW train wiht 8 GPUS and bz 64 for 250 epochs
@@ -28,6 +28,9 @@ generative_model:
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.75
+
+  # Ratio between conformers and generated samples to use for evaluation (if null, all conformers will be used)
+  ratio: 2.0
 
 dataset:
   batch_size: 64

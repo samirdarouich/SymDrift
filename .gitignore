@@ -12,8 +12,8 @@ generated
 wandb
 
 # cluster
-train.sh
-sample.sh
+train*.sh
+sample*.sh
 runs
 samples
 *.ipynb

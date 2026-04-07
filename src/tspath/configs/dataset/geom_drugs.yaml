@@ -15,6 +15,9 @@ follow_batch: [x_conf] # creates additional batch mask for each conformer
 # split used during sampling (can be train/val/test)
 sampling_split: test
 
+# max batch size used during sampling.
+max_batch_size: 64
+
 # Define transforms to apply when loading data
 train_transform:
   _target_: torch_geometric.transforms.Compose
@@ -34,7 +37,7 @@ test_transform: null
 datamodule:
   _target_: tspath.datasets.DataModule
   dataset:
-    _target_: tspath.datasets.ConformerDataset
+    _target_: tspath.datasets.ConformerDatasetDisk
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}

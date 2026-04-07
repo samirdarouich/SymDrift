@@ -15,6 +15,9 @@ follow_batch: [x_conf] # creates additional batch mask for each conformer
 # split used during sampling (can be train/val/test)
 sampling_split: test
 
+# max batch size used during sampling.
+max_batch_size: 64
+
 # Define transforms to apply when loading data
 train_transform:
   _target_: torch_geometric.transforms.Compose

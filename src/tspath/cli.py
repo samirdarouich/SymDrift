@@ -134,43 +134,69 @@ def sample(cfg):
     conditioned = getattr(cfg.generative_model, "conditioned", True)
     no_of_samples = getattr(cfg.generative_model, "no_of_samples", 1)
     threshold = getattr(cfg.generative_model, "threshold", 0.5)
+    ratio = getattr(cfg.generative_model, "ratio", 2.0)
     prior_type = generative_process.prior_sampler.type
     save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
-    
+        
     log.info(
         f"Sampling {no_of_samples} time(s) with:\n"
         f"  NFE = {nfe} "
         f"  guidance_scale = {guidance_scale}"
         f"  conditioned = {conditioned}"
         f"  prior_type = {prior_type}"
+        f"  N_samples/N_conformers ratio = {ratio}"
     )
 
+    # Fix initial seed for each batch (in case of gaussian prior, this would be
+    # the same prior for each batch).
     sample_seed = getattr(cfg, "sample_seed", None)
     if sample_seed is not None:
         log.info(f"Setting sample seed for every batch to {sample_seed}")
 
+    max_batch_size = getattr(cfg.dataset, "max_batch_size", 64)
+    
     metrics = {}
     atoms_generated = []
     for batch in tqdm(dataloader, desc=f"Evaluating {sampling_split} dataset"):
         batch = batch.to(device)
-        batch_atoms_generated, batch_metrics = generative_process.sample(
-            batch_pos=batch,
-            num_steps=nfe,
-            n_samples=no_of_samples,
-            save_folder=save_folder,
-            save_trajectory=getattr(cfg, "save_trajectory", False),
-            save_pca_plot=getattr(cfg, "save_pca_plot", False),
-            conditioned=conditioned,
-            guidance_scale=guidance_scale,
-            # Fix initial seed for each batch (in case of gaussian prior, this would be
-            # the same prior for each batch).
-            seed=sample_seed, 
-        )
-        atoms_generated.extend(batch_atoms_generated)
-        for k, v in batch_metrics.items():
-            if k not in metrics:
-                metrics[k] = []
-            metrics[k].append(v)
+        
+        # Define number of samples to generate for the batch. If provided only sample
+        # up to ratio * n_conformers for the batch.
+        no_of_samples_ = no_of_samples
+        if ratio is not None:
+            no_of_samples_ = min(no_of_samples, int(ratio * batch.num_conformers.max().item()))
+        
+        sample_seed_ = sample_seed
+        
+        # Sample in sub-batches if the number of samples to generate is larger than max_batch_size
+        for start in range(0, no_of_samples_, max_batch_size):
+            sub_batch_size = min(max_batch_size, no_of_samples_ - start)
+            
+            # In case we fix the seed for each batch, but sample in multiple sub-batches
+            # for the same graph, we need to update the seed for each sub-batch to avoid
+            # sampling the same conformers for each sub-batch (this is only true for a
+            # deterministic sampling process)
+            if sample_seed is not None:
+                sample_seed_ = sample_seed + start
+
+            # Sample conformers for the batch
+            batch_atoms_generated, batch_metrics = generative_process.sample(
+                batch_pos=batch,
+                num_steps=nfe,
+                n_samples=no_of_samples_,
+                save_folder=save_folder,
+                save_trajectory=getattr(cfg, "save_trajectory", False),
+                save_pca_plot=getattr(cfg, "save_pca_plot", False),
+                conditioned=conditioned,
+                guidance_scale=guidance_scale,
+                seed=sample_seed_,
+            )
+            atoms_generated.extend(batch_atoms_generated)
+            for k, v in batch_metrics.items():
+                if k not in metrics:
+                    metrics[k] = []
+                metrics[k].append(v)
+    
     for k, v in metrics.items():
         metrics[k] = torch.tensor(v)
         log.info(
@@ -179,7 +205,6 @@ def sample(cfg):
         )
 
     # Evaluate coverage and matching for the whole dataset
-    ratio = getattr(cfg.generative_model, "ratio", 2.0)
     log.info(
         f"Analysing coverage and matching (threshold: {threshold:.2f}, ratio: {ratio:.0f}):"
     )

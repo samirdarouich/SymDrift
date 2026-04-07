@@ -29,6 +29,9 @@ generative_model:
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.5
 
+  # Ratio between conformers and generated samples to use for evaluation (if null, all conformers will be used)
+  ratio: 2.0
+
 dataset:
   batch_size: 128
 
