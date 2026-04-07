@@ -137,6 +137,9 @@ def sample(cfg):
     ratio = getattr(cfg.generative_model, "ratio", 2.0)
     prior_type = generative_process.prior_sampler.type
     save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
+    
+    if os.path.exists(save_folder):
+        log.warning(f"Save folder {save_folder} already exists. Samples will be appended.")
         
     log.info(
         f"Sampling {no_of_samples} time(s) with:\n"
@@ -152,44 +155,37 @@ def sample(cfg):
     sample_seed = getattr(cfg, "sample_seed", None)
     if sample_seed is not None:
         log.info(f"Setting sample seed for every batch to {sample_seed}")
-
-    max_batch_size = getattr(cfg.dataset, "max_batch_size", 64)
     
     metrics = {}
     atoms_generated = []
-    for batch in tqdm(dataloader, desc=f"Evaluating {sampling_split} dataset"):
-        batch = batch.to(device)
-        
-        # Define number of samples to generate for the batch. If provided only sample
-        # up to ratio * n_conformers for the batch.
-        no_of_samples_ = no_of_samples
-        if ratio is not None:
-            no_of_samples_ = min(no_of_samples, int(ratio * batch.num_conformers.max().item()))
-        
-        sample_seed_ = sample_seed
-        
-        # Sample in sub-batches if the number of samples to generate is larger than max_batch_size
-        for start in range(0, no_of_samples_, max_batch_size):
-            sub_batch_size = min(max_batch_size, no_of_samples_ - start)
-            
-            # In case we fix the seed for each batch, but sample in multiple sub-batches
-            # for the same graph, we need to update the seed for each sub-batch to avoid
-            # sampling the same conformers for each sub-batch (this is only true for a
-            # deterministic sampling process)
-            if sample_seed is not None:
-                sample_seed_ = sample_seed + start
+    for sample_id in range(no_of_samples):        
+        for batch in tqdm(dataloader, desc=f"Evaluating {sampling_split} dataset (sample_id={sample_id+1}/{no_of_samples})"):
+            batch = batch.to(device)
 
+            # Avoid unnecessary sampling if we have already sampled enough conformers 
+            # for this batch based on the ratio and the number of conformers in the batch
+            num_conformers = batch.num_conformers.max().item()
+            if sample_id >= ratio * num_conformers:
+                log.debug(
+                    f"Already sampled {sample_id} samples, which is more than ratio*"
+                    f"{num_conformers} for this batch. Skipping sampling to save time."
+                )
+                continue
+            
             # Sample conformers for the batch
+            # In case we fix the seed for each batch, but sample in multiple times for
+            # the same graph, we need to change the seed each time to avoid sampling the
+            # same conformers (this is only true for a deterministic sampling process)
             batch_atoms_generated, batch_metrics = generative_process.sample(
                 batch_pos=batch,
                 num_steps=nfe,
-                n_samples=no_of_samples_,
+                n_samples=1,
                 save_folder=save_folder,
                 save_trajectory=getattr(cfg, "save_trajectory", False),
                 save_pca_plot=getattr(cfg, "save_pca_plot", False),
                 conditioned=conditioned,
                 guidance_scale=guidance_scale,
-                seed=sample_seed_,
+                seed=None if sample_seed is None else sample_seed + sample_id,
             )
             atoms_generated.extend(batch_atoms_generated)
             for k, v in batch_metrics.items():
@@ -216,7 +212,7 @@ def sample(cfg):
         worker_fn_type=getattr(
             cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h"
         ),
-        ratio=ratio,  # only keep at most 2*n_conformers predictions per reference
+        ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
     
@@ -261,7 +257,7 @@ def run_covmat_evaluation(
         thresholds=np.arange(0.05, 3.05, 0.05),
         num_workers=num_workers,
         worker_fn_type=worker_fn_type,
-        ratio=ratio,  # only keep at most 2*n_conformers predictions per reference
+        ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
     
