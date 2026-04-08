@@ -407,15 +407,9 @@ class DriftingMolecules(pl.LightningModule):
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
-            for i, atoms in enumerate(atoms_pred):
-                identifier_str = (
-                    str(atoms.info[self.identifier]).replace("/", "_").replace(" ", "_")
-                )
-                sample_folder = f"{save_folder}/{self.identifier}_{identifier_str}"
-                os.makedirs(sample_folder, exist_ok=True)
+            for atoms in atoms_pred:
                 atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
-                write(f"{sample_folder}/sample.xyz", atoms, append=True)
-                write(f"{save_folder}/sample_db.xyz", atoms, append=True)
+            write(f"{save_folder}/sample_db.xyz", atoms_pred, append=True)
 
             with open(f"{save_folder}/metrics.json", "w") as f:
                 json.dump({"step": self.global_step, **metrics}, f, indent=4)

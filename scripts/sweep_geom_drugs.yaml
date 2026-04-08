@@ -30,18 +30,19 @@ parameters:
 
 
 # 12154 hyperopt training samples bz 2 on one GPU
-# 12154 / 2 == 6077 steps/epoch --> one cycle 51 epochs: 309_927 steps
+# 2000 steps/epoch --> one cycle 21 epochs: 42_000 steps
 command:
   - ${env}
   - tspath_train
   - experiment=geom_drugs_o3_embedded_space
   - run.id="geom_drugs/o3_embedded_space/sweep_${uuid:1}"
-  - trainer.max_epochs=51
+  - trainer.max_epochs=21
   - trainer.devices=1
   - dataset.batch_size=2
   - dataset.split_identifier=geomol_cleaned_hyperopt
   - dataset.root=${oc.env:TMP_DIR}/geom_drugs
-  - model.scheduler.first_cycle_steps=309_927
+  - model.scheduler.first_cycle_steps=42_000
   - generative_model.sample_every_epoch=10
+  - trainer.limit_train_batches=2000
   - +trainer.limit_val_batches=100
   - ${args_no_hyphens}
