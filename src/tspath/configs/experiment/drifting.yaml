@@ -6,6 +6,7 @@ defaults:
   - /prior: harmonic
   - /drifting_field: embedding_space
   - /embedder: distance
+  - /callbacks: default
 
 seed: 42
 
@@ -79,27 +80,6 @@ trainer:
   max_epochs: 1000
   strategy: auto
   accelerator: auto
-
-callbacks:
-  lr_monitor:
-    _target_: pytorch_lightning.callbacks.LearningRateMonitor
-    logging_interval: epoch
-  
-  best_model_checkpoint:
-    _target_: pytorch_lightning.callbacks.ModelCheckpoint
-    dirpath: 'checkpoints/'
-    filename: "epoch_{epoch}-step_{step}"
-    monitor: val/loss
-    mode: min
-    every_n_epochs: 1
-    save_top_k: 3
-
-  last_model_checkpoint:
-    _target_: pytorch_lightning.callbacks.ModelCheckpoint
-    dirpath: "checkpoints/"
-    filename: "last"
-    save_top_k: 1
-    every_n_epochs: 1
 
 loggers:
   wandb_logger:
