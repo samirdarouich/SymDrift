@@ -42,5 +42,7 @@ command:
   - dataset.split_identifier=geomol_cleaned_hyperopt
   - model.scheduler.first_cycle_steps=66_200
   - generative_model.sample_every_epoch=10
+  - generative_model.num_workers=${oc.env:NUM_WORKERS}
+  - callbacks=no_checkpoint
   - +trainer.limit_val_batches=100
   - ${args_no_hyphens}

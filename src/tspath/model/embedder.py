@@ -274,11 +274,11 @@ class GaussianMomentEmbedder:
 
     def __repr__(self):
         return (
-            f"n_contr={self.n_contr}, "
+            f"GaussianMomentEmbedder(n_contr={self.n_contr}, "
             f"n_basis={self.n_radial}, "
             f"r_max={self.r_max}, "
             f"max_num_neighbors={self.max_num_neighbors}, "
-            f"aggregation={self.aggregation}"
+            f"aggregation={self.aggregation})"
         )
 
     def __call__(
@@ -421,9 +421,9 @@ class DistanceEmbedder:
 
     def __repr__(self):
         return (
-            f"invariant={self.invariant}, "
+            f"DistanceEmbedder(invariant={self.invariant}, "
             f"r_max={self.r_max}, "
-            f"max_num_neighbors={self.max_num_neighbors}"
+            f"max_num_neighbors={self.max_num_neighbors})"
         )
 
     def __call__(
@@ -474,7 +474,9 @@ class DistanceEmbedder:
             # mask out all symmetric entries (keep only one of (i,j) and (j,i))
             mask = row < col
             row, col = row[mask], col[mask]
-
+        else:
+            row, col = edge_index
+        
         # compute distances for the edges (assuming fully connected graph, reconstructs
         # the full distance matrix)
         dist = (positions[row] - positions[col]).norm(dim=-1)

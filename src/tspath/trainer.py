@@ -335,7 +335,7 @@ class DriftingMolecules(pl.LightningModule):
                 batch,
                 step="val",
                 save_folder=save_folder,
-                save_pca_plot=True,
+                save_pca_plot=batch_idx == 0, # only save PCA plot for the first batch
                 seed=42,
                 n_samples=max_num_conformers * 2,  # at least having 2*n_conformers
                 threshold=self.threshold,
