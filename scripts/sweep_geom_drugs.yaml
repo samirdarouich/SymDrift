@@ -44,7 +44,7 @@ command:
   - model.scheduler.first_cycle_steps=42_000
   - generative_model.sample_every_epoch=10
   - generative_model.num_workers=${oc.env:NUM_WORKERS}
-  - callbacks=no_checkpoint
+  - callbacks=sweep
   - trainer.limit_train_batches=2000
   - +trainer.limit_val_batches=100
   - ${args_no_hyphens}

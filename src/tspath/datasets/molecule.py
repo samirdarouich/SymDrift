@@ -109,7 +109,7 @@ class MoleculeDataset(InMemoryDataset):
         torch.save(self.collate(data_list), self.processed_paths[0])
 
     def get_ase_atoms(self, idx):
-        data = self.get(idx)
+        data = self[idx]
         atoms = inputs_to_atoms(data)
         return atoms
 
@@ -125,7 +125,7 @@ class ConformerShared:
     """Containing shared logic for both InMemory and Disk-based Conformer Datasets."""
 
     def get_ase_atoms(self, idx):
-        data = self.get(idx)
+        data = self[idx]
         # [num_conformers, num_atoms, 3]
         positions = data.pos.view(-1, len(data.x), 3)
         atoms_list = []

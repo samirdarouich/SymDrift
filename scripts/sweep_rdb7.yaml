@@ -40,5 +40,5 @@ command:
   - generative_model.num_workers=${oc.env:NUM_WORKERS}
   - dataset.batch_size=6
   - model.scheduler=null
-  - callbacks=no_checkpoint
+  - callbacks=sweep
   - ${args_no_hyphens}
