@@ -271,10 +271,10 @@ def run_covmat_evaluation(
         log.info(f"{k}: {v}")
 
     # Save results
+    log.info(f"Saving results to folder: {save_folder}")
     os.makedirs(save_folder, exist_ok=True)
     df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
     with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
         json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
     
-
     log.info("Analysis completed.")
