@@ -308,6 +308,7 @@ class DriftingMolecules(pl.LightningModule):
             and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
+            logger.info(f"Sampling at epoch {self.current_epoch} after training step...")
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
             max_num_conformers = max(batch.num_conformers.max().item(), 32)
@@ -328,6 +329,7 @@ class DriftingMolecules(pl.LightningModule):
             (self.current_epoch % self.sample_every_epoch == 0)
             and (self.current_epoch > 0)
         ):
+            logger.info(f"Sampling at epoch {self.current_epoch} after validation step...")
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
             max_num_conformers = max(batch.num_conformers.max().item(), 32)

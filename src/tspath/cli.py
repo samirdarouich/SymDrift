@@ -248,10 +248,13 @@ def run_covmat_evaluation(
     atoms_dataset = read(path_dataset, ":")
 
     log.info(
-        f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} reference conformers."
+        f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
+        "reference conformers."
     )
     log.info(
-        f"Analysing coverage and matching (threshold: {threshold:.2f}, ratio: {ratio:.0f}):"
+        f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+        f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
+        f"worker_fn_type: {worker_fn_type}):"
     )
     results = evaluate_covmat(
         atoms_generated,
