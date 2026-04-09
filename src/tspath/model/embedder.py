@@ -243,19 +243,23 @@ class GaussianMomentEmbedder:
         n_contr: int = 8,
         n_basis: int = 7,
         max_radius: float = 15.0,
+        max_num_neighbors: int = 500,
         aggregation: Optional[str] = "mean",
     ):
         """
         Initializes the GaussianMomentDescriptor with given radial function and number of contractions.
 
         Args:
-            n_radial (int, optional):
-              Number of radial basis functions to use. Defaults to 5. Only relevant if
-              use_atom_type_embeddings is True.
             n_contr (int, optional):
               Number of contractions to compute (up to 8). Defaults to 8.
+            n_basis (int, optional):
+              Number of radial basis functions to use. Defaults to 7. Only relevant if
+              use_atom_type_embeddings is True.
             max_radius (float, optional):
               Maximum radius for the radial basis functions. Defaults to 15.0.
+            max_num_neighbors (int, optional):
+              Maximum number of neighbors to consider for each atom when constructing
+              the graph. Defaults to 500.
             aggregation (str, optional):
                 Method for aggregating the moments (e.g., 'mean', 'add').
         """
@@ -263,9 +267,19 @@ class GaussianMomentEmbedder:
         self.radial_fn = GaussianBasis(n_basis=n_basis, r_max=max_radius)
         self.n_radial = n_basis
         self.r_max = max_radius
+        self.max_num_neighbors = max_num_neighbors
         self.triang_idxs_2d = tril_2d_indices(self.n_radial)
         self.triang_idxs_3d = tril_3d_indices(self.n_radial)
         self.aggregation = aggregation
+
+    def __repr__(self):
+        return (
+            f"n_contr={self.n_contr}, "
+            f"n_basis={self.n_radial}, "
+            f"r_max={self.r_max}, "
+            f"max_num_neighbors={self.max_num_neighbors}, "
+            f"aggregation={self.aggregation}"
+        )
 
     def __call__(
         self,
@@ -299,7 +313,12 @@ class GaussianMomentEmbedder:
                 positions.shape[0], dtype=torch.long, device=positions.device
             )
         if edge_index is None:
-            edge_index = radius_graph(positions, r=self.r_max, batch=batch)
+            edge_index = radius_graph(
+                positions,
+                r=self.r_max,
+                batch=batch,
+                max_num_neighbors=self.max_num_neighbors,
+            )
 
         jj, ii = edge_index[0], edge_index[1]
         rij = positions[jj] - positions[ii]
@@ -391,11 +410,21 @@ class GaussianMomentEmbedder:
 
 
 class DistanceEmbedder:
-    def __init__(self, r_max: Optional[float] = None, invariant=True):
+    def __init__(
+        self, r_max: Optional[float] = None, invariant=True, max_num_neighbors=500
+    ):
         self.invariant = invariant
         if r_max is None:
             r_max = float("inf")
         self.r_max = r_max
+        self.max_num_neighbors = max_num_neighbors
+
+    def __repr__(self):
+        return (
+            f"invariant={self.invariant}, "
+            f"r_max={self.r_max}, "
+            f"max_num_neighbors={self.max_num_neighbors}"
+        )
 
     def __call__(
         self,
@@ -436,7 +465,12 @@ class DistanceEmbedder:
                 positions.shape[0], dtype=torch.long, device=positions.device
             )
         if edge_index is None:
-            row, col = radius_graph(positions, r=self.r_max, batch=batch)
+            row, col = radius_graph(
+                positions,
+                r=self.r_max,
+                batch=batch,
+                max_num_neighbors=self.max_num_neighbors,
+            )
             # mask out all symmetric entries (keep only one of (i,j) and (j,i))
             mask = row < col
             row, col = row[mask], col[mask]
