@@ -37,7 +37,6 @@ command:
   - prior=gaussian
   - trainer.max_epochs=51
   - generative_model.sample_every_epoch=10
-  - generative_model.num_workers=${oc.env:NUM_WORKERS}
   - dataset.batch_size=6
   - model.scheduler=null
   - callbacks=sweep
