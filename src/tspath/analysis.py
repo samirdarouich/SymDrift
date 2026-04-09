@@ -809,21 +809,22 @@ def evaluate_covmat(
                 jobs.append((smiles, i, j, refs_i, preds_j, False))
 
     if num_workers > 1:
-        p = Pool(num_workers)
-        map_fn = partial(p.imap_unordered, chunksize=64)
-        p.__enter__()
+        with Pool(num_workers) as p:
+            map_fn = partial(p.imap_unordered, chunksize=64)
+
+            for res in tqdm(
+                map_fn(WORKER_FN_DICT[worker_fn_type], jobs),
+                total=len(jobs),
+                desc="Computing RMSD matrix",
+            ):
+                populate_results(res)
     else:
-        map_fn = map
-
-    for res in tqdm(
-        map_fn(WORKER_FN_DICT[worker_fn_type], jobs),
-        total=len(jobs),
-        desc="Computing RMSD matrix",
-    ):
-        populate_results(res)
-
-    if num_workers > 1:
-        p.__exit__(None, None, None)
+        for res in tqdm(
+            map(WORKER_FN_DICT[worker_fn_type], jobs),
+            total=len(jobs),
+            desc="Computing RMSD matrix",
+        ):
+            populate_results(res)
 
     coverage_recall, coverage_precision = [], []
     amr_recall, amr_precision = [], []

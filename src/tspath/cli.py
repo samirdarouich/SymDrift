@@ -135,6 +135,8 @@ def sample(cfg):
     no_of_samples = getattr(cfg.generative_model, "no_of_samples", 1)
     threshold = getattr(cfg.generative_model, "threshold", 0.5)
     ratio = getattr(cfg.generative_model, "ratio", 2.0)
+    num_workers = getattr(cfg.generative_model, "num_workers", 8)
+    worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
     prior_type = generative_process.prior_sampler.type
     save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
     
@@ -202,16 +204,16 @@ def sample(cfg):
 
     # Evaluate coverage and matching for the whole dataset
     log.info(
-        f"Analysing coverage and matching (threshold: {threshold:.2f}, ratio: {ratio:.0f}):"
+        f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+        f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
+        f"worker_fn_type: {worker_fn_type}):"
     )
     results = evaluate_covmat(
         atoms_generated,
         atoms_dataset,
         thresholds=np.arange(0.05, 3.05, 0.05),
-        num_workers=getattr(cfg.generative_model, "num_workers", 8),
-        worker_fn_type=getattr(
-            cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h"
-        ),
+        num_workers=num_workers,
+        worker_fn_type=worker_fn_type,
         ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)

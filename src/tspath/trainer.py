@@ -44,6 +44,7 @@ class DriftingMolecules(pl.LightningModule):
         save_folder: Optional[str] = "samples",
         threshold: Optional[float] = 0.5,
         worker_fn_type: str = "rmsd_rdkit_wo_h",
+        num_workers: int = 8,
         grad_norm_max_val: float = 100.0,
         **kwargs,
     ):
@@ -93,6 +94,7 @@ class DriftingMolecules(pl.LightningModule):
         self.save_folder = save_folder
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
+        self.num_workers = num_workers
         self.grad_norm_max_val = grad_norm_max_val
 
         # gradient clipping queue
@@ -390,7 +392,7 @@ class DriftingMolecules(pl.LightningModule):
                 atoms_pred,
                 atoms_positive,
                 thresholds=np.arange(0.05, 3.05, 0.05),
-                num_workers=0,
+                num_workers=self.num_workers,
                 worker_fn_type=self.worker_fn_type,
                 ratio=2.0,  # only keep at most 2*n_conformers predictions per reference
                 identifier=self.identifier,
