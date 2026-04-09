@@ -9,22 +9,27 @@ run:
   experiment: geom_drugs
 
 # Taken from ETFLOW SI A.4
-# ETFLOW train wiht 8 GPUS and bz 64 for 250 epochs
-# DRUGS train size: 243473 samples / (8*64) = 476 steps/epoch 
-# leading to 119_000 steps after 250 epochs
-# they dont reduce.
+# ETFLOW train with 8 GPUS and bz 64 for 250 epochs with 5000 batches per epoch
+# ETFLOW defined 1 batch as 1 conformer. Meaning they trained with 8*64*5000 = 2_560_000 conformers per epoch.
+# If we train with maximum 30 conformers per graph and have in mean ~24 conformers per graph, we need to train
+# with 108_624 graphs per epoch to have the same number of conformers per epoch as ETFLOW
+# Assuming a bz of 64 on 8 GPUS, we need 108_624 / (8*64) = 213 batches per epoch.
+# With 250 epochs, this leads to 53_250 steps for one cycle.
 model:
   optimizer:
     lr: 1.0e-3
     weight_decay: 1e-10
 
   scheduler:
-    first_cycle_steps: 119_000 
+    first_cycle_steps: 53_250
     max_lr: 1.0e-3
     min_lr: 1.0e-7
 
 generative_model:
   sample_every_epoch: 100
+
+  # Number of negative samples to use per positive sample
+  n_neg_per_pos: 16
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.75
@@ -38,4 +43,4 @@ dataset:
 trainer:
   max_epochs: 250
   devices: 8
-  limit_train_batches: 5000 # should not be important as only 476 batches per epoch
+  limit_train_batches: 213

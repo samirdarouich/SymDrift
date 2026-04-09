@@ -14,10 +14,9 @@ model:
     lr: 8.0e-4
     weight_decay: 0.0
 
-  # ETFLOW train wiht 4 GPUS and bz 128 for 200 epochs 
-  # QM9 train size: 105902 samples / (4*128) = 207 steps/epoch 
-  # leading to 41_400 steps after 200 epochs
-  # they reduce after 100 epochs --> 20_200 steps
+  # ETFLOW train wiht 4 GPUS and bz 128 for 200 epochs and defined 1 batch as 1 conformer.
+  # QM9 train size: 105902 graphs / (4*128) = 207 steps/epoch leading to 41_400 steps 
+  # after 200 epochs. One cycle is defined with 100 epochs --> 20_200 steps
   scheduler:
     first_cycle_steps: 20_200 
     max_lr: 8.0e-4
