@@ -67,7 +67,7 @@ class ReactionDataset(InMemoryDataset):
             conformer_pos = positions[conformer_id]
             data_conformer = data.clone()
             data_conformer.pos = conformer_pos
-            atoms = inputs_to_atoms(data_conformer, info_keys=["rxn"])
+            atoms = inputs_to_atoms(data_conformer, info_keys=["rxn", "smiles"])
             atoms.info["conformer_id"] = conformer_id
             atoms_list.append(atoms)
         return atoms_list
