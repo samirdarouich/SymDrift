@@ -13,7 +13,7 @@ from tspath.datasets.transforms import (
     TargetReaction,
 )
 from tspath.datasets.utils import ConformerData
-from tspath.utils import RankedLogger
+from tspath.utils import RankedLogger, inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -58,6 +58,27 @@ class ReactionDataset(InMemoryDataset):
     def processed_file_names(self):
         return [f"{self.source}.pt"]
 
+    def get_ase_atoms(self, idx, pos_key="pos_ts"):
+        data = self[idx]
+        # [num_conformers, num_atoms, 3]
+        positions = getattr(data, pos_key).view(-1, len(data.x), 3)
+        atoms_list = []
+        for conformer_id in range(positions.shape[0]):
+            conformer_pos = positions[conformer_id]
+            data_conformer = data.clone()
+            data_conformer.pos = conformer_pos
+            atoms = inputs_to_atoms(data_conformer, info_keys=["rxn"])
+            atoms.info["conformer_id"] = conformer_id
+            atoms_list.append(atoms)
+        return atoms_list
+
+    def get_dataset_as_atoms(self, pos_key="pos_ts"):
+        atoms_list = []
+        for idx in range(len(self)):
+            atoms = self.get_ase_atoms(idx, pos_key=pos_key)
+            atoms_list.extend(atoms)
+        return atoms_list
+    
     def process(self):
         data_path = osp.join(self.raw_dir, self.raw_file_names[0])
         molecules = read(data_path, index=":")
