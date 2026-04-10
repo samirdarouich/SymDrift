@@ -6,7 +6,16 @@ root: ${run.work_dir}/data/${dataset.name}
 identifier: smiles
 split_identifier: geomol_cleaned
 
+# Batch size defines the number of graphs from the dataset (can be seen as postive class)
+# where each graph has n_conformers, which can be seen as positive samples.
 batch_size: 2
+
+# In the case of testing, we loop with 'test_batch_size' through the test set
+# and generate 'x' samples per graph, where we subdivide the 'x' samples using
+# 'batch_size' to avoid memory issues. 
+test_batch_size: 1
+
+# Dataloader parameters
 num_workers: 0
 persistent_workers: false
 pin_memory: false
@@ -38,6 +47,7 @@ datamodule:
   val_transform: ${dataset.val_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
+  test_batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
@@ -53,7 +63,7 @@ test_dataloader:
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}
-  batch_size: ${dataset.batch_size}
+  batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}

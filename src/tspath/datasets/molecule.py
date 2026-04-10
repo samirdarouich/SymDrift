@@ -59,7 +59,7 @@ class MoleculeDataset(InMemoryDataset):
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         logger.info(
-            f"Loaded dataset from {self.processed_paths[0]} with {self.len()} samples."
+            f"Loaded dataset from <{self.processed_paths[0]}> with {self.len()} samples."
         )
 
         self.comp_to_indices = defaultdict(list)
@@ -317,7 +317,7 @@ class ConformerDatasetInMemory(ConformerShared, InMemoryDataset):
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         logger.info(
-            f"Loaded dataset from {self.processed_paths[0]} with {len(self)} samples."
+            f"Loaded dataset from <{self.processed_paths[0]}> with {len(self)} samples."
         )
         self._cache_indices()
 
@@ -398,7 +398,7 @@ class ConformerDatasetDisk(ConformerShared, Dataset):
             self.shard_files = self.meta_dict["shard_files"]
             self._cache_indices()
             logger.info(
-                f"Loaded dataset from {self.processed_dir} with {len(self)} samples."
+                f"Loaded dataset from <{self.processed_dir}> with {len(self)} samples."
             )
         else:
             raise FileNotFoundError(

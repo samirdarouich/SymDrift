@@ -148,6 +148,8 @@ def sample(cfg):
     ratio = getattr(cfg.generative_model, "ratio", 2.0)
     num_workers = getattr(cfg.generative_model, "num_workers", 8)
     worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
+    save_trajectory = getattr(cfg, "save_trajectory", False)
+    save_pca_plot = getattr(cfg, "save_pca_plot", False)
     prior_type = generative_process.prior_sampler.type
     save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
     
@@ -171,40 +173,36 @@ def sample(cfg):
     
     metrics = {}
     atoms_generated = []
-    for sample_id in range(no_of_samples):        
-        for batch in tqdm(dataloader, desc=f"Evaluating dataset (sample_id={sample_id+1}/{no_of_samples})"):
-            batch = batch.to(device)
+    for batch in tqdm(dataloader, desc="Evaluating dataset"):
+        batch = batch.to(device)
 
-            # Avoid unnecessary sampling if we have already sampled enough conformers 
-            # for this batch based on the ratio and the number of conformers in the batch
-            num_conformers = batch.num_conformers.max().item()
-            if sample_id >= ratio * num_conformers:
-                log.debug(
-                    f"Already sampled {sample_id} samples, which is more than ratio*"
-                    f"{num_conformers} for this batch. Skipping sampling to save time."
-                )
-                continue
-            
-            # Sample conformers for the batch
-            # In case we fix the seed for each batch, but sample in multiple times for
-            # the same graph, we need to change the seed each time to avoid sampling the
-            # same conformers (this is only true for a deterministic sampling process)
+        # In case batch size is bigger than one, it might be that some graphs are 
+        # oversampled in the evaluation this is corrected by only keeping at most 
+        # ratio*n_conformers samples per reference graph
+        num_conformers = batch.num_conformers.max().item()
+        total_samples = int(ratio * num_conformers)
+        
+        for start in tqdm(
+            range(0, total_samples, cfg.dataset.batch_size), 
+            desc=f"Sampling {total_samples} conformers for batch",
+        ):
+            cur_n = min(cfg.dataset.batch_size, total_samples - start)
             batch_atoms_generated, batch_metrics = generative_process.sample(
                 batch_pos=batch,
                 num_steps=nfe,
-                n_samples=1,
+                n_samples=cur_n,
                 save_folder=save_folder,
-                save_trajectory=getattr(cfg, "save_trajectory", False),
-                save_pca_plot=getattr(cfg, "save_pca_plot", False),
+                save_trajectory=save_trajectory,
+                save_pca_plot=save_pca_plot,
                 conditioned=conditioned,
                 guidance_scale=guidance_scale,
-                seed=None if sample_seed is None else sample_seed + sample_id,
+                seed=None if sample_seed is None else sample_seed + start,
             )
+
             atoms_generated.extend(batch_atoms_generated)
+
             for k, v in batch_metrics.items():
-                if k not in metrics:
-                    metrics[k] = []
-                metrics[k].append(v)
+                metrics.setdefault(k, []).extend(v if isinstance(v, list) else [v])
     
     for k, v in metrics.items():
         metrics[k] = torch.tensor(v)

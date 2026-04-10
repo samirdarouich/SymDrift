@@ -41,7 +41,7 @@ class ReactionDataset(InMemoryDataset):
         self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
         self._cache_indices()  # Cache rxn identifiers for quick access
         logger.info(
-            f"Loaded dataset from {self.processed_paths[0]} with {self.len()} samples."
+            f"Loaded dataset from <{self.processed_paths[0]}> with {self.len()} samples."
         )
 
     def _cache_indices(self):
