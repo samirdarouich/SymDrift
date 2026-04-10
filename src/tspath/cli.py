@@ -119,11 +119,17 @@ def sample(cfg):
     torch.set_float32_matmul_precision("medium")
 
     ########## Datamodule (includes datasets and loaders) ##########
-    datamodule = instantiate(cfg.dataset.datamodule)
-    sampling_split = getattr(cfg.dataset, "sampling_split", "test")
-    datamodule.setup(stage=sampling_split)
-    dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
-    atoms_dataset = getattr(datamodule, f"{sampling_split}_dataset").get_dataset_as_atoms()
+    if hasattr(cfg.dataset, "test_dataloader"):
+        log.info("Using seperate test dataset for sampling.")
+        dataloader = instantiate(cfg.dataset.test_dataloader)
+        atoms_dataset = dataloader.dataset.get_dataset_as_atoms()
+    else:
+        log.info("Using datamodule to load dataset for sampling.")
+        datamodule = instantiate(cfg.dataset.datamodule)
+        sampling_split = getattr(cfg.dataset, "sampling_split", "test")
+        datamodule.setup(stage=sampling_split)
+        dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
+        atoms_dataset = getattr(datamodule, f"{sampling_split}_dataset").get_dataset_as_atoms()
 
     generative_process = instantiate(cfg.generative_model)
     log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.pretrained))
@@ -166,7 +172,7 @@ def sample(cfg):
     metrics = {}
     atoms_generated = []
     for sample_id in range(no_of_samples):        
-        for batch in tqdm(dataloader, desc=f"Evaluating {sampling_split} dataset (sample_id={sample_id+1}/{no_of_samples})"):
+        for batch in tqdm(dataloader, desc=f"Evaluating dataset (sample_id={sample_id+1}/{no_of_samples})"):
             batch = batch.to(device)
 
             # Avoid unnecessary sampling if we have already sampled enough conformers 

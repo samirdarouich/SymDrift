@@ -1,6 +1,11 @@
-from .molecule import MoleculeDataset, ConformerDatasetDisk, ConformerDatasetInMemory
 from .datamodule import DataModule
+from .molecule import (
+    ConformerDatasetDisk,
+    ConformerDatasetInMemory,
+    ConformerDatasetTest,
+    MoleculeDataset,
+)
 from .reaction import ReactionDataset
 from .sampler import CompositionBatchSampler
 from .toy import ToyDataset, ToyMoleculeDataset
-from .transforms import RandomRotate, RandomPermute, BoltzmannWeightingConformers
+from .transforms import BoltzmannWeightingConformers, RandomPermute, RandomRotate

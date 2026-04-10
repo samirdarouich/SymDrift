@@ -12,9 +12,6 @@ persistent_workers: false
 pin_memory: false
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
-# split used during sampling (can be train/val/test)
-sampling_split: test
-
 # Define transforms to apply when loading data
 train_transform:
   _target_: torch_geometric.transforms.Compose
@@ -28,9 +25,7 @@ val_transform:
     - _target_: tspath.datasets.BoltzmannWeightingConformers
       keep_top_n: 30
 
-test_transform: null
-
-# Define datamodule
+# Define datamodule for training
 datamodule:
   _target_: tspath.datasets.DataModule
   dataset:
@@ -41,13 +36,27 @@ datamodule:
   split_identifier: ${dataset.split_identifier}
   train_transform: ${dataset.train_transform}
   val_transform: ${dataset.val_transform}
-  test_transform: ${dataset.test_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
-  test_batch_size: ${dataset.batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
   follow_batch: ${dataset.follow_batch}
   shuffle_train: true
   drop_last_train: false
+
+# Define seperate test loader
+test_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  dataset: 
+    _target_: tspath.datasets.ConformerDatasetTest
+    root: ${dataset.root}
+    source: ${dataset.name}
+    identifier: ${dataset.identifier}
+  batch_size: ${dataset.batch_size}
+  num_workers: ${dataset.num_workers}
+  pin_memory: ${dataset.pin_memory}
+  persistent_workers: ${dataset.persistent_workers}
+  follow_batch: ${dataset.follow_batch}
+  shuffle: false
+  drop_last: false

@@ -28,7 +28,7 @@ from tspath.utils import RankedLogger, inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
-__all__ = ["MoleculeDataset", "ConformerDatasetInMemory", "ConformerDatasetDisk"]
+__all__ = ["MoleculeDataset", "ConformerDatasetInMemory", "ConformerDatasetTest", "ConformerDatasetDisk"]
 
 
 class MoleculeDataset(InMemoryDataset):
@@ -233,12 +233,73 @@ class ConformerShared:
             ),  # [num_conformers*num_atoms]
             num_atoms=torch.tensor(num_atoms, dtype=torch.long),
             edge_case_conformers=edge_case_conformers,
-            num_conformers=num_conformers,
+            num_conformers=torch.tensor(num_conformers, dtype=torch.long),
             smiles=smiles,
             formula=formula,
         )
 
         return data
+
+    def process_test_mol(self, mols: list[dm.Mol]):
+        """Process a single test molecule into a relevant PyG data object."""
+        try:
+            mol = mols[0]
+            smiles = dm.to_smiles(
+                mol,
+                canonical=False,
+                explicit_hs=True,
+                with_atom_indices=True,
+                isomeric=True,
+            )
+
+            atomic_numbers = torch.tensor(
+                [atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=torch.long
+            )
+            atomic_charges = torch.tensor(
+                [atom.GetFormalCharge() for atom in mol.GetAtoms()], dtype=torch.long
+            )
+
+            # Check that we can convert back to mol from the smiles (sanity check)
+            mol_reverse = dm.to_mol(smiles, remove_hs=False, ordered=True)
+            if mol_reverse is None:
+                logger.warning(
+                    f"Could not convert SMILES back to mol for {smiles}. Skipping."
+                )
+                return None
+
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+
+            # Collect conformer positions and energies
+            positions = []
+            for mol in mols:
+                pos = torch.from_numpy(mol.GetConformer().GetPositions()).float()
+                positions.append(pos)
+
+            # Stack conformer data
+            positions = torch.stack(positions)  # [num_conformers, num_atoms, 3]
+
+            num_conformers = positions.shape[0]
+            num_atoms = positions.shape[1]
+            data = ConformerData(
+                x=atomic_numbers,  # [num_atoms]
+                x_conf=atomic_numbers.repeat(
+                    num_conformers
+                ),  # [num_conformers*num_atoms]
+                charges=atomic_charges,  # [num_atoms]
+                pos=positions.view(-1, 3),  # [num_conformers*num_atoms, 3]
+                conformer_index=torch.arange(num_conformers).repeat_interleave(
+                    num_atoms
+                ),  # [num_conformers*num_atoms]
+                num_atoms=torch.tensor(num_atoms, dtype=torch.long),
+                num_conformers=torch.tensor(num_conformers, dtype=torch.long),
+                smiles=smiles,
+                formula=formula,
+            )
+
+            return data
+        except Exception as e:
+            logger.warning(f"Skipping: {smiles} due to {e}")
+            return None
 
 
 class ConformerDatasetInMemory(ConformerShared, InMemoryDataset):
@@ -280,6 +341,30 @@ class ConformerDatasetInMemory(ConformerShared, InMemoryDataset):
             data = self.process_mol(pkl_path)
             if data is not None:
                 data.file_identifier = os.path.basename(pkl_path).split(".pickle")[0]
+                if self.pre_transform is not None:
+                    data = self.pre_transform(data)
+                data_list.append(data)
+        torch.save(self.collate(data_list), self.processed_paths[0])
+
+
+class ConformerDatasetTest(ConformerDatasetInMemory):
+    @property
+    def raw_file_names(self):
+        return [osp.join(self.raw_dir, "test_mols.pkl")]
+
+    @property
+    def processed_file_names(self):
+        return [f"{self.source}_test.pt"]
+
+    def process(self):
+        data_list = []
+        test_mols = load_pkl(self.raw_paths[0])
+        for test_mol_id, test_mol in tqdm(
+            test_mols.items(), desc="Processing test conformers"
+        ):
+            data = self.process_test_mol(test_mol)
+            if data is not None:
+                data.file_identifier = test_mol_id
                 if self.pre_transform is not None:
                     data = self.pre_transform(data)
                 data_list.append(data)

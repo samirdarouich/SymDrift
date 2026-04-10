@@ -12,9 +12,6 @@ persistent_workers: false
 pin_memory: false
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
-# split used during sampling (can be train/val/test)
-sampling_split: test
-
 # Define transforms to apply when loading data
 train_transform: null
 
@@ -43,3 +40,6 @@ datamodule:
   follow_batch: ${dataset.follow_batch}
   shuffle_train: true
   drop_last_train: false
+
+# split used during sampling (can be train/val/test)
+sampling_split: test
