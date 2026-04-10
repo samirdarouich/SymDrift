@@ -143,9 +143,10 @@ def sample(cfg):
     nfe = getattr(cfg.generative_model, "n_sample_steps", 1)
     guidance_scale = getattr(cfg.generative_model, "guidance_scale", 0.0)
     conditioned = getattr(cfg.generative_model, "conditioned", True)
-    no_of_samples = getattr(cfg.generative_model, "no_of_samples", 1)
-    threshold = getattr(cfg.generative_model, "threshold", 0.5)
+    n_samples = getattr(cfg.generative_model, "n_samples", 1)
+    threshold = getattr(cfg.generative_model, "threshold", None)
     ratio = getattr(cfg.generative_model, "ratio", 2.0)
+    identifier = getattr(cfg.generative_model, "identifier", "smiles")
     num_workers = getattr(cfg.generative_model, "num_workers", 8)
     worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
     save_trajectory = getattr(cfg, "save_trajectory", False)
@@ -157,7 +158,7 @@ def sample(cfg):
         log.warning(f"Save folder {save_folder} already exists. Samples will be appended.")
         
     log.info(
-        f"Sampling {no_of_samples} time(s) with:\n"
+        f"Sampling at least {n_samples} time(s) with:\n"
         f"  NFE = {nfe} "
         f"  guidance_scale = {guidance_scale}"
         f"  conditioned = {conditioned}"
@@ -178,9 +179,13 @@ def sample(cfg):
 
         # In case batch size is bigger than one, it might be that some graphs are 
         # oversampled in the evaluation this is corrected by only keeping at most 
-        # ratio*n_conformers samples per reference graph
+        # ratio*n_conformers samples per reference graph. But sample at least
+        # n_samples times.
         num_conformers = batch.num_conformers.max().item()
-        total_samples = int(ratio * num_conformers)
+        if ratio is not None:
+            total_samples = max(int(ratio * num_conformers), n_samples)
+        else:
+            total_samples = n_samples
         
         for start in tqdm(
             range(0, total_samples, cfg.dataset.batch_size), 
@@ -211,29 +216,31 @@ def sample(cfg):
             f"median: {metrics[k].median().item():.4f}"
         )
 
-    # Evaluate coverage and matching for the whole dataset
-    log.info(
-        f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-        f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
-        f"worker_fn_type: {worker_fn_type}):"
-    )
-    results = evaluate_covmat(
-        atoms_generated,
-        atoms_dataset,
-        thresholds=np.arange(0.05, 3.05, 0.05),
-        num_workers=num_workers,
-        worker_fn_type=worker_fn_type,
-        ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
-    )
-    df, metrics_cov = print_covmat_results(results, threshold=threshold)
-    
-    # Log results
-    for k, v in metrics_cov.items():
-        log.info(f"{k}: {v}")
+    # Evaluate coverage and matching for the whole dataset if specified
+    if threshold is not None:
+        log.info(
+            f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+            f"num_workers: {num_workers}, worker_fn_type: {worker_fn_type}, "
+            f"ratio: {ratio}):"
+        )
+        results = evaluate_covmat(
+            atoms_generated,
+            atoms_dataset,
+            thresholds=np.arange(0.05, 3.05, 0.05),
+            num_workers=num_workers,
+            worker_fn_type=worker_fn_type,
+            ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
+            identifier=identifier,
+        )
+        df, metrics_cov = print_covmat_results(results, threshold=threshold)
         
-    df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
-    with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
-        json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
+        # Log results
+        for k, v in metrics_cov.items():
+            log.info(f"{k}: {v}")
+            
+        df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
+        with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
+            json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
     log.info("Inference completed.")
 
 
@@ -245,6 +252,7 @@ def run_covmat_evaluation(
     threshold: float = 0.5,
     ratio: float = 2.0,
     save_folder: str = "covmat_evaluation_results",
+    identifier: str = "smiles"
 ):
     from ase.io import read
 
@@ -272,6 +280,7 @@ def run_covmat_evaluation(
         num_workers=num_workers,
         worker_fn_type=worker_fn_type,
         ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
+        identifier=identifier,
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
     

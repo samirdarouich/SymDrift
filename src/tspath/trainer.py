@@ -42,7 +42,8 @@ class DriftingMolecules(pl.LightningModule):
         sample_every_epoch: int = 50,
         identifier: str = "smiles",
         save_folder: Optional[str] = "samples",
-        max_num_conformers: int = 32,
+        n_samples: int = 32,
+        ratio: int = 2,
         threshold: Optional[float] = 0.5,
         worker_fn_type: str = "rmsd_rdkit_wo_h",
         num_workers: int = 8,
@@ -73,9 +74,10 @@ class DriftingMolecules(pl.LightningModule):
                 (e.g., "smiles", "reaction_id", etc.)
             save_folder: str
                 The folder where to save generated samples and visualizations.
-            max_num_conformers: int
-                The maximum number of conformers for sampling. This number times two will
-                be sampled per graph during training/validation.
+            n_samples: int
+                Number of samples during evaluation in training/validation.
+            ratio: int
+                Only use n_conformers*ratio generated samples for evaluate coverage and matching.
             threshold: float
                 The RMSD threshold to use for evaluating coverage and matching during sampling.
             worker_fn_type: str
@@ -96,7 +98,8 @@ class DriftingMolecules(pl.LightningModule):
         self.sample_every_epoch = sample_every_epoch
         self.identifier = identifier
         self.save_folder = save_folder
-        self.max_num_conformers = max_num_conformers
+        self.n_samples = n_samples
+        self.ratio = ratio
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
         self.num_workers = num_workers
@@ -318,17 +321,13 @@ class DriftingMolecules(pl.LightningModule):
             )
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
-            # Either sample n_conformers or fixed maximum number
-            max_num_conformers = max(
-                batch.num_conformers.max().item(), self.max_num_conformers
-            )
             self.sample(
                 batch,
+                n_samples=self.n_samples,
                 step="train",
                 save_folder=save_folder,
                 save_pca_plot=True,
                 seed=42,
-                n_samples=max_num_conformers,
                 threshold=self.threshold,
             )
         return loss
@@ -343,17 +342,13 @@ class DriftingMolecules(pl.LightningModule):
             )
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
-            # Either sample n_conformers or fixed maximum number
-            max_num_conformers = max(
-                batch.num_conformers.max().item(), self.max_num_conformers
-            )
             self.sample(
                 batch,
+                n_samples=self.n_samples,
                 step="val",
                 save_folder=save_folder,
                 save_pca_plot=batch_idx == 0,  # only save PCA plot for the first batch
                 seed=42,
-                n_samples=max_num_conformers,
                 threshold=self.threshold,
             )
         return loss
@@ -362,9 +357,9 @@ class DriftingMolecules(pl.LightningModule):
     def sample(
         self,
         batch_pos,
+        n_samples,
         save_folder=None,
         step=None,
-        n_samples=None,
         save_pca_plot=False,
         seed=None,
         threshold=None,
@@ -381,7 +376,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # Sample prior noise
         batch_sampling = self.sample_negative_batch(
-            batch_pos, n_neg_per_pos=n_samples or self.n_neg_per_pos
+            batch_pos, n_neg_per_pos=n_samples
         )
 
         # generate samples
@@ -410,7 +405,7 @@ class DriftingMolecules(pl.LightningModule):
                 thresholds=np.arange(0.05, 3.05, 0.05),
                 num_workers=self.num_workers,
                 worker_fn_type=self.worker_fn_type,
-                ratio=2.0,  # only keep at most 2*n_conformers predictions per reference
+                ratio=self.ratio,
                 identifier=self.identifier,
             )
             df, metrics_cov = print_covmat_results(results, threshold=threshold)
