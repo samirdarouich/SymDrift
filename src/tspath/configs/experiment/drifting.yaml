@@ -55,6 +55,9 @@ generative_model:
   # Folder to save generated samples during training (if none, samples will not be saved)
   save_folder: generated_samples
 
+  # Maximum number of conformers to sample per graph during training/validation (if null, will be determined by the batch)
+  max_num_conformers: 32
+  
   # RMSD threshold to compute coverage and machting metrics
   threshold: null
 

@@ -12,7 +12,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from tspath.analysis import evaluate_covmat, print_covmat_results
-from tspath.utils import print_config, RankedLogger
+from tspath.utils import print_config, RankedLogger, log_hyperparameters
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
 OmegaConf.register_new_resolver("replace", lambda s, old, new: s.replace(old, new))
@@ -83,6 +83,11 @@ def train(cfg):
         default_root_dir=os.path.join(cfg.run.id),
         **cfg.trainer,
     )
+    
+    log.info("Logging hyperparameters...")
+    log_hyperparameters(cfg, generative_trainer)
+    
+    log.info("Starting training...")
     generative_trainer.fit(
         model=generative_process,
         datamodule=datamodule,

@@ -42,6 +42,7 @@ class DriftingMolecules(pl.LightningModule):
         sample_every_epoch: int = 50,
         identifier: str = "smiles",
         save_folder: Optional[str] = "samples",
+        max_num_conformers: int = 32,
         threshold: Optional[float] = 0.5,
         worker_fn_type: str = "rmsd_rdkit_wo_h",
         num_workers: int = 8,
@@ -72,6 +73,9 @@ class DriftingMolecules(pl.LightningModule):
                 (e.g., "smiles", "reaction_id", etc.)
             save_folder: str
                 The folder where to save generated samples and visualizations.
+            max_num_conformers: int
+                The maximum number of conformers for sampling. This number times two will
+                be sampled per graph during training/validation.
             threshold: float
                 The RMSD threshold to use for evaluating coverage and matching during sampling.
             worker_fn_type: str
@@ -92,6 +96,7 @@ class DriftingMolecules(pl.LightningModule):
         self.sample_every_epoch = sample_every_epoch
         self.identifier = identifier
         self.save_folder = save_folder
+        self.max_num_conformers = max_num_conformers
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
         self.num_workers = num_workers
@@ -285,7 +290,7 @@ class DriftingMolecules(pl.LightningModule):
 
         if x.isnan().any():
             raise ValueError(
-                f"NaN values in model output at {self.current_epoch}, step {step}"
+                f"NaN values in model output at epoch {self.current_epoch} and step {step}"
             )
 
         # Compute the drift seperately per class
@@ -301,45 +306,54 @@ class DriftingMolecules(pl.LightningModule):
 
         if loss.isnan():
             raise ValueError(
-                f"NaN loss encountered at {self.current_epoch}, batch {batch_idx}"
+                f"NaN loss encountered at epoch {self.current_epoch} and batch {batch_idx}"
             )
         if (
             (self.current_epoch % self.sample_every_epoch == 0)
             and (batch_idx == 0)
             and (self.current_epoch > 0)
         ):
-            logger.info(f"Sampling at epoch {self.current_epoch} after training step...")
+            logger.info(
+                f"Sampling at epoch {self.current_epoch} after training step..."
+            )
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/train"
-            max_num_conformers = max(batch.num_conformers.max().item(), 32)
+            # Either sample n_conformers or fixed maximum number
+            max_num_conformers = max(
+                batch.num_conformers.max().item(), self.max_num_conformers
+            )
             self.sample(
                 batch,
                 step="train",
                 save_folder=save_folder,
                 save_pca_plot=True,
                 seed=42,
-                n_samples=max_num_conformers * 2,  # at least having 2*n_conformers
+                n_samples=max_num_conformers,
                 threshold=self.threshold,
             )
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self._step(batch, "val")
-        if (
-            (self.current_epoch % self.sample_every_epoch == 0)
-            and (self.current_epoch > 0)
+        if (self.current_epoch % self.sample_every_epoch == 0) and (
+            self.current_epoch > 0
         ):
-            logger.info(f"Sampling at epoch {self.current_epoch} after validation step...")
+            logger.info(
+                f"Sampling at epoch {self.current_epoch} after validation step..."
+            )
             if self.save_folder is not None:
                 save_folder = f"{self.save_folder}/epoch_{self.current_epoch:05d}/val"
-            max_num_conformers = max(batch.num_conformers.max().item(), 32)
+            # Either sample n_conformers or fixed maximum number
+            max_num_conformers = max(
+                batch.num_conformers.max().item(), self.max_num_conformers
+            )
             self.sample(
                 batch,
                 step="val",
                 save_folder=save_folder,
-                save_pca_plot=batch_idx == 0, # only save PCA plot for the first batch
+                save_pca_plot=batch_idx == 0,  # only save PCA plot for the first batch
                 seed=42,
-                n_samples=max_num_conformers * 2,  # at least having 2*n_conformers
+                n_samples=max_num_conformers,
                 threshold=self.threshold,
             )
         return loss

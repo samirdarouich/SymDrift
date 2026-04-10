@@ -12,6 +12,10 @@ from pytorch_lightning.utilities import rank_zero_only
 from rich.syntax import Syntax
 from rich.tree import Tree
 from torch_scatter import scatter_mean
+from typing import Any, Dict
+
+from lightning_utilities.core.rank_zero import rank_zero_only
+from omegaconf import OmegaConf
 
 __all__ = [
     "print_config",
@@ -403,6 +407,34 @@ class RankedLogger(logging.LoggerAdapter):
                     self.logger.log(level, msg, *args, **kwargs)
                 elif current_rank == rank:
                     self.logger.log(level, msg, *args, **kwargs)
+
+log = RankedLogger(__name__, rank_zero_only=True)
+
+@rank_zero_only
+def log_hyperparameters(cfg_dict, trainer) -> None:
+    """Controls which config parts are saved by Lightning loggers.
+
+    Additionally saves:
+        - Number of model parameters
+
+    :param cfg_dict: A dictionary containing the main config.
+    :param trainer: The Lightning trainer.
+    """
+    hparams = {}
+
+    cfg = OmegaConf.to_container(cfg_dict)
+
+    if not trainer.logger:
+        log.warning("Logger not found! Skipping hyperparameter logging...")
+        return
+
+    for key in ["drifting_field", "prior", "embedder", "model"]:
+        hparams[key] = cfg[key]
+
+    # send hparams to all loggers
+    for logger in trainer.loggers:
+        logger.log_hyperparams(hparams)
+
 
 # Gradient clipping
 class Queue:

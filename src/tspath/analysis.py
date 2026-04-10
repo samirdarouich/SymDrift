@@ -889,7 +889,14 @@ def print_covmat_results(results, threshold):
     return df, metrics
 
 def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
-
+    # Check if there are enough reference samples to perform PCA
+    if len(refs) < 2:
+        logger.debug(
+            f"Not enough reference samples ({len(refs)}) to perform PCA plot, skipping..."
+        )
+        return
+    
+    # Check if there are common identifier values between refs and samples
     unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in refs])
     unique_identifier_samples = set(
         [atom.info.get(identifier, "Unknown") for atom in samples]
