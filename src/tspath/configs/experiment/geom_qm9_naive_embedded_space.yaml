@@ -20,7 +20,7 @@ model:
     warmup_steps: 2080
 
 generative_model:
-  sample_every_epoch: 25
+  sample_every_epoch: 125
 
 trainer:
   max_epochs: 250

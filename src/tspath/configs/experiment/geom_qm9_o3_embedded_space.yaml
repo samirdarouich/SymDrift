@@ -23,7 +23,7 @@ model:
     min_lr: 1.0e-7
 
 generative_model:
-  sample_every_epoch: 20
+  sample_every_epoch: 100
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.5
