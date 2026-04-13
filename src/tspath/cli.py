@@ -158,7 +158,7 @@ def sample(cfg):
         log.warning(f"Save folder {save_folder} already exists. Samples will be appended.")
         
     log.info(
-        f"Sampling at least {n_samples} time(s) with:\n"
+        f"Sampling at max {n_samples} time(s) with:\n"
         f"  NFE = {nfe} "
         f"  guidance_scale = {guidance_scale}"
         f"  conditioned = {conditioned}"
@@ -183,7 +183,7 @@ def sample(cfg):
         # n_samples times.
         num_conformers = batch.num_conformers.max().item()
         if ratio is not None:
-            total_samples = max(int(ratio * num_conformers), n_samples)
+            total_samples = min(int(ratio * num_conformers), n_samples)
         else:
             total_samples = n_samples
         

@@ -428,7 +428,7 @@ def log_hyperparameters(cfg_dict, trainer) -> None:
         log.warning("Logger not found! Skipping hyperparameter logging...")
         return
 
-    for key in ["drifting_field", "prior", "embedder", "model"]:
+    for key in ["drifting_field", "prior", "embedder", "model", "dataset"]:
         hparams[key] = cfg[key]
 
     # send hparams to all loggers
