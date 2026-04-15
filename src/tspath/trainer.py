@@ -267,6 +267,9 @@ class DriftingMolecules(pl.LightningModule):
 
             loss = loss + torch.nn.functional.mse_loss(x_i_embedded, x_i_drifted)
 
+        # normalize loss by the number of graphs in the batch
+        loss = loss / batch_pos.num_graphs
+        
         # Log metrics
         metrics = {"loss": loss}
         for metric_name, metric in metrics.items():
