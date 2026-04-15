@@ -29,7 +29,6 @@ def train(cfg):
     if cfg.get("print_config", True):
         fields = (
             "run",
-            "globals",
             "generative_model",
             "drifting_field",
             "prior",
