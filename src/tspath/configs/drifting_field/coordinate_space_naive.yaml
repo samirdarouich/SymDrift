@@ -5,7 +5,6 @@ temperatures: [0.02, 0.05, 0.2]
 normalize_over_x: false
 normalize_drift: true
 # Naive drift does not respect any symmetry of the system.
-drifting_field:
-  aligned: false
-  permuted: false
-  brute_force_permutations: false 
+aligned: false
+permuted: false
+brute_force_permutations: false 
