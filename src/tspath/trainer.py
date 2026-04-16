@@ -175,14 +175,15 @@ class DriftingMolecules(pl.LightningModule):
             z_i_neg = batch_neg.x[mask_neg]
 
             # Compute the drift
-            V, V_pos, V_neg, *_ = self.drifting_field(
-                x_i.detach(),  # avoid unnecessary gradient tracking
-                y_i_pos,
-                x_i.detach(),  # avoid unnecessary gradient tracking
-                batch_pos.num_atoms[i],
-                atomic_numbers_pos=z_i_pos,
-                atomic_numbers_neg=z_i_neg,
-            )
+            with torch.no_grad():
+                V, V_pos, V_neg, *_ = self.drifting_field(
+                    x_i,
+                    y_i_pos,
+                    x_i,
+                    batch_pos.num_atoms[i],
+                    atomic_numbers_pos=z_i_pos,
+                    atomic_numbers_neg=z_i_neg,
+                )
             V_total[mask_neg] = V
             V_pos_total[mask_neg] = V_pos
 
@@ -219,10 +220,9 @@ class DriftingMolecules(pl.LightningModule):
 
         # Call the embedder for the whole batch. Embedding output is one flatten vector
         # and a mask indicating which embedding belong to which batch element
-        with torch.no_grad():
-            y_pos_embedded, mask_pos = self.embedder(
-                positions=y_pos, Z=z_pos, batch=batch_mask_pos
-            )
+        y_pos_embedded, mask_pos = self.embedder(
+            positions=y_pos, Z=z_pos, batch=batch_mask_pos
+        )
 
         x_embedded, mask_x = self.embedder(
             positions=x, Z=batch_neg.x, batch=batch_neg.batch
@@ -253,12 +253,13 @@ class DriftingMolecules(pl.LightningModule):
             # Reshape to (n_neg_per_pos, embed_dim_i)
             x_i_embedded = x_embedded[mask_neg_i].view(self.n_neg_per_pos, -1)
 
-            # Call the drift
-            V, V_pos, V_neg, *_ = self.drifting_field(
-                x_i_embedded.detach(),
-                y_i_pos_embedded,
-                x_i_embedded.detach(),
-            )
+            # Call the drift (stop gradient)
+            with torch.no_grad():
+                V, V_pos, V_neg, *_ = self.drifting_field(
+                    x_i_embedded,
+                    y_i_pos_embedded,
+                    x_i_embedded,
+                )
 
             if self.only_pos_drift:
                 x_i_drifted = (x_i_embedded + V_pos).detach()
