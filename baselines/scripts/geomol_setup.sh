@@ -9,7 +9,8 @@ REPO="$(cd "$(dirname "$0")/../GeoMol" 2>/dev/null && pwd)" || {
 }
 
 echo "[GeoMol] Creating conda environment (Python 3.9)..."
-conda create -n geomol python=3.9 -y --override-channels -c conda-forge
+conda env list | grep -q "^geomol " || \
+    conda create -n geomol python=3.9 -y --override-channels -c conda-forge
 
 echo "[GeoMol] Installing PyTorch 1.11.0 + CUDA 11.3 via pip..."
 conda run -n geomol pip install \

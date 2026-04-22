@@ -9,7 +9,8 @@ REPO="$(cd "$(dirname "$0")/../torsional-diffusion" 2>/dev/null && pwd)" || {
 }
 
 echo "[TorsionalDiff] Creating conda environment (Python 3.9)..."
-conda create -n torsional_diffusion python=3.9 -y --override-channels -c conda-forge
+conda env list | grep -q "^torsional_diffusion " || \
+    conda create -n torsional_diffusion python=3.9 -y --override-channels -c conda-forge
 
 echo "[TorsionalDiff] Installing PyTorch 1.11.0 + CUDA 11.3 via pip..."
 conda run -n torsional_diffusion pip install \
