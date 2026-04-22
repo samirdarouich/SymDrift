@@ -20,10 +20,14 @@ conda run -n geodiff pip install \
 echo "[GeoDiff] Installing RDKit and core deps..."
 conda run -n geodiff conda install -y rdkit pyaml scipy tqdm -c conda-forge
 
-echo "[GeoDiff] Installing PyTorch Geometric..."
+echo "[GeoDiff] Installing numpy..."
+conda run -n geodiff pip install numpy
+
+echo "[GeoDiff] Installing PyTorch Geometric (pinned for PyTorch 1.11 compatibility)..."
 conda run -n geodiff pip install \
-    torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric \
+    torch-scatter torch-sparse torch-cluster torch-spline-conv \
     -f "https://pytorch-geometric.com/whl/torch-1.11.0+cu113.html"
+conda run -n geodiff pip install torch-geometric==2.0.4
 
 echo "[GeoDiff] Installing remaining repo deps..."
 conda run -n geodiff pip install easydict networkx

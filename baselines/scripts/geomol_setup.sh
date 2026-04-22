@@ -20,9 +20,13 @@ conda run -n geomol pip install \
 echo "[GeoMol] Installing RDKit and core deps..."
 conda run -n geomol conda install -y rdkit networkx pot scikit-learn tqdm pyyaml -c conda-forge
 
-echo "[GeoMol] Installing PyTorch Geometric..."
+echo "[GeoMol] Installing numpy..."
+conda run -n geomol pip install numpy
+
+echo "[GeoMol] Installing PyTorch Geometric (pinned for PyTorch 1.11 compatibility)..."
 conda run -n geomol pip install \
-    torch-scatter torch-sparse torch-cluster torch-spline-conv torch-geometric \
+    torch-scatter torch-sparse torch-cluster torch-spline-conv \
     -f "https://pytorch-geometric.com/whl/torch-1.11.0+cu113.html"
+conda run -n geomol pip install torch-geometric==2.0.4
 
 echo "[GeoMol] Setup complete."
