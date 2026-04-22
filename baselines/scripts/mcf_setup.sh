@@ -17,8 +17,12 @@ conda run -n mcf pip install \
     torch==2.1.0 \
     --extra-index-url https://download.pytorch.org/whl/cu121
 
-echo "[MCF] Installing requirements from $REPO/environment/requirements.txt ..."
-conda run -n mcf pip install -r "$REPO/environment/requirements.txt"
+echo "[MCF] Installing mamba-ssm (needs --no-build-isolation to see torch)..."
+conda run -n mcf pip install mamba-ssm==1.0.1 --no-build-isolation
+
+echo "[MCF] Installing remaining requirements (excluding mamba-ssm)..."
+grep -v "mamba.ssm" "$REPO/environment/requirements.txt" > /tmp/mcf_requirements.txt
+conda run -n mcf pip install -r /tmp/mcf_requirements.txt
 
 echo "[MCF] Installing repo..."
 conda run -n mcf pip install -e "$REPO" --no-deps 2>/dev/null || true

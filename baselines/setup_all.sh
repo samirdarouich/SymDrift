@@ -8,7 +8,7 @@ SCRIPTS_DIR="$BASELINES_DIR/scripts"
 echo "=== Setting up all baseline environments ==="
 echo ""
 
-for method in geodiff geomol mcf tordiff etflow; do
+for method in mcf tordiff etflow; do
     echo "--- Setting up: $method ---"
     bash "$SCRIPTS_DIR/${method}_setup.sh"
     echo ""
