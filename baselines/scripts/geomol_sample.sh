@@ -6,8 +6,7 @@ REPO="$(cd "$(dirname "$0")/../GeoMol" 2>/dev/null && pwd)" || {
     exit 1
 }
 
-CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
-PYTHON="$CONDA_BASE/envs/geomol/bin/python3"
+PYTHON=$(conda info --envs 2>/dev/null | awk '$1=="geomol"{print $NF"/bin/python3"}')
 
 if [ ! -x "$PYTHON" ]; then
     echo "[GeoMol] ERROR: conda env 'geomol' not found at $PYTHON. Run geomol_setup.sh first."

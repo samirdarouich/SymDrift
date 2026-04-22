@@ -6,8 +6,7 @@ REPO="$(cd "$(dirname "$0")/../torsional-diffusion" 2>/dev/null && pwd)" || {
     exit 1
 }
 
-CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
-PYTHON="$CONDA_BASE/envs/torsional_diffusion/bin/python3"
+PYTHON=$(conda info --envs 2>/dev/null | awk '$1=="torsional_diffusion"{print $NF"/bin/python3"}')
 
 if [ ! -x "$PYTHON" ]; then
     echo "[TorsionalDiff] ERROR: conda env 'torsional_diffusion' not found at $PYTHON. Run tordiff_setup.sh first."

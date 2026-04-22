@@ -6,8 +6,7 @@ REPO="$(cd "$(dirname "$0")/../ml-mcf" 2>/dev/null && pwd)" || {
     exit 1
 }
 
-CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
-PYTHON="$CONDA_BASE/envs/mcf/bin/python3"
+PYTHON=$(conda info --envs 2>/dev/null | awk '$1=="mcf"{print $NF"/bin/python3"}')
 
 if [ ! -x "$PYTHON" ]; then
     echo "[MCF] ERROR: conda env 'mcf' not found at $PYTHON. Run mcf_setup.sh first."

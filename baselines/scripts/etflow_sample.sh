@@ -6,8 +6,7 @@ REPO="$(cd "$(dirname "$0")/../ETFlow" 2>/dev/null && pwd)" || {
     exit 1
 }
 
-CONDA_BASE=$(conda info --base 2>/dev/null || echo "$HOME/.conda")
-PYTHON="$CONDA_BASE/envs/etflow/bin/python3"
+PYTHON=$(conda info --envs 2>/dev/null | awk '$1=="etflow"{print $NF"/bin/python3"}')
 
 if [ ! -x "$PYTHON" ]; then
     echo "[ETFlow] ERROR: conda env 'etflow' not found at $PYTHON. Run etflow_setup.sh first."
