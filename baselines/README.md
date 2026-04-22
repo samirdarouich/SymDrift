@@ -1,36 +1,41 @@
 # Conformer Generation Baselines — QM9
 
-Benchmark scripts for 5 molecular conformer generation methods evaluated on QM9.
+Inference speed benchmarks for 5 molecular conformer generation methods on QM9. All benchmarks use **randomly initialized weights** — the goal is to measure sampling algorithm speed, not output quality. No checkpoint downloads required.
 
 ## Methods
 
-| Method | Env Name | Python | Checkpoint Source |
-|--------|----------|--------|-------------------|
-| GeoDiff | `geodiff` | 3.7 | Google Drive |
-| GeoMol | `geomol` | ≥3.7.9 | **Manual** (see note below) |
-| MCF | `mcf` | 3.10 | Apple CDN |
-| Torsional Diffusion | `torsional_diffusion` | 3.9 | Google Drive |
-| ET-Flow | `etflow` | ≥3.8 | Zenodo |
+| Method | Repo | Conda Env | Python | Sampling Algorithm |
+|--------|------|-----------|--------|--------------------|
+| GeoDiff | [MinkaiXu/GeoDiff](https://github.com/MinkaiXu/GeoDiff) | `geodiff` | 3.7 | Langevin dynamics (5000 steps) |
+| GeoMol | [PattanaikL/GeoMol](https://github.com/PattanaikL/GeoMol) | `geomol` | ≥3.7.9 | Torsion-angle prediction (single pass) |
+| MCF | [apple/ml-mcf](https://github.com/apple/ml-mcf) | `mcf` | 3.10 | DDIM (50 steps, PerceiverIO) |
+| Torsional Diffusion | [gcorso/torsional-diffusion](https://github.com/gcorso/torsional-diffusion) | `torsional_diffusion` | 3.9 | Score-based diffusion on torsion angles (20 steps) |
+| ET-Flow | [shenoynikhil/ETFlow](https://github.com/shenoynikhil/ETFlow) | `etflow` | ≥3.8 | Flow matching ODE (50 steps) |
 
 ## Prerequisites
 
 - Conda (Miniconda or Anaconda) with `conda` on PATH
 - CUDA-compatible GPU recommended
-- `gdown` for Google Drive downloads:
-  ```bash
-  pip install gdown
-  ```
-- `wget` available (macOS: `brew install wget`)
+- `wget` (macOS: `brew install wget`)
 
-## Directory Layout (after cloning)
+## Directory Layout
 
 ```
 baselines/
 ├── README.md
-├── setup_all.sh          # install all conda environments
-├── download_all.sh       # download all QM9 checkpoints
-├── benchmark.sh          # run 50-sample timing for all methods
-├── scripts/              # per-method setup / download / sample scripts
+├── setup_all.sh          # create all conda environments
+├── benchmark.sh          # run inference speed benchmark for all methods
+├── scripts/
+│   ├── geodiff_setup.sh
+│   ├── geodiff_sample.sh
+│   ├── geomol_setup.sh
+│   ├── geomol_sample.sh
+│   ├── mcf_setup.sh
+│   ├── mcf_sample.sh
+│   ├── tordiff_setup.sh
+│   ├── tordiff_sample.sh
+│   ├── etflow_setup.sh
+│   └── etflow_sample.sh
 ├── GeoDiff/              # cloned repo
 ├── GeoMol/
 ├── ml-mcf/
@@ -41,52 +46,33 @@ baselines/
 ## Quick Start
 
 ```bash
-# 1. Clone repos (run from project root)
+# 1. Clone all repos (from project root)
 bash clone_baselines.sh
 
-# 2. Set up all conda environments
+# 2. Set up conda environments
 cd baselines
 bash setup_all.sh
 
-# 3. Download all QM9 checkpoints
-bash download_all.sh
-
-# 4. Run 50-sample timing benchmark
+# 3. Run benchmark
 bash benchmark.sh
 ```
 
-Results are written to `benchmark_results.txt` and printed to stdout.
+Results are printed to stdout and saved to `benchmark_results.txt`.
 
-## Running Methods Individually
-
-Each method has three scripts in `scripts/`:
+## Running a Single Method
 
 ```bash
-bash scripts/<method>_setup.sh      # create conda env
-bash scripts/<method>_download.sh   # download checkpoint
-bash scripts/<method>_sample.sh     # sample 50 molecules + report timing
+bash scripts/<method>_setup.sh    # create conda env (one-time)
+bash scripts/<method>_sample.sh   # run benchmark
 ```
 
 Where `<method>` is one of: `geodiff`, `geomol`, `mcf`, `tordiff`, `etflow`.
 
-## GeoMol — No Public Checkpoint
-
-GeoMol does **not** provide a public pretrained checkpoint. You must either:
-
-- Request weights from the authors (see their GitHub issues)
-- Train from scratch:
-  ```bash
-  conda run -n geomol python GeoMol/train.py --dataset qm9 --data_dir GeoMol/data/QM9
-  ```
-
-Then place the model at `GeoMol/trained_models/qm9/best_model.pt` and the config at
-`GeoMol/trained_models/qm9/model_parameters.yml`.
-
 ## Timing Methodology
 
 Each `_sample.sh` script:
-1. Runs sampling on **50 QM9 test molecules** (1 conformer per molecule)
-2. Measures wall-clock time using Python's `time.perf_counter()`
-3. Prints `Total: Xs | Avg/sample: Yms`
+1. **Warmup** — runs 5 molecules to load the model onto GPU and prime caches (not timed)
+2. **Benchmark** — runs 50 molecules, wall-clock time measured with `time.perf_counter()` with `torch.cuda.synchronize()` before/after
+3. **Output** — prints `Avg inference speed: X ms/sample  (total Ys for 50 samples)`
 
-The benchmark aggregates all results into a summary table.
+Models are instantiated with **random weights** using each repo's default QM9 architecture config. Inputs are real QM9-like SMILES processed through each method's own data pipeline.

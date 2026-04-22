@@ -1,47 +1,74 @@
 #!/bin/bash
-# GeoMol: sample 50 QM9 test molecules and report wall-clock timing.
+# GeoMol: benchmark average inference speed using random weights.
+# Uses the existing model_parameters.yml from the repo.
 
 REPO="$(cd "$(dirname "$0")/../GeoMol" 2>/dev/null && pwd)" || {
-    echo "[GeoMol] ERROR: GeoMol repo not found."
+    echo "[GeoMol] ERROR: GeoMol repo not found. Run clone_baselines.sh first."
     exit 1
 }
 
-CKPT="$REPO/trained_models/qm9/best_model.pt"
-if [ ! -f "$CKPT" ]; then
-    echo "[GeoMol] ERROR: Checkpoint not found at $CKPT. See geomol_download.sh for instructions."
-    exit 1
-fi
+conda run -n geomol python3 - "$REPO" <<'PYEOF'
+import sys, os, time, tempfile, torch
+sys.path.insert(0, sys.argv[1])
+os.chdir(sys.argv[1])
 
-TEST_CSV_FULL="$REPO/data/QM9/test_smiles.csv"
-if [ ! -f "$TEST_CSV_FULL" ]; then
-    echo "[GeoMol] ERROR: Test CSV not found at $TEST_CSV_FULL"
-    exit 1
-fi
+import yaml
+from model.model import GeoMol
+from model.featurization import featurize_mol_from_smiles
+from model.inference import construct_conformers
+from torch_geometric.data import Batch
 
-# Create a 50-molecule subset (header + 50 rows)
-TMPDIR_LOCAL=$(mktemp -d)
-TEST_CSV_50="$TMPDIR_LOCAL/test_50.csv"
-{ head -1 "$TEST_CSV_FULL"; tail -n +2 "$TEST_CSV_FULL" | head -50; } > "$TEST_CSV_50"
+# Load config (already in repo, no download needed)
+with open("trained_models/qm9/model_parameters.yml") as f:
+    model_parameters = yaml.full_load(f)
 
-N_SAMPLES=50
-echo "[GeoMol] Sampling $N_SAMPLES molecules..."
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = GeoMol(**model_parameters).to(device)  # random weights
+model.eval()
 
-conda run -n geomol python3 - <<PYEOF
-import subprocess, time, sys, os
-os.chdir("$REPO")
-cmd = [
-    "python", "generate_confs.py",
-    "--trained_model_dir", "trained_models/qm9/",
-    "--test_csv", "$TEST_CSV_50",
-    "--dataset", "qm9",
-    "--out", "$TMPDIR_LOCAL/geomol_out.pkl",
+SMILES = [
+    "C", "CC", "CCC", "CO", "CCO", "CN", "CCN", "C=C", "C=O", "C=N",
+    "C#N", "CC#N", "C1CC1", "C1CCC1", "C1CO1", "C1CCO1", "C1CN1", "C1CCN1",
+    "c1ccccc1", "Cc1ccccc1", "c1ccncc1", "c1ccoc1", "CF", "CCF", "C(F)(F)F",
+    "CC(C)O", "CC(C)=O", "CC(C)N", "CC(C)C", "CCC=O",
+    "CCCC", "CCCN", "CCCO", "C=CC", "CC=C", "CC=O", "C#CC",
+    "C1CCCC1", "C1CCCO1", "C1CCNC1", "Cc1ccncc1", "Cc1ccoc1",
+    "CC(F)F", "CCCl", "CCBr", "CCI",
+    "NCC(=O)O", "CC(N)C(=O)O", "OCC(O)CO",
+    "CC1CC1", "C1CC1C", "CC(C)(C)C", "CCCCN", "CCCCO",
+    "CC(O)CO", "C1CCCCC1", "CC(C)CC",
 ]
-start = time.perf_counter()
-result = subprocess.run(cmd)
-elapsed = time.perf_counter() - start
-n = $N_SAMPLES
-print(f"[GeoMol] Total: {elapsed:.2f}s | Avg/sample: {elapsed/n*1000:.1f}ms")
-sys.exit(result.returncode)
-PYEOF
 
-rm -rf "$TMPDIR_LOCAL"
+def make_batch(smiles, device):
+    data_list = []
+    for smi in smiles:
+        d = featurize_mol_from_smiles(smi, dataset="qm9")
+        if d is not None:
+            data_list.append(d)
+    if not data_list:
+        return None
+    return Batch.from_data_list(data_list).to(device)
+
+N_WARMUP = 5
+N_BENCH = 50
+
+print("[GeoMol] Warming up...", flush=True)
+with torch.no_grad():
+    batch = make_batch(SMILES[:N_WARMUP], device)
+    if batch is not None:
+        model(batch, inference=True, n_model_confs=1)
+
+print(f"[GeoMol] Benchmarking {N_BENCH} molecules...", flush=True)
+with torch.no_grad():
+    batch = make_batch(SMILES[:N_BENCH], device)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    start = time.perf_counter()
+    model(batch, inference=True, n_model_confs=1)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+
+n = len(batch.ptr) - 1  # actual number of molecules processed
+print(f"[GeoMol] Avg inference speed: {elapsed/n*1000:.1f} ms/sample  (total {elapsed:.2f}s for {n} samples)")
+PYEOF

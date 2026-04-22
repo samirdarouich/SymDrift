@@ -37,7 +37,7 @@ for i in "${!METHODS[@]}"; do
         echo "[$name] FAILED (exit code $exit_code)" >> "$RESULTS_FILE"
     else
         # Extract the timing line printed by each sample script
-        timing_line=$(echo "$output" | grep -E "\[$name\]" | tail -1)
+        timing_line=$(echo "$output" | grep -E "Avg inference speed" | tail -1)
         TIMING[$name]="$timing_line"
         echo "$timing_line" >> "$RESULTS_FILE"
     fi
