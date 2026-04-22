@@ -17,10 +17,10 @@ conda run -n mcf pip install \
     torch==2.1.0 \
     --extra-index-url https://download.pytorch.org/whl/cu121
 
-echo "[MCF] Installing mamba-ssm (needs --no-build-isolation to see torch)..."
-conda run -n mcf pip install mamba-ssm==1.0.1 --no-build-isolation
+echo "[MCF] Installing numpy and setuptools first..."
+conda run -n mcf pip install numpy setuptools
 
-echo "[MCF] Installing remaining requirements (excluding mamba-ssm)..."
+echo "[MCF] Installing requirements (skipping mamba-ssm — only needed for Mamba variant, not PerceiverIO)..."
 grep -v "mamba.ssm" "$REPO/environment/requirements.txt" > /tmp/mcf_requirements.txt
 conda run -n mcf pip install -r /tmp/mcf_requirements.txt
 
