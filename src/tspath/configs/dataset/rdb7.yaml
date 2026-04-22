@@ -18,7 +18,7 @@ test_batch_size: 1
 # Dataloader parameters
 num_workers: 0
 persistent_workers: false
-pin_memory: false
+pin_memory: true
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
 # Define transforms to apply when loading data

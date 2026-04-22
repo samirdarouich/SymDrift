@@ -16,9 +16,9 @@ batch_size: 2
 test_batch_size: 1
 
 # Dataloader parameters
-num_workers: 0
-persistent_workers: false
-pin_memory: false
+num_workers: 4
+persistent_workers: true
+pin_memory: true
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
 # Define transforms to apply when loading data
@@ -66,7 +66,7 @@ test_dataloader:
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}
-  batch_size: ${dataset.batch_size}
+  batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}

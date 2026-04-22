@@ -181,9 +181,8 @@ class DriftingField:
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
-            tiny = 1e-12
-            w_pos = w_pos / (w_pos.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
-            w_neg = w_neg / (w_neg.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
+            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
+            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
@@ -360,9 +359,8 @@ class EquivariantDriftingField:
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
-            tiny = 1e-12
-            w_pos = w_pos / (w_pos.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
-            w_neg = w_neg / (w_neg.sum(dim=-1, keepdim=True) + tiny)  # renormalize over y
+            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(1e-12) # renormalize over y
+            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
