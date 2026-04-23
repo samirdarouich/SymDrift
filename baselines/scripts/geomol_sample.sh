@@ -48,7 +48,7 @@ def make_batch(smiles, device):
     batch = Batch.from_data_list(data_list).to(device)
     # PyG 2.x collates non-tensor dict attributes in unexpected ways;
     # get_neighbor_ids expects a plain list of per-molecule dicts.
-    batch.neighbors = [d.neighbors for d in data_list]
+    batch.neighbors = [{k: v.to(device) for k, v in d.neighbors.items()} for d in data_list]
     return batch
 
 print("[GeoMol] Warming up...", flush=True)

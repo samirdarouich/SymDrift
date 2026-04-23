@@ -30,7 +30,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 arch = PerceiverIO(
     pos_embed_config=OmegaConf.create({
         "target": "models.pos_embed.PosEmbed",
-        "params": {"embed_type": "trainable", "input_num_channels": 75, "output_num_channels": 128},
+        "params": {"embed_type": "trainable", "input_num_channels": 75, "output_num_channels": 128, "num_freq": 10},
     }),
     num_latents=512, d_latents=512, d_model=1024,
     time_sinusoidal_dim=256, num_blocks=8,
