@@ -12,10 +12,8 @@ echo "[MCF] Creating conda environment (Python 3.10)..."
 conda env list | grep -q "^mcf " || \
     conda create -n mcf python=3.10 -y --override-channels -c conda-forge
 
-echo "[MCF] Installing PyTorch 2.1.0 + CUDA 12.1 via pip..."
-conda run -n mcf pip install \
-    torch==2.1.0 \
-    --extra-index-url https://download.pytorch.org/whl/cu121
+echo "[MCF] Installing PyTorch (auto-selects CUDA version)..."
+conda run -n mcf pip install torch
 
 echo "[MCF] Installing numpy and setuptools first..."
 conda run -n mcf pip install numpy setuptools
@@ -23,7 +21,8 @@ conda run -n mcf pip install numpy setuptools
 echo "[MCF] Installing requirements (skipping mamba-ssm — only needed for Mamba variant, not PerceiverIO)..."
 grep -v "mamba.ssm" "$REPO/environment/requirements.txt" > /tmp/mcf_requirements.txt
 conda run -n mcf pip install -r /tmp/mcf_requirements.txt
-conda run -n mcf pip install transformers
+conda run -n mcf pip install "transformers==4.35.2"
+conda run -n mcf pip install xformers --extra-index-url https://download.pytorch.org/whl/cu121
 
 echo "[MCF] Installing repo..."
 conda run -n mcf pip install -e "$REPO" --no-deps 2>/dev/null || true

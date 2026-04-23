@@ -12,10 +12,8 @@ echo "[ETFlow] Creating conda environment (Python 3.10)..."
 conda env list | grep -q "^etflow " || \
     conda create -n etflow python=3.10 -y --override-channels -c conda-forge
 
-echo "[ETFlow] Installing PyTorch 2.1.0 + CUDA 12.1 via pip..."
-conda run -n etflow pip install \
-    torch==2.1.0 \
-    --extra-index-url https://download.pytorch.org/whl/cu121
+echo "[ETFlow] Installing PyTorch (auto-selects CUDA version)..."
+conda run -n etflow pip install torch
 
 echo "[ETFlow] Installing PyG and dependencies..."
 conda run -n etflow pip install \

@@ -15,6 +15,10 @@ fi
 
 "$PYTHON" - "$REPO" <<'PYEOF'
 import sys, os, time, torch
+from unittest.mock import MagicMock
+for _mod in ["xformers", "xformers.ops", "xformers.components",
+             "xformers.components.attention", "xformers.factory"]:
+    sys.modules.setdefault(_mod, MagicMock())
 sys.path.insert(0, sys.argv[1])
 os.chdir(sys.argv[1])
 

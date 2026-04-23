@@ -13,16 +13,16 @@ conda env list | grep -q "^torsional_diffusion " || \
 
 PYTHON=$(conda info --envs | awk '$1=="torsional_diffusion"{print $NF"/bin/python3"}')
 
-echo "[TorsionalDiff] Installing PyTorch 2.1.0 + CUDA 12.1 via pip..."
-$PYTHON -m pip install torch==2.1.0 --extra-index-url https://download.pytorch.org/whl/cu121
+echo "[TorsionalDiff] Installing PyTorch (auto-selects CUDA version)..."
+$PYTHON -m pip install torch
 
 echo "[TorsionalDiff] Installing numpy<2 and core deps..."
 $PYTHON -m pip install "numpy<2"
 $PYTHON -m pip install rdkit pyaml matplotlib scipy networkx tqdm
 
-echo "[TorsionalDiff] Installing PyTorch Geometric (prebuilt wheels for torch 2.1 + cu121)..."
-$PYTHON -m pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
-    --find-links "https://pytorch-geometric.com/whl/torch-2.1.0+cu121.html"
+echo "[TorsionalDiff] Installing PyTorch Geometric via conda pyg channel (handles ABI matching)..."
+conda install -n torsional_diffusion -y pytorch-scatter pytorch-sparse pytorch-cluster \
+    -c pyg -c pytorch -c nvidia
 $PYTHON -m pip install torch-geometric
 
 echo "[TorsionalDiff] Installing e3nn..."

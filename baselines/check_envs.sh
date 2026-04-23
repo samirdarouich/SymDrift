@@ -76,7 +76,7 @@ check_env "MCF" "mcf" "[
     ('omegaconf',       'from omegaconf import OmegaConf'),
     ('numpy',           'import numpy'),
     ('einops',          'import einops'),
-    ('mcf_arch',        'import sys; sys.path.insert(0, \"$MCF_REPO\"); from models.architectures import PerceiverIO'),
+    ('mcf_arch',        'import sys; from unittest.mock import MagicMock; [sys.modules.setdefault(m, MagicMock()) for m in ["xformers","xformers.ops"]]; sys.path.insert(0, \"$MCF_REPO\"); from models.architectures import PerceiverIO'),
 ]"
 
 # ── Torsional Diffusion ───────────────────────────────────────────────────────

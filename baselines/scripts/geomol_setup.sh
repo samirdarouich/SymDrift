@@ -13,8 +13,8 @@ conda env list | grep -q "^geomol " || \
 
 PYTHON=$(conda info --envs | awk '$1=="geomol"{print $NF"/bin/python3"}')
 
-echo "[GeoMol] Installing PyTorch 2.1.0 + CUDA 12.1 via pip..."
-$PYTHON -m pip install torch==2.1.0 --extra-index-url https://download.pytorch.org/whl/cu121
+echo "[GeoMol] Installing PyTorch (auto-selects CUDA version)..."
+$PYTHON -m pip install torch
 
 echo "[GeoMol] Installing numpy<2 and core deps..."
 $PYTHON -m pip install "numpy<2"
