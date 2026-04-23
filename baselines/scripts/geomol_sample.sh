@@ -43,7 +43,13 @@ SMILES = [
 
 def make_batch(smiles, device):
     data_list = [d for smi in smiles if (d := featurize_mol_from_smiles(smi, dataset="qm9")) is not None]
-    return Batch.from_data_list(data_list).to(device) if data_list else None
+    if not data_list:
+        return None
+    batch = Batch.from_data_list(data_list).to(device)
+    # PyG 2.x collates non-tensor dict attributes in unexpected ways;
+    # get_neighbor_ids expects a plain list of per-molecule dicts.
+    batch.neighbors = [d.neighbors for d in data_list]
+    return batch
 
 print("[GeoMol] Warming up...", flush=True)
 with torch.no_grad():
