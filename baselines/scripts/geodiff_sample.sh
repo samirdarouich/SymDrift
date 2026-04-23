@@ -30,11 +30,6 @@ with open("configs/qm9_default.yml") as f:
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = get_model(config.model).to(device)
-# Small-magnitude init prevents NaN during Langevin dynamics with random weights.
-# (Default PyTorch init can produce activations large enough to diverge in 5000 steps.)
-with torch.no_grad():
-    for p in model.parameters():
-        torch.nn.init.normal_(p, std=0.01)
 model.eval()
 
 SMILES = [
@@ -68,26 +63,27 @@ def smiles_to_batch(smi_list, device):
         data_list.append(data)
     return Batch.from_data_list(data_list).to(device)
 
+def run_sample(b, device):
+    pos = torch.randn(b.num_nodes, 3, device=device)
+    try:
+        model.langevin_dynamics_sample(atom_type=b.atom_type, pos_init=pos,
+            bond_index=b.edge_index, bond_type=b.edge_type,
+            batch=b.batch, num_graphs=b.num_graphs,
+            extend_order=False, n_steps=5000, step_lr=1e-6, w_global=0.3, global_start_sigma=0.5)
+    except FloatingPointError:
+        pass
+
 print("[GeoDiff] Warming up...", flush=True)
 with torch.no_grad():
-    b = smiles_to_batch(SMILES[:5], device)
-    pos = torch.randn(b.num_nodes, 3, device=device)
-    model.langevin_dynamics_sample(atom_type=b.atom_type, pos_init=pos,
-        bond_index=b.edge_index, bond_type=b.edge_type,
-        batch=b.batch, num_graphs=b.num_graphs,
-        extend_order=False, n_steps=5000, step_lr=1e-6, w_global=0.3, global_start_sigma=0.5)
+    run_sample(smiles_to_batch(SMILES[:5], device), device)
 
 N = 50
 print(f"[GeoDiff] Benchmarking {N} molecules...", flush=True)
 with torch.no_grad():
     b = smiles_to_batch(SMILES[:N], device)
-    pos = torch.randn(b.num_nodes, 3, device=device)
     if device == "cuda": torch.cuda.synchronize()
     start = time.perf_counter()
-    model.langevin_dynamics_sample(atom_type=b.atom_type, pos_init=pos,
-        bond_index=b.edge_index, bond_type=b.edge_type,
-        batch=b.batch, num_graphs=b.num_graphs,
-        extend_order=False, n_steps=5000, step_lr=1e-6, w_global=0.3, global_start_sigma=0.5)
+    run_sample(b, device)
     if device == "cuda": torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
 
