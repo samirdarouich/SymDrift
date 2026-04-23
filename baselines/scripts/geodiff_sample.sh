@@ -30,6 +30,11 @@ with open("configs/qm9_default.yml") as f:
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = get_model(config.model).to(device)
+# Small-magnitude init prevents NaN during Langevin dynamics with random weights.
+# (Default PyTorch init can produce activations large enough to diverge in 5000 steps.)
+with torch.no_grad():
+    for p in model.parameters():
+        torch.nn.init.normal_(p, std=0.01)
 model.eval()
 
 SMILES = [
@@ -39,7 +44,7 @@ SMILES = [
     "CC(C)O","CC(C)=O","CC(C)N","CC(C)C","CCC=O",
     "CCCC","CCCN","CCCO","C=CC","CC=C","CC=O","C#CC",
     "C1CCCC1","C1CCCO1","C1CCNC1","Cc1ccncc1","Cc1ccoc1",
-    "CC(F)F","CCCl","CCBr","CCI",
+    "CC(F)F","CCCF","CC(O)N","CCOC",
     "NCC(=O)O","CC(N)C(=O)O","OCC(O)CO","CC1CC1","CCCCN","CCCCO",
 ]
 
