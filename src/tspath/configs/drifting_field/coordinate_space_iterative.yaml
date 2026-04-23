@@ -1,0 +1,10 @@
+
+# Coordinate space 
+_target_: tspath.generative.EquivariantDriftingField
+temperatures: [0.02, 0.05, 0.2]
+normalize_over_x: false
+normalize_drift: true
+# Not strictly equivariant as alignment is used on heuristic.
+aligned: true
+permuted: true
+brute_force_permutations: false 
