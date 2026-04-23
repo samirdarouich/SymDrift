@@ -19,6 +19,18 @@ sys.path.insert(0, sys.argv[1])
 os.chdir(sys.argv[1])
 
 import yaml
+
+# PyG 2.x global_add_pool uses dim=-2 for non-1D src, which for GeoMol's
+# x2 = [N_atoms, n_confs, hidden] scatters on the wrong axis. Patch before
+# model.model is imported so that file's `from torch_geometric.nn import
+# global_add_pool` binds to this corrected version.
+import torch_geometric.nn as _tgnn
+from torch_scatter import scatter_add as _sa
+def _global_add_pool(x, batch, size=None):
+    size = int(batch.max().item() + 1) if size is None else size
+    return _sa(x, batch, dim=0, dim_size=size)
+_tgnn.global_add_pool = _global_add_pool
+
 from model.model import GeoMol
 from model.featurization import featurize_mol_from_smiles
 from torch_geometric.data import Batch
