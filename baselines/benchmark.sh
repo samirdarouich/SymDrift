@@ -12,8 +12,8 @@ echo ""
 
 > "$RESULTS_FILE"  # clear previous results
 
-METHODS=(geodiff geomol mcf etflow)
-METHOD_NAMES=("GeoDiff" "GeoMol" "MCF" "ETFlow")
+METHODS=(geodiff)
+METHOD_NAMES=("GeoDiff")
 
 declare -A TIMING
 

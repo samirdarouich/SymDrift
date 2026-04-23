@@ -76,3 +76,9 @@ Each `_sample.sh` script:
 3. **Output** — prints `Avg inference speed: X ms/sample  (total Ys for 50 samples)`
 
 Models are instantiated with **random weights** using each repo's default QM9 architecture config. Inputs are real QM9-like SMILES processed through each method's own data pipeline.
+
+
+GeoDiff              | [GeoDiff] Avg inference speed: 21.6 ms/sample  
+GeoMol               | [GeoMol] Avg inference speed: 2.6 ms/sample  
+MCF                  | [MCF] Avg inference speed: 4482.0 ms/sample 
+ETFlow               | [ETFlow] Avg inference speed: 20.5 ms/sample  
