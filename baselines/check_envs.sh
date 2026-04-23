@@ -76,20 +76,20 @@ check_env "MCF" "mcf" "[
     ('omegaconf',       'from omegaconf import OmegaConf'),
     ('numpy',           'import numpy'),
     ('einops',          'import einops'),
-    ('mcf_arch',        'import sys; from unittest.mock import MagicMock; [sys.modules.setdefault(m, MagicMock()) for m in ["xformers","xformers.ops"]]; sys.path.insert(0, \"$MCF_REPO\"); from models.architectures import PerceiverIO'),
+    ('mcf_arch',        'import sys, types; [sys.modules.__setitem__(m, types.ModuleType(m)) for m in ["xformers","xformers.ops","xformers.components","xformers.factory"]]; sys.path.insert(0, \"$MCF_REPO\"); from models.architectures import PerceiverIO'),
 ]"
 
 # ── Torsional Diffusion ───────────────────────────────────────────────────────
 TORDIFF_REPO="$BASELINES_DIR/torsional-diffusion"
 check_env "TorsionalDiff" "torsional_diffusion" "[
     ('torch',           'import torch; assert torch.cuda.is_available(), \"CUDA not available\"'),
-    ('torch_geometric', 'import torch_geometric'),
+    ('torch_geometric', 'import torch.onnx._internal.exporter as _e; hasattr(_e,"DiagnosticOptions") or setattr(_e,"DiagnosticOptions",type("DiagnosticOptions",(object,),{})); import torch_geometric'),
     ('torch_scatter',   'import torch_scatter'),
     ('numpy',           'import numpy'),
     ('rdkit',           'from rdkit import Chem'),
     ('e3nn',            'import e3nn'),
     ('yaml',            'import yaml'),
-    ('tordiff_model',   'import sys; sys.path.insert(0, \"$TORDIFF_REPO\"); from utils.utils import get_model'),
+    ('tordiff_model',   'import sys, torch.onnx._internal.exporter as _e; hasattr(_e,"DiagnosticOptions") or setattr(_e,"DiagnosticOptions",type("DiagnosticOptions",(object,),{})); sys.path.insert(0, \"$TORDIFF_REPO\"); from utils.utils import get_model'),
 ]"
 
 # ── ETFlow ───────────────────────────────────────────────────────────────────

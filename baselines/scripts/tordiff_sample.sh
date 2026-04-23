@@ -15,6 +15,13 @@ fi
 
 "$PYTHON" - "$REPO" <<'PYEOF'
 import sys, os, time, types, torch, yaml
+
+# Compatibility shim: DiagnosticOptions removed from torch.onnx in torch 2.6+
+import torch.onnx._internal.exporter as _onnx_exp
+if not hasattr(_onnx_exp, 'DiagnosticOptions'):
+    class _DiagnosticOptions: pass
+    _onnx_exp.DiagnosticOptions = _DiagnosticOptions
+
 sys.path.insert(0, sys.argv[1])
 os.chdir(sys.argv[1])
 
