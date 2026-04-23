@@ -118,7 +118,7 @@ def sample(cfg):
     torch.set_float32_matmul_precision("medium")
 
     ########## Datamodule (includes datasets and loaders) ##########
-    if hasattr(cfg.dataset, "test_dataloader"):
+    if getattr(cfg.dataset, "test_dataloader", None) is not None:
         log.info("Using seperate test dataset for sampling.")
         dataloader = instantiate(cfg.dataset.test_dataloader)
         atoms_dataset = dataloader.dataset.get_dataset_as_atoms()
