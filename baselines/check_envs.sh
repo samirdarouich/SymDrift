@@ -7,6 +7,8 @@ get_python() {
     conda info --envs 2>/dev/null | awk -v env="$1" '$1==env{print $NF"/bin/python3"}'
 }
 
+# check_env NAME ENV_NAME LIBS_PY [PREAMBLE_PY]
+# PREAMBLE_PY: optional Python code injected before the import checks (e.g. compatibility shims).
 check_env() {
     local name=$1
     local env=$2
@@ -24,6 +26,7 @@ check_env() {
 
     "$PYTHON" - <<PYEOF
 import sys
+${4:-}
 
 libs = $3
 
@@ -76,21 +79,30 @@ check_env "MCF" "mcf" "[
     ('omegaconf',       'from omegaconf import OmegaConf'),
     ('numpy',           'import numpy'),
     ('einops',          'import einops'),
+    ('xformers',        'import xformers'),
     ('mcf_arch',        'import sys; sys.path.insert(0, \"$MCF_REPO\"); from models.architectures import PerceiverIO'),
 ]"
 
 # ── Torsional Diffusion ───────────────────────────────────────────────────────
+# Preamble: inject DiagnosticOptions shim before any import check runs.
+# torch_geometric (and code that imports it) fails on PyTorch 2.6+ because
+# torch.onnx._internal.exporter.DiagnosticOptions was removed. Setting the
+# attribute on the already-imported module object makes 'from ... import
+# DiagnosticOptions' succeed for all subsequent exec() calls in this process.
 TORDIFF_REPO="$BASELINES_DIR/torsional-diffusion"
+TORDIFF_PREAMBLE='import torch.onnx._internal.exporter as _onnx_exp
+if not hasattr(_onnx_exp, "DiagnosticOptions"):
+    _onnx_exp.DiagnosticOptions = type("DiagnosticOptions", (object,), {})'
 check_env "TorsionalDiff" "torsional_diffusion" "[
     ('torch',           'import torch; assert torch.cuda.is_available(), \"CUDA not available\"'),
-    ('torch_geometric', 'import torch.onnx._internal.exporter as _e; hasattr(_e,"DiagnosticOptions") or setattr(_e,"DiagnosticOptions",type("DiagnosticOptions",(object,),{})); import torch_geometric'),
+    ('torch_geometric', 'import torch_geometric'),
     ('torch_scatter',   'import torch_scatter'),
     ('numpy',           'import numpy'),
     ('rdkit',           'from rdkit import Chem'),
     ('e3nn',            'import e3nn'),
     ('yaml',            'import yaml'),
-    ('tordiff_model',   'import sys, torch.onnx._internal.exporter as _e; hasattr(_e,"DiagnosticOptions") or setattr(_e,"DiagnosticOptions",type("DiagnosticOptions",(object,),{})); sys.path.insert(0, \"$TORDIFF_REPO\"); from utils.utils import get_model'),
-]"
+    ('tordiff_model',   'import sys; sys.path.insert(0, \"$TORDIFF_REPO\"); from utils.utils import get_model'),
+]" "$TORDIFF_PREAMBLE"
 
 # ── ETFlow ───────────────────────────────────────────────────────────────────
 ETFLOW_REPO="$BASELINES_DIR/ETFlow"
