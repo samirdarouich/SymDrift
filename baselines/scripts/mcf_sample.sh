@@ -41,7 +41,7 @@ arch = PerceiverIO(
 ).to(device)
 arch.eval()
 
-N_MOL, N_ATOMS, N_EIGS, COORD_DIM, SIG_DIM, N_STEPS = 50, 10, 32, 75, 3, 50
+N_MOL, N_ATOMS, N_EIGS, COORD_DIM, SIG_DIM, N_STEPS = 50, 10, 32, 75, 3, 1000
 
 def run_sampling(n_mol, n_steps):
     cx = torch.randn(n_mol, N_EIGS, COORD_DIM, device=device)
