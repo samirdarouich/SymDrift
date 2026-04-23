@@ -1,6 +1,5 @@
 #!/bin/bash
-# Set up GeoMol conda environment (Python 3.9, PyTorch 1.11, CUDA 11.3)
-# Uses pip for PyTorch to avoid conda MKL linking issues on HPC clusters.
+# Set up GeoMol conda environment (Python 3.9, PyTorch 2.1, CUDA 12.1)
 set -e
 
 REPO="$(cd "$(dirname "$0")/../GeoMol" 2>/dev/null && pwd)" || {
@@ -12,21 +11,18 @@ echo "[GeoMol] Creating conda environment (Python 3.9)..."
 conda env list | grep -q "^geomol " || \
     conda create -n geomol python=3.9 -y --override-channels -c conda-forge
 
-echo "[GeoMol] Installing PyTorch 1.11.0 + CUDA 11.3 via pip..."
-conda run -n geomol pip install \
-    torch==1.11.0+cu113 \
-    --extra-index-url https://download.pytorch.org/whl/cu113
+PYTHON=$(conda info --envs | awk '$1=="geomol"{print $NF"/bin/python3"}')
 
-echo "[GeoMol] Installing RDKit and core deps..."
-conda run -n geomol conda install -y rdkit networkx pot scikit-learn tqdm pyyaml -c conda-forge
+echo "[GeoMol] Installing PyTorch 2.1.0 + CUDA 12.1 via pip..."
+$PYTHON -m pip install torch==2.1.0 --extra-index-url https://download.pytorch.org/whl/cu121
 
-echo "[GeoMol] Installing numpy..."
-conda run -n geomol pip install numpy
+echo "[GeoMol] Installing numpy<2 and core deps..."
+$PYTHON -m pip install "numpy<2"
+$PYTHON -m pip install rdkit networkx "pot>=0.7.0" scikit-learn tqdm pyyaml
 
-echo "[GeoMol] Installing PyTorch Geometric (pinned for PyTorch 1.11 compatibility)..."
-conda run -n geomol pip install \
-    torch-scatter torch-sparse torch-cluster torch-spline-conv \
-    -f "https://pytorch-geometric.com/whl/torch-1.11.0+cu113.html"
-conda run -n geomol pip install torch-geometric==2.0.4
+echo "[GeoMol] Installing PyTorch Geometric (prebuilt wheels for torch 2.1 + cu121)..."
+$PYTHON -m pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+    --find-links "https://pytorch-geometric.com/whl/torch-2.1.0+cu121.html"
+$PYTHON -m pip install torch-geometric
 
 echo "[GeoMol] Setup complete."

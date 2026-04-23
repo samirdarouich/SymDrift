@@ -23,6 +23,7 @@ conda run -n mcf pip install numpy setuptools
 echo "[MCF] Installing requirements (skipping mamba-ssm — only needed for Mamba variant, not PerceiverIO)..."
 grep -v "mamba.ssm" "$REPO/environment/requirements.txt" > /tmp/mcf_requirements.txt
 conda run -n mcf pip install -r /tmp/mcf_requirements.txt
+conda run -n mcf pip install transformers
 
 echo "[MCF] Installing repo..."
 conda run -n mcf pip install -e "$REPO" --no-deps 2>/dev/null || true
