@@ -429,7 +429,8 @@ def log_hyperparameters(cfg_dict, trainer) -> None:
         return
 
     for key in ["drifting_field", "prior", "embedder", "model", "dataset"]:
-        hparams[key] = cfg[key]
+        if key in cfg:
+            hparams[key] = cfg[key]
 
     # send hparams to all loggers
     for logger in trainer.loggers:

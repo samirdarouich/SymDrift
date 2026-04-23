@@ -3,6 +3,7 @@
 defaults:
   - geom_qm9_o3_embedded_space
   - override /drifting_field: coordinate_space
+  - override /embedder: null
 
 generative_model:
   embedder: null # we work in coordinate space, so no need for an embedder
