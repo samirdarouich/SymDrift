@@ -42,6 +42,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = GeoMol(**model_parameters).to(device)
 model.eval()
 
+# QM9 atom types: H, C, N, O, F only — no Cl/Br/S/P
 SMILES = [
     "C","CC","CCC","CO","CCO","CN","CCN","C=C","C=O","C=N",
     "C#N","CC#N","C1CC1","C1CCC1","C1CO1","C1CCO1","C1CN1","C1CCN1",
@@ -49,12 +50,20 @@ SMILES = [
     "CC(C)O","CC(C)=O","CC(C)N","CC(C)C","CCC=O",
     "CCCC","CCCN","CCCO","C=CC","CC=C","CC=O","C#CC",
     "C1CCCC1","C1CCCO1","C1CCNC1","Cc1ccncc1","Cc1ccoc1",
-    "CC(F)F","CCCl","CCBr","NCC(=O)O","CC(N)C(=O)O",
+    "CC(F)F","CCCO","NCC(=O)O","CC(N)C(=O)O",
     "OCC(O)CO","CC1CC1","CCCCN","CCCCO","CC(C)(C)C",
+    "CCOCC","CCNCC","CC(=O)N","OC(=O)N","CC(O)=O",
 ]
 
 def make_batch(smiles, device):
-    data_list = [d for smi in smiles if (d := featurize_mol_from_smiles(smi, dataset="qm9")) is not None]
+    data_list = []
+    for smi in smiles:
+        try:
+            d = featurize_mol_from_smiles(smi, dataset="qm9")
+            if d is not None:
+                data_list.append(d)
+        except Exception:
+            pass
     if not data_list:
         return None
     batch = Batch.from_data_list(data_list).to(device)
