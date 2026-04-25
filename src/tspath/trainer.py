@@ -416,7 +416,11 @@ class DriftingMolecules(pl.LightningModule):
         else:
             df, metrics_cov = None, {}
 
-        metrics = {**metrics_val, **metrics_cov}
+        metrics = {
+            **metrics_val, 
+            **metrics_cov, 
+            "sampling_time": elapsed_time / len(atoms_pred),
+        }
 
         # Save samples
         if save_folder is not None and self.is_global_zero():
