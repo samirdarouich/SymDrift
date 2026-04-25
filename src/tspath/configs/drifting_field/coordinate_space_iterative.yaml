@@ -7,4 +7,15 @@ normalize_drift: true
 # Not strictly equivariant as alignment is used on heuristic.
 aligned: true
 permuted: true
-brute_force_permutations: false 
+brute_force_permutations: false
+
+## Settings for iterative solving
+
+# number of iterations to perform
+max_iter: 3
+
+# rmsd threshold for convergence (if the improvement in RMSD is less than this, stop iterating)
+tol: 1e-2
+
+# whether to perform a Kabsch alignment before the first iteration (if false, the first step in the iteration will be a Hungarian alignment)
+rotate_before: true

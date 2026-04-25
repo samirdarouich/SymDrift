@@ -131,7 +131,7 @@ def hungarian_batched(x, y, atomic_numbers=None):
     
     return y_permuted, assignment
 
-def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2, verbose=False):
+def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2, rotate_before=True, verbose=False):
     """ Perform permutations and aligment of y to x using Hungarian and Kabsch algorithm
     in an iterative manner. 
     
@@ -153,6 +153,8 @@ def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2,
         maximum number of iterations to perform
     tol : float
         convergence threshold for mean change in RMSD between iterations
+    rotate_before : bool
+        whether to perform a Kabsch alignment before the first iteration
     verbose : bool
         whether to print convergence information at each iteration
 
@@ -167,6 +169,13 @@ def hungarian_and_kabch_batched(x, y, atomic_numbers=None, max_iter=3, tol=1e-2,
     rmsds = [get_rmsd_batched(x, y_aligned).max().item()]
     if verbose:
         print(f"Initial RMSD: {rmsds[-1]:.6f}")
+        
+    if rotate_before:
+        y_aligned, _ = kabsch_batched(x, y_aligned)
+        rmsds.append(get_rmsd_batched(x, y_aligned).max().item())
+        if verbose:
+            print(f"After initial Kabsch RMSD: {rmsds[-1]:.6f}")
+        
     for i in range(max_iter):
         # find permutation that minimizes RMSD to x (if specified respect atomic numbers)
         y_permuted, perm_i = hungarian_batched(x, y_aligned, atomic_numbers)

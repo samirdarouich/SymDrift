@@ -65,7 +65,14 @@ def minimal_distance(x, y, **kwargs):
 
 
 def minimal_distance_permuted(
-    x, y, atomic_numbers=None, brute_force_permutations=False
+    x,
+    y,
+    atomic_numbers=None,
+    brute_force_permutations=False,
+    max_iter=3,
+    tol=1e-2,
+    rotate_before=True,
+    **kwargs,
 ):
     """Compute EOT plan for batch of molecules. Reorder and permute y to match x.
 
@@ -78,6 +85,12 @@ def minimal_distance_permuted(
     atomic_numbers : array
         atomic numbers of each atom in target structure, used to only permute within
         same atomic number (M*n_atoms,)
+    max_iter : int
+        maximum number of iterations to perform
+    tol : float
+        convergence threshold for mean change in RMSD between iterations
+    rotate_before : bool
+        whether to perform a Kabsch alignment before the first iteration
 
     Returns
     -------
@@ -101,7 +114,12 @@ def minimal_distance_permuted(
         )
     else:
         y_aligned_and_permuted, _ = hungarian_and_kabch_batched(
-            x_flat, y_flat, atomic_numbers=atomic_numbers_flat, max_iter=3
+            x_flat,
+            y_flat,
+            atomic_numbers=atomic_numbers_flat,
+            max_iter=max_iter,
+            rotate_before=rotate_before,
+            tol=tol,
         )
 
     # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
@@ -166,11 +184,11 @@ class DriftingField:
 
         # 3. Compute logits (normalize the temperature with sqrt of dimension D to keep
         # them transfearable between different dimensions.)
-        logit_pos = (
-            -dist_pos.unsqueeze(0) / (self.temperatures[:, None, None] * D**0.5)
+        logit_pos = -dist_pos.unsqueeze(0) / (
+            self.temperatures[:, None, None] * D**0.5
         )  # (Ts, N, N_pos)
-        logit_neg = (
-            -dist_neg.unsqueeze(0) / (self.temperatures[:, None, None] * D**0.5)
+        logit_neg = -dist_neg.unsqueeze(0) / (
+            self.temperatures[:, None, None] * D**0.5
         )  # (Ts, N, N_neg)
 
         # Compute kernel (normalize over y and optionally over x)
@@ -181,8 +199,12 @@ class DriftingField:
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
-            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
-            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
+            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(
+                1e-12
+            )  # renormalize over y
+            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(
+                1e-12
+            )  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
@@ -199,11 +221,11 @@ class DriftingField:
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2)))  # (T)
             v_pos_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2)))  # (T)
             v_neg_norm = torch.sqrt(torch.mean(drift_neg**2, dim=(1, 2)))  # (T)
-            
+
             V = V / (v_norm[:, None, None] + 1e-8)
             drift_pos = drift_pos / (v_pos_norm[:, None, None] + 1e-8)
             drift_neg = drift_neg / (v_neg_norm[:, None, None] + 1e-8)
-        
+
         # sum over temperatures to get final V of shape (N, D)
         V = V.sum(dim=0)
         drift_pos = drift_pos.sum(dim=0)
@@ -222,6 +244,9 @@ class EquivariantDriftingField:
         aligned=True,
         permuted=True,
         brute_force_permutations=False,
+        max_iter=3,
+        tol=1e-2,
+        rotate_before=True,
     ):
         if temperatures is None:
             temperatures = torch.tensor([1.0])
@@ -232,6 +257,9 @@ class EquivariantDriftingField:
         self.aligned = aligned
         self.permuted = permuted
         self.brute_force_permutations = brute_force_permutations
+        self.max_iter = max_iter
+        self.tol = tol
+        self.rotate_before = rotate_before
         # Initialize distance function based on alignment and permutation settings
         self.get_distance_fn()
 
@@ -247,6 +275,9 @@ class EquivariantDriftingField:
             self.distance_fn = partial(
                 minimal_distance_permuted,
                 brute_force_permutations=self.brute_force_permutations,
+                max_iter=self.max_iter,
+                tol=self.tol,
+                rotate_before=self.rotate_before,
             )
         elif self.aligned and not self.permuted:
             self.distance_fn = minimal_distance
@@ -329,7 +360,7 @@ class EquivariantDriftingField:
                         .view(-1)
                     )
 
-        # Distances are RMSD, hence they are normalized by sqrt of number of atoms, so 
+        # Distances are RMSD, hence they are normalized by sqrt of number of atoms, so
         # that they are transfearable between different molecule sizes.
         dist_pos, diff_pos = self.distance_fn(
             x_, y_pos_, atomic_numbers=atomic_numbers_pos
@@ -342,7 +373,7 @@ class EquivariantDriftingField:
         if self.mask_self and N == N_neg:
             mask = torch.eye(N, device=device) * 1e6
             dist_neg = dist_neg + mask
-        
+
         # 3. Compute logits
         logit_pos = (
             -dist_pos.unsqueeze(0) / self.temperatures[:, None, None]
@@ -359,8 +390,12 @@ class EquivariantDriftingField:
             w_neg_ = torch.softmax(logit_neg, dim=-2)  # softmax over x (rows)
             w_pos = torch.sqrt(w_pos * w_pos_)  # geometric mean
             w_neg = torch.sqrt(w_neg * w_neg_)  # geometric mean
-            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(1e-12) # renormalize over y
-            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # renormalize over y
+            w_pos = w_pos / w_pos.sum(dim=-1, keepdim=True).clamp_min(
+                1e-12
+            )  # renormalize over y
+            w_neg = w_neg / w_neg.sum(dim=-1, keepdim=True).clamp_min(
+                1e-12
+            )  # renormalize over y
 
         # 7. Compute drift as weighted average of differences (T is dim=0, x is dim=1, y is dim=2).
         # Aim is compute the drift for each molecule in x as a weighted average of the
@@ -377,11 +412,11 @@ class EquivariantDriftingField:
             v_norm = torch.sqrt(torch.mean(V**2, dim=(1, 2, 3)))  # (T)
             v_pos_norm = torch.sqrt(torch.mean(drift_pos**2, dim=(1, 2, 3)))  # (T)
             v_neg_norm = torch.sqrt(torch.mean(drift_neg**2, dim=(1, 2, 3)))  # (T)
-            
+
             V = V / (v_norm[:, None, None, None] + 1e-8)
             drift_pos = drift_pos / (v_pos_norm[:, None, None, None] + 1e-8)
             drift_neg = drift_neg / (v_neg_norm[:, None, None, None] + 1e-8)
-        
+
         # sum over temperatures to get final V of shape (N, n_atoms, d)
         V = V.sum(dim=0)
         drift_pos = drift_pos.sum(dim=0)
