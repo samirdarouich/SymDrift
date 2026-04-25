@@ -107,6 +107,7 @@ def sample(cfg):
             "run",
             "generative_model",
             "model",
+            "prior",
             "dataset",
             "seed",
         )
