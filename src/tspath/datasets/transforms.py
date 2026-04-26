@@ -22,9 +22,11 @@ RDLogger.DisableLog("rdApp.*")
 
 __all__ = [
     "RemoveCOMReaction",
+    "RemoveCOMConformer",
     "RemoveCOM",
     "RandomRotate",
     "RandomPermute",
+    "ConformerAugment",
     "AlignReaction",
     "TargetReaction",
     "BoltzmannWeightingConformers",
@@ -55,16 +57,6 @@ class RemoveCOMReaction(BaseTransform):
             data[pos_key] = pos - com
         return data
 
-
-class RemoveCOM(BaseTransform):
-    def forward(self, data):
-        for pos_key in ["pos"]:
-            pos = data[pos_key]
-            com = pos.mean(dim=0, keepdim=True)
-            data[pos_key] = pos - com
-        return data
-
-
 class RemoveCOMConformer(BaseTransform):
     def forward(self, data):
         pos = data.pos
@@ -73,6 +65,14 @@ class RemoveCOMConformer(BaseTransform):
         pos = pos.view(num_conformers, num_atoms, 3)
         com = pos.mean(dim=1, keepdim=True)
         data.pos = (pos - com).view(-1, 3)
+        return data
+    
+class RemoveCOM(BaseTransform):
+    def forward(self, data):
+        for pos_key in ["pos"]:
+            pos = data[pos_key]
+            com = pos.mean(dim=0, keepdim=True)
+            data[pos_key] = pos - com
         return data
 
 
@@ -100,12 +100,99 @@ class RandomRotate(BaseTransform):
 
 class RandomPermute(BaseTransform):
     def forward(self, data):
-        perm = torch.randperm(data.num_nodes)
+        types = data.x
+        perm = torch.arange(len(types))
+
+        # Permute within each atom type
+        for t in types.unique():
+            idx = (types == t).nonzero(as_tuple=True)[0]
+            perm[idx] = idx[torch.randperm(len(idx))]
+
+        # Apply permutation
         data.pos = data.pos[perm]
         data.x = data.x[perm]
+        
         return data
 
 
+class ConformerAugment(BaseTransform):
+    def __init__(self, num_augs=1, rotate=True, permute=True):
+        self.num_augs = num_augs
+        self.rotate = rotate
+        self.permute = permute
+
+    def random_rotation(self):
+         # Sample random unit quaternion
+        q = torch.randn(4)
+        q = q / q.norm()
+
+        w, x, y, z = q
+
+        # Convert quaternion to rotation matrix
+        R = torch.tensor(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+        return R
+
+    def random_permutation(self, x):
+        perm = torch.arange(len(x))
+        for t in x.unique():
+            idx = (x == t).nonzero(as_tuple=True)[0]
+            perm[idx] = idx[torch.randperm(len(idx))]
+        assert (x[perm] == x).all(), "Permutation should preserve atom types"
+        return perm
+    
+    def forward(self, data):
+        pos_list = []
+        x_list = []
+        conf_idx_list = []
+
+        pos = data.pos
+        x = data.x_conf
+        conf_idx = data.conformer_index
+
+        unique_confs = conf_idx.unique()
+        new_conf_counter = 0
+
+        for conf in unique_confs:
+            mask = (conf_idx == conf)
+            pos_c = pos[mask]
+            x_c = x[mask]
+            for _ in range(self.num_augs):
+                pos_aug = pos_c.clone()
+                x_aug = x_c.clone()
+
+                # --- Rotation per conformer ---
+                if self.rotate:
+                    R = self.random_rotation()
+                    pos_aug = pos_aug @ R.T
+                
+                # --- Permutation within conformer ---
+                if self.permute:
+                    perm = self.random_permutation(x_c)
+                    pos_aug = pos_aug[perm]
+                    x_aug = x_aug[perm]
+
+                # --- Store ---
+                pos_list.append(pos_aug)
+                x_list.append(x_aug)
+                conf_idx_list.append(
+                    torch.full((len(pos_aug),), new_conf_counter, dtype=conf_idx.dtype)
+                )
+
+                new_conf_counter += 1
+
+        # --- Concatenate everything ---
+        data.pos = torch.cat(pos_list, dim=0)
+        data.x_conf = torch.cat(x_list, dim=0)
+        data.conformer_index = torch.cat(conf_idx_list, dim=0)
+
+        return data
+    
 class AlignReaction(BaseTransform):
     def forward(self, data):
         pos_r = data.pos_r

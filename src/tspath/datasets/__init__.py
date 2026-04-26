@@ -8,4 +8,4 @@ from .molecule import (
 from .reaction import ReactionDataset
 from .sampler import CompositionBatchSampler
 from .toy import ToyDataset, ToyMoleculeDataset
-from .transforms import BoltzmannWeightingConformers, RandomPermute, RandomRotate
+from .transforms import BoltzmannWeightingConformers, RandomPermute, RandomRotate, ConformerAugment
