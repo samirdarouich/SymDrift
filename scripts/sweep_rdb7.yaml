@@ -18,10 +18,10 @@ parameters:
     max: 1e-2
   
   model.model.sphere_channels:
-    values: [128, 256]
+    values: [128, 256, 384]
   
   model.model.num_layers:
-    values: [4, 6, 8, 10, 12]
+    values: [4, 6, 8, 10, 12, 14, 16]
 
   model.model.attn_dropout:
     values: [0.0, 0.05, 0.1, 0.15]
@@ -33,11 +33,13 @@ command:
   - ${env}
   - tspath_train
   - experiment=rdb7_embedded_space
-  - run.id="rdb7/embedded_space_gaussian/sweep_${uuid:1}"
+  - run.id="rdb7/embedded_space/gaussian/sweeps/sweep_${uuid:1}"
   - prior=gaussian
   - trainer.max_epochs=51
   - generative_model.sample_every_epoch=10
-  - dataset.batch_size=6
+  - generative_model.n_neg_per_pos=64
+  - dataset.batch_size=4
+  - dataset.pin_memory=true
   - model.scheduler=null
   - callbacks=sweep
   - ${args_no_hyphens}
