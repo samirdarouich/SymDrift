@@ -2,8 +2,9 @@
 
 defaults:
   - geom_qm9_naive_embedded_space
-  - override /drifting_field: coordinate_space_naive
+  - override /drifting_field: coordinate_space_iterative
   - override /dataset: geom_qm9_data_augmented
+  - override /embedder: null
 
 generative_model:
   embedder: null # we work in coordinate space, so no need for an embedder
