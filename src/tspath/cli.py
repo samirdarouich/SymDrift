@@ -122,6 +122,7 @@ def sample(cfg):
     if getattr(cfg.dataset, "test_dataloader", None) is not None:
         log.info("Using seperate test dataset for sampling.")
         dataloader = instantiate(cfg.dataset.test_dataloader)
+        log.info("Get dataset as ASE atoms...")
         atoms_dataset = dataloader.dataset.get_dataset_as_atoms()
     else:
         log.info("Using datamodule to load dataset for sampling.")
@@ -129,6 +130,7 @@ def sample(cfg):
         sampling_split = getattr(cfg.dataset, "sampling_split", "test")
         datamodule.setup(stage=sampling_split)
         dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
+        log.info("Get dataset as ASE atoms...")
         atoms_dataset = getattr(datamodule, f"{sampling_split}_dataset").get_dataset_as_atoms()
 
     generative_process = instantiate(cfg.generative_model)
@@ -149,13 +151,21 @@ def sample(cfg):
     identifier = getattr(cfg.generative_model, "identifier", "smiles")
     num_workers = getattr(cfg.generative_model, "num_workers", 8)
     worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
+    skip_disconnected = getattr(cfg.generative_model, "skip_disconnected", True)
     save_trajectory = getattr(cfg, "save_trajectory", False)
     save_pca_plot = getattr(cfg, "save_pca_plot", False)
     prior_type = generative_process.prior_sampler.type
-    save_folder = f"nfe_{nfe}_gs_{guidance_scale}"
-    
+    base_folder = f"nfe_{nfe}_gs_{guidance_scale}"
+    save_folder = base_folder
+
     if os.path.exists(save_folder):
-        log.warning(f"Save folder {save_folder} already exists. Samples will be appended.")
+        log.warning(f"Save folder {save_folder} already exists...")
+        i = 1
+        while os.path.exists(save_folder):
+            save_folder = f"{base_folder}_{i:02d}"
+            i += 1
+        log.info(f"New save folder: {save_folder}")
+            
         
     log.info(
         f"Sampling at max {n_samples} time(s) with:\n"
@@ -209,13 +219,19 @@ def sample(cfg):
             for k, v in batch_metrics.items():
                 metrics.setdefault(k, []).extend(v if isinstance(v, list) else [v])
     
+    summary_metrics = {}
     for k, v in metrics.items():
         metrics[k] = torch.tensor(v)
         log.info(
             f"Test {k}: mean: {metrics[k].mean().item():.4f} "
             f"median: {metrics[k].median().item():.4f}"
         )
-
+        summary_metrics[k+"_mean"] = metrics[k].mean().item()
+        summary_metrics[k+"_median"] = metrics[k].median().item()
+    
+    with open(os.path.join(save_folder, "metrics.json"), "w") as f:
+        json.dump(summary_metrics, f, indent=4)
+            
     # Evaluate coverage and matching for the whole dataset if specified
     if threshold is not None:
         log.info(
@@ -231,6 +247,7 @@ def sample(cfg):
             worker_fn_type=worker_fn_type,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
+            skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
         )
         df, metrics_cov = print_covmat_results(results, threshold=threshold)
         
@@ -252,7 +269,8 @@ def run_covmat_evaluation(
     threshold: float = 0.5,
     ratio: float = 2.0,
     save_folder: str = "covmat_evaluation_results",
-    identifier: str = "smiles"
+    identifier: str = "smiles",
+    skip_disconnected: bool = True
 ):
     from ase.io import read
 
@@ -281,6 +299,7 @@ def run_covmat_evaluation(
         worker_fn_type=worker_fn_type,
         ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
         identifier=identifier,
+        skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
     

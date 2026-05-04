@@ -12,28 +12,36 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--path_generated", type=str, help="Path to generated atoms (.xyz)"
+        "--path_generated", "-pg", type=str, help="Path to generated atoms (.xyz)"
     )
 
-    parser.add_argument("--path_dataset", type=str, help="Path to dataset atoms (.xyz)")
+    parser.add_argument(
+        "--path_dataset", "-pd", type=str, help="Path to dataset atoms (.xyz)"
+    )
 
     parser.add_argument(
-        "--num_workers", type=int, default=8, help="Number of workers (default: 8)"
+        "--num_workers",
+        "-nw",
+        type=int,
+        default=8,
+        help="Number of workers (default: 8)",
     )
 
     parser.add_argument(
         "--worker_fn_type",
+        "-wf",
         type=str,
         default="rmsd_rdkit_wo_h",
         help="Worker function type (default: rmsd_rdkit_wo_h)",
     )
 
     parser.add_argument(
-        "--ratio", type=int, default=2, help="Ratio parameter (default: 2)"
+        "--ratio", "-r", type=int, default=2, help="Ratio parameter (default: 2)"
     )
 
     parser.add_argument(
         "--threshold",
+        "-t",
         type=float,
         default=0.5,
         help="Threshold for similarity (default: 0.5)",
@@ -41,13 +49,23 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--identifier",
+        "-id",
         type=str,
         default="smiles",
         help="Identifier for molecules (default: smiles)",
     )
-    
+
+    parser.add_argument(
+        "--skip_disconnected",
+        "-sd",
+        action="store_true",
+        default=True,
+        help="Skip disconnected ground truth graphs during evaluation",
+    )
+
     parser.add_argument(
         "--save_folder",
+        "-sf",
         type=str,
         default="covmat_evaluation_results",
         help="Folder to save results (default: covmat_evaluation_results)",
@@ -64,4 +82,5 @@ if __name__ == "__main__":
         ratio=args.ratio,
         save_folder=args.save_folder,
         identifier=args.identifier,
+        skip_disconnected=args.skip_disconnected,
     )

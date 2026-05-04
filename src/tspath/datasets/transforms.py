@@ -1,4 +1,5 @@
 from collections import defaultdict
+import random
 from typing import Callable, Tuple
 
 import datamol as dm
@@ -7,6 +8,8 @@ import torch
 from datamol.types import Mol
 from rdkit import Chem, RDLogger
 from torch_geometric.transforms import BaseTransform
+from sympy.combinatorics import Permutation, PermutationGroup
+import pynauty
 
 from tspath.alignment import kabsch_batched_scatter
 from tspath.datasets.utils import (
@@ -138,13 +141,63 @@ class ConformerAugment(BaseTransform):
         )
         return R
 
-    def random_permutation(self, x):
-        perm = torch.arange(len(x))
-        for t in x.unique():
-            idx = (x == t).nonzero(as_tuple=True)[0]
-            perm[idx] = idx[torch.randperm(len(idx))]
-        assert (x[perm] == x).all(), "Permutation should preserve atom types"
-        return perm
+    def random_permutation(self, x, graph_edges):
+        """Find random permutations of atoms that preserve atom types and bonding structure."""
+        num_nodes = x.shape[0]
+        graph = pynauty.Graph(number_of_vertices=num_nodes, directed=False)
+        
+        edge_index_forward = graph_edges[:, ::2]
+        for i in range(edge_index_forward.shape[1]):
+            graph.connect_vertex(edge_index_forward[0, i].item(), [edge_index_forward[1, i].item()])
+        
+        color_groups = defaultdict(set)
+        for node in range(num_nodes):
+            color = x[node].cpu().numpy().item()
+            color_groups[color].add(node)
+        vertex_colors = list(color_groups.values())
+        graph.set_vertex_coloring(vertex_colors)
+                    
+        generators, _, _, _, _ = pynauty.autgrp(graph)       
+        
+        generators_sympy = [Permutation(g) for g in generators]
+        random.shuffle(generators_sympy)
+        # Construct the permutation group
+        aut_group = PermutationGroup(generators_sympy)
+        
+        # Print all isomorphisms (automorphisms)
+        all_perms = [np.arange(num_nodes)]
+
+        for perm in aut_group.generate():
+            if len(perm.array_form) == 0:
+                continue
+            perm_array = np.array(perm.array_form)
+            signature = np.where(perm_array != np.arange(len(perm_array)))[0]
+            if len(signature) == 0:
+                continue
+            all_perms.append(perm.array_form)
+            if len(all_perms) >= self.num_augs:
+                break
+        
+        num_perms = len(all_perms)
+        if num_perms == 0:
+            all_perms = torch.full((self.num_augs, num_nodes), -1, dtype=torch.long)
+            all_perms[0] = torch.arange(num_nodes)
+        else:
+            all_perms = torch.stack([torch.tensor(perm, dtype=torch.long) for perm in all_perms])
+            num_perms = all_perms.size(0)
+        
+        if num_perms < self.num_augs:
+            # fill the rest by subsampling (with replacement) from found permutations
+            needed = self.num_augs - num_perms
+            idx = torch.randint(0, num_perms, (needed,), device=all_perms.device)
+            sampled = all_perms[idx]
+            all_perms = torch.cat([all_perms, sampled], dim=0)
+                    
+        # Verify that the permutations preserve atom types
+        x_repeated = x.unsqueeze(0).expand(self.num_augs, -1)
+        perm_indices = torch.arange(self.num_augs)[:, None]
+        assert (x_repeated[perm_indices, all_perms] == x_repeated).all(), "Permutation should preserve atom types"
+        return all_perms
     
     def forward(self, data):
         pos_list = []
@@ -154,7 +207,11 @@ class ConformerAugment(BaseTransform):
         pos = data.pos
         x = data.x_conf
         conf_idx = data.conformer_index
+        graph_edges = data.bonded_edge_index
 
+        if self.permute:
+            permutations = self.random_permutation(data.x, graph_edges=graph_edges)
+            
         unique_confs = conf_idx.unique()
         new_conf_counter = 0
 
@@ -162,7 +219,7 @@ class ConformerAugment(BaseTransform):
             mask = (conf_idx == conf)
             pos_c = pos[mask]
             x_c = x[mask]
-            for _ in range(self.num_augs):
+            for i in range(self.num_augs):
                 pos_aug = pos_c.clone()
                 x_aug = x_c.clone()
 
@@ -173,7 +230,7 @@ class ConformerAugment(BaseTransform):
                 
                 # --- Permutation within conformer ---
                 if self.permute:
-                    perm = self.random_permutation(x_c)
+                    perm = permutations[i]
                     pos_aug = pos_aug[perm]
                     x_aug = x_aug[perm]
 
@@ -190,6 +247,7 @@ class ConformerAugment(BaseTransform):
         data.pos = torch.cat(pos_list, dim=0)
         data.x_conf = torch.cat(x_list, dim=0)
         data.conformer_index = torch.cat(conf_idx_list, dim=0)
+        data.num_conformers *= self.num_augs
 
         return data
     

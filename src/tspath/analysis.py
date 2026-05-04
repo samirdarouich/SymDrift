@@ -27,8 +27,11 @@ from rdkit.Chem import rdMolAlign
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 from tspath.datasets import ToyMoleculeDataset
-from tspath.utils import RankedLogger
+from tspath.utils import RankedLogger, build_conformer
+from copy import deepcopy
 from rdkit.Geometry import Point3D
+import datamol as dm
+from rdkit.Chem.rdmolops import RemoveHs
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -423,6 +426,7 @@ def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
     for c in count:
         total_permutations *= math.factorial(c)  # type: ignore
     if total_permutations < 1e4:
+        logger.debug(f"Using brute force matcher with {total_permutations} permutations")
         bfm = BruteForceOrderMatcher(mol1)
         aligned, rmse = bfm.fit(mol2)
     else:
@@ -435,8 +439,11 @@ def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
                 aligned = pair[0]
                 rmse = pair[-1]
         if not len(pairs):
+            logger.debug("Using Hungarian algorithm matcher.")
             bfm = HungarianOrderMatcher(mol1)
             aligned, rmse = bfm.fit(mol2)
+        else:
+            logger.debug("Using Genetic algorithm matcher.")
     return rmse, aligned
 
 
@@ -694,15 +701,23 @@ def mol_from_ase(ase_atoms):
     mol.AddConformer(conf)
     return mol
 
+def set_rdmol_positions(rdkit_mol, pos):
+    """
+    Args:
+        rdkit_mol:  An `rdkit.Chem.rdchem.Mol` object.
+        pos: (N_atoms, 3)
+    """
+    mol = deepcopy(rdkit_mol)
+    conformer = build_conformer(pos)
+    mol.AddConformer(conformer)
+    return mol
 
 def get_best_rmsd_rdkit(ref_mol, gen_mol, use_alignmol=False):
-    ref_mol_rdikit = mol_from_ase(ref_mol)
-    gen_mol_rdikit = mol_from_ase(gen_mol)
     try:
         if use_alignmol:
-            return rdMolAlign.AlignMol(gen_mol_rdikit, ref_mol_rdikit)
+            return rdMolAlign.AlignMol(gen_mol, ref_mol)
         else:
-            rmsd = rdMolAlign.GetBestRMS(gen_mol_rdikit, ref_mol_rdikit)
+            rmsd = rdMolAlign.GetBestRMS(gen_mol, ref_mol)
     except:  # noqa
         rmsd = np.nan
 
@@ -717,10 +732,8 @@ def worker_fn_rmsd_rdkit(job):
 
 def worker_fn_rmsd_rdkit_wo_h(job):
     smiles, i, j, ref_i, pred_j, use_alignmol = job
-    ref_i_woh = ref_i.copy()
-    pred_j_woh = pred_j.copy()
-    del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol == "H"]]
-    del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol == "H"]]
+    ref_i_woh = RemoveHs(ref_i)
+    pred_j_woh = RemoveHs(pred_j)
     rmsd = get_best_rmsd_rdkit(ref_i_woh, pred_j_woh, use_alignmol=use_alignmol)
     return smiles, i, j, rmsd
 
@@ -772,10 +785,16 @@ WORKER_FN_DICT = {
 }
 
 def evaluate_covmat(
-    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None, identifier="smiles"
+    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None, identifier="smiles", skip_disconnected=True
 ):
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
+    skipped = []
     for ref in refs:
+        if "." in ref.info[identifier] and skip_disconnected:
+            if ref.info[identifier] not in skipped:
+                logger.info(f"Skipping disconnected molecule with {identifier}={ref.info[identifier]} for covmat evaluation.")
+            skipped.append(ref.info[identifier])
+            continue
         ref_sample_dict[ref.info[identifier]]["refs"].append(ref)
     for pred in preds:
         smi = pred.info[identifier]
@@ -804,6 +823,12 @@ def evaluate_covmat(
     for smiles, data in ref_sample_dict.items():
         refs = data["refs"]
         preds = data["preds"]
+        
+        if worker_fn_type in ["rmsd_rdkit", "rmsd_rdkit_wo_h"]:
+            mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
+            refs = [set_rdmol_positions(mol, ref.positions) for ref in refs]
+            preds = [set_rdmol_positions(mol, pred.positions) for pred in preds]
+            
         for i, refs_i in enumerate(refs):
             for j, preds_j in enumerate(preds):
                 jobs.append((smiles, i, j, refs_i, preds_j, False))

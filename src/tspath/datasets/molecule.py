@@ -124,8 +124,7 @@ class MoleculeDataset(InMemoryDataset):
 class ConformerShared:
     """Containing shared logic for both InMemory and Disk-based Conformer Datasets."""
 
-    def get_ase_atoms(self, idx):
-        data = self[idx]
+    def get_ase_atoms(self, data):
         # [num_conformers, num_atoms, 3]
         positions = data.pos.view(-1, len(data.x), 3)
         atoms_list = []
@@ -141,7 +140,7 @@ class ConformerShared:
     def get_dataset_as_atoms(self):
         atoms_list = []
         for idx in range(len(self)):
-            atoms = self.get_ase_atoms(idx)
+            atoms = self.get_ase_atoms(self[idx])
             atoms_list.extend(atoms)
         return atoms_list
 

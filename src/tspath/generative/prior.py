@@ -113,7 +113,10 @@ class HarmonicSampler:
         noise[noise.isnan()] = 0.0
         sample = P @ (noise)
         
-        sample = batch_center_systems(sample, batch)
+        if batch is not None:
+            sample = batch_center_systems(sample, batch)
+        else:
+            sample = sample - sample.mean(dim=0, keepdim=True)
 
         return sample
 

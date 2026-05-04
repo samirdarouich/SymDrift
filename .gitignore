@@ -19,6 +19,7 @@ eval*.sh
 runs
 samples
 *.ipynb
+*.sh
 
 # C extensions
 *.so

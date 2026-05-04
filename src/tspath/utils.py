@@ -1,6 +1,8 @@
 import itertools
 import logging
 from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
+
+import datamol as dm
 import numpy as np
 import rich
 import torch
@@ -9,13 +11,12 @@ from ase import Atoms
 from lightning_utilities.core.rank_zero import rank_prefixed_message, rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities import rank_zero_only
+from rdkit.Chem.rdchem import Conformer
+from rdkit.Geometry import Point3D
+from rdkit import Chem
 from rich.syntax import Syntax
 from rich.tree import Tree
 from torch_scatter import scatter_mean
-from typing import Any, Dict
-
-from lightning_utilities.core.rank_zero import rank_zero_only
-from omegaconf import OmegaConf
 
 __all__ = [
     "print_config",
@@ -29,6 +30,8 @@ __all__ = [
     "sample_noise_like",
     "sample_noise_like_2d",
     "sample_isotropic_Gaussian",
+    "build_conformer",
+    "get_mol_with_conformer",
     "RankedLogger",
     "Queue",
 ]
@@ -246,7 +249,7 @@ def inputs_to_atoms(inputs, pos_key="pos", info_keys=[]):
     return atoms
 
 
-def batch_inputs_to_atoms(batch, pos_key="pos", info_keys=[]):
+def batch_inputs_to_atoms(batch, atom_key="x", pos_key="pos", batch_key="batch", info_keys=[]):
     """
     Converts a batch of inputs to a list of ASE Atoms objects.
 
@@ -258,10 +261,10 @@ def batch_inputs_to_atoms(batch, pos_key="pos", info_keys=[]):
     """
     atoms_list = []
 
-    for m in batch.batch.unique():
-        mask = batch.batch == m
+    for m in batch[batch_key].unique():
+        mask = batch[batch_key] == m
         R = batch[pos_key][mask].detach().cpu().numpy()
-        Z = batch.x[mask].detach().cpu().numpy()
+        Z = batch[atom_key][mask].detach().cpu().numpy()
         info = {}
         for key in info_keys:
             if hasattr(batch, key):
@@ -358,6 +361,24 @@ def sample_isotropic_Gaussian(
     return sample, noise
 
 
+def build_conformer(pos):
+    if isinstance(pos, torch.Tensor) or isinstance(pos, np.ndarray):
+        pos = pos.tolist()
+
+    conformer = Conformer()
+
+    for i, atom_pos in enumerate(pos):
+        conformer.SetAtomPosition(i, Point3D(*atom_pos))
+
+    return conformer
+
+
+def get_mol_with_conformer(smiles: str, positions: torch.Tensor) -> Chem.Mol:
+    mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
+    mol.AddConformer(build_conformer(positions))
+    return mol
+
+
 class RankedLogger(logging.LoggerAdapter):
     """A multi-GPU-friendly python command line logger."""
 
@@ -408,7 +429,9 @@ class RankedLogger(logging.LoggerAdapter):
                 elif current_rank == rank:
                     self.logger.log(level, msg, *args, **kwargs)
 
+
 log = RankedLogger(__name__, rank_zero_only=True)
+
 
 @rank_zero_only
 def log_hyperparameters(cfg_dict, trainer) -> None:

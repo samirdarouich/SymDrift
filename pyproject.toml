@@ -35,6 +35,7 @@ dependencies = [
     "scikit-learn",
     "datamol",
     "cython==3.0.11",
+    "pynauty",
 ]
 
 [tool.setuptools]

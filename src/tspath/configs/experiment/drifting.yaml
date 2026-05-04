@@ -67,6 +67,9 @@ generative_model:
   # Use RDKIT to compute the RMSD without considering hydrogens
   worker_fn_type: rmsd_rdkit_wo_h
 
+  # Whether to skip disconnected ground truth graphs during evaluation
+  skip_disconnected: true
+
   # Number of workers to evaluate the RMSD in parallel (if 0, no parallelization will be used)
   num_workers: 0
   

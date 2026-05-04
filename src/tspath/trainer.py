@@ -376,16 +376,14 @@ class DriftingMolecules(pl.LightningModule):
         was_training = self.model.training
         self.model.eval()
 
-        start_time = time.time()
-
         # Sample prior noise
         batch_sampling = self.sample_negative_batch(
             batch_pos, n_neg_per_pos=n_samples
         )
 
         # generate samples
+        start_time = time.time()
         x = self.model(batch_sampling)
-
         elapsed_time = time.time() - start_time
 
         # Convert to ASE Atoms

@@ -22,17 +22,19 @@ pin_memory: true
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
 # Define transforms to apply when loading data
+subselect_top_k_conformers:
+  _target_: tspath.datasets.BoltzmannWeightingConformers
+  keep_top_n: 30
+
 train_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
-    - _target_: tspath.datasets.BoltzmannWeightingConformers
-      keep_top_n: 30
+    - ${dataset.subselect_top_k_conformers}
 
 val_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
-    - _target_: tspath.datasets.BoltzmannWeightingConformers
-      keep_top_n: 30
+    - ${dataset.subselect_top_k_conformers}
 
 test_transform: null
 
@@ -50,7 +52,7 @@ datamodule:
   test_transform: ${dataset.test_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
-  test_batch_size: ${dataset.batch_size}
+  test_batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
