@@ -209,6 +209,7 @@ class ConformerAugment(BaseTransform):
         conf_idx = data.conformer_index
         graph_edges = data.bonded_edge_index
 
+        # Get permutations that preserve the bonding structure and atom types, if needed
         if self.permute:
             permutations = self.random_permutation(data.x, graph_edges=graph_edges)
             

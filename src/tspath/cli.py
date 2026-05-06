@@ -239,7 +239,7 @@ def sample(cfg):
             f"num_workers: {num_workers}, worker_fn_type: {worker_fn_type}, "
             f"ratio: {ratio}):"
         )
-        results = evaluate_covmat(
+        results, rmsd_matrix = evaluate_covmat(
             atoms_generated,
             atoms_dataset,
             thresholds=np.arange(0.05, 3.05, 0.05),
@@ -256,6 +256,7 @@ def sample(cfg):
             log.info(f"{k}: {v}")
             
         df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
+        np.save(os.path.join(save_folder, "covmat_rmsd_matrix.npy"), rmsd_matrix)
         with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
             json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
     log.info("Inference completed.")
@@ -270,7 +271,8 @@ def run_covmat_evaluation(
     ratio: float = 2.0,
     save_folder: str = "covmat_evaluation_results",
     identifier: str = "smiles",
-    skip_disconnected: bool = True
+    skip_disconnected: bool = True,
+    **job_kwargs
 ):
     from ase.io import read
 
@@ -286,12 +288,14 @@ def run_covmat_evaluation(
         f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
         "reference conformers."
     )
+    
+    kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
     log.info(
         f"Analysing coverage and matching (threshold: {threshold:.2f}, "
         f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
-        f"worker_fn_type: {worker_fn_type}):"
+        f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
     )
-    results = evaluate_covmat(
+    results, rmsd_matrix = evaluate_covmat(
         atoms_generated,
         atoms_dataset,
         thresholds=np.arange(0.05, 3.05, 0.05),
@@ -300,6 +304,7 @@ def run_covmat_evaluation(
         ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
         identifier=identifier,
         skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
+        **job_kwargs,
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
     
@@ -311,6 +316,7 @@ def run_covmat_evaluation(
     log.info(f"Saving results to folder: {save_folder}")
     os.makedirs(save_folder, exist_ok=True)
     df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
+    np.save(os.path.join(save_folder, "covmat_rmsd_matrix.npy"), rmsd_matrix)
     with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
         json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
     

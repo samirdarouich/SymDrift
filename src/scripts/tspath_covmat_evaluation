@@ -4,7 +4,23 @@ import logging
 
 import tspath.cli as cli
 
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def parse_kv_list(kv_list):
+    out = {}
+    for item in kv_list:
+        key, value = item.split("=")
+        try:
+            value = eval(value)  # or safer: use ast.literal_eval
+        except:
+            logger.warning(
+                f"Could not parse value for key '{key}'. Using string value '{value}' instead."
+            )
+            pass
+        out[key] = value
+    return out
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -29,10 +45,18 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--worker_fn_type",
-        "-wf",
+        "-wft",
         type=str,
         default="rmsd_rdkit_wo_h",
         help="Worker function type (default: rmsd_rdkit_wo_h)",
+    )
+
+    parser.add_argument(
+        "--worker_fn_kwargs",
+        "-wfk",
+        nargs="*",
+        default=[],
+        help="Additional keyword arguments for worker function, in the form key=value (default: empty)",
     )
 
     parser.add_argument(
@@ -71,7 +95,19 @@ if __name__ == "__main__":
         help="Folder to save results (default: covmat_evaluation_results)",
     )
 
+    parser.add_argument(
+        "--logging_level",
+        "-ll",
+        type=str,
+        default="INFO",
+        help="Logging level (default: INFO)",
+    )
+
     args = parser.parse_args()
+
+    logging.basicConfig(level=getattr(logging, args.logging_level))
+
+    job_kwargs = parse_kv_list(args.worker_fn_kwargs)
 
     cli.run_covmat_evaluation(
         path_generated=args.path_generated,
@@ -83,4 +119,5 @@ if __name__ == "__main__":
         save_folder=args.save_folder,
         identifier=args.identifier,
         skip_disconnected=args.skip_disconnected,
+        **job_kwargs,
     )

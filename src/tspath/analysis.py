@@ -1,12 +1,13 @@
-import logging
 import math
 import os
 import pickle
 from collections import defaultdict
+from copy import deepcopy
 from functools import partial
 from multiprocessing import Pool
 from typing import Any, Dict, List, Optional, Sequence, Union
 
+import datamol as dm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -24,14 +25,13 @@ from pymatgen.analysis.molecule_matcher import (
 from pymatgen.core import Molecule
 from rdkit import Chem
 from rdkit.Chem import rdMolAlign
+from rdkit.Chem.rdmolops import RemoveHs
+from rdkit.Geometry import Point3D
 from sklearn.decomposition import PCA
 from tqdm import tqdm
+
 from tspath.datasets import ToyMoleculeDataset
 from tspath.utils import RankedLogger, build_conformer
-from copy import deepcopy
-from rdkit.Geometry import Point3D
-import datamol as dm
-from rdkit.Chem.rdmolops import RemoveHs
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -416,7 +416,7 @@ def get_validity(atoms, progress_bar=False):
     }
 
 
-def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
+def rmse_core(mol1, mol2, same_order=False, threshold=0.5, max_permutations=1e4):
     _, count = np.unique(mol1.atomic_numbers, return_counts=True)
     if same_order:
         bfm = KabschMatcher(mol1)
@@ -425,8 +425,10 @@ def rmse_core(mol1, mol2, threshold=0.5, same_order=False):
     total_permutations = 1
     for c in count:
         total_permutations *= math.factorial(c)  # type: ignore
-    if total_permutations < 1e4:
-        logger.debug(f"Using brute force matcher with {total_permutations} permutations")
+    if total_permutations < max_permutations:
+        logger.debug(
+            f"Using brute force matcher with {total_permutations} permutations"
+        )
         bfm = BruteForceOrderMatcher(mol1)
         aligned, rmse = bfm.fit(mol2)
     else:
@@ -451,16 +453,27 @@ def pymatgen_rmse(
     mol1,
     mol2,
     ignore_chirality: bool = False,
-    threshold: float = 0.5,
     same_order: bool = False,
+    threshold: float = 0.5,
+    max_permutations: int = 1e4,
 ):
-    rmse, aligned = rmse_core(mol1, mol2, threshold, same_order=same_order)
+    rmse, aligned = rmse_core(
+        mol1,
+        mol2,
+        same_order=same_order,
+        threshold=threshold,
+        max_permutations=max_permutations,
+    )
     if ignore_chirality:
         coords = mol2.cart_coords
         coords[:, -1] = -coords[:, -1]
         mol2_reflect = Molecule(species=mol2.species, coords=coords)
         rmse_reflect, aligned_reflect = rmse_core(
-            mol1, mol2_reflect, threshold, same_order=same_order
+            mol1,
+            mol2_reflect,
+            same_order=same_order,
+            threshold=threshold,
+            max_permutations=max_permutations,
         )
         if rmse_reflect < rmse:
             rmse = rmse_reflect
@@ -469,7 +482,12 @@ def pymatgen_rmse(
 
 
 def pymatgen_match(
-    ref, sample, ignore_chirality=False, threshold=0.5, same_order=False
+    ref,
+    sample,
+    ignore_chirality=False,
+    same_order=False,
+    threshold=0.5,
+    max_permutations=1e4,
 ):
     mol_pred = Molecule(
         species=sample.numbers,
@@ -484,8 +502,9 @@ def pymatgen_match(
         mol_ref,
         mol_pred,
         ignore_chirality=ignore_chirality,
-        threshold=threshold,
         same_order=same_order,
+        threshold=threshold,
+        max_permutations=max_permutations,
     )
 
     # pymatgen computes rmse instead of rmsd
@@ -685,10 +704,11 @@ def calc_amr_precision(rmsd_array):
     amr_precision = np.mean(min_rmsd_per_pred)
     return amr_precision
 
+
 def mol_from_ase(ase_atoms):
     atomic_numbers = ase_atoms.numbers
     coords = ase_atoms.positions
-    
+
     mol = Chem.RWMol()
     conf = Chem.Conformer(len(atomic_numbers))
 
@@ -701,6 +721,7 @@ def mol_from_ase(ase_atoms):
     mol.AddConformer(conf)
     return mol
 
+
 def set_rdmol_positions(rdkit_mol, pos):
     """
     Args:
@@ -711,6 +732,7 @@ def set_rdmol_positions(rdkit_mol, pos):
     conformer = build_conformer(pos)
     mol.AddConformer(conformer)
     return mol
+
 
 def get_best_rmsd_rdkit(ref_mol, gen_mol, use_alignmol=False):
     try:
@@ -725,39 +747,41 @@ def get_best_rmsd_rdkit(ref_mol, gen_mol, use_alignmol=False):
 
 
 def worker_fn_rmsd_rdkit(job):
-    smiles, i, j, ref_i, pred_j, use_alignmol = job
-    rmsd = get_best_rmsd_rdkit(ref_i, pred_j, use_alignmol=use_alignmol)
+    smiles, i, j, ref_i, pred_j, kwargs = job
+    rmsd = get_best_rmsd_rdkit(ref_i, pred_j, **kwargs)
     return smiles, i, j, rmsd
 
 
 def worker_fn_rmsd_rdkit_wo_h(job):
-    smiles, i, j, ref_i, pred_j, use_alignmol = job
+    smiles, i, j, ref_i, pred_j, kwargs = job
     ref_i_woh = RemoveHs(ref_i)
     pred_j_woh = RemoveHs(pred_j)
-    rmsd = get_best_rmsd_rdkit(ref_i_woh, pred_j_woh, use_alignmol=use_alignmol)
+    rmsd = get_best_rmsd_rdkit(ref_i_woh, pred_j_woh, **kwargs)
     return smiles, i, j, rmsd
 
 
 def worker_fn_rmsd(job):
-    smiles, i, j, ref_i, pred_j, same_order = job
-    rmsd, _ = pymatgen_match(ref_i, pred_j, same_order=same_order)
+    smiles, i, j, ref_i, pred_j, kwargs = job
+    rmsd, _ = pymatgen_match(ref_i, pred_j, **kwargs)
     return smiles, i, j, rmsd
 
+
 def worker_fn_rmsd_wo_h(job):
-    smiles, i, j, ref_i, pred_j, same_order = job
+    smiles, i, j, ref_i, pred_j, kwargs = job
     ref_i_woh = ref_i.copy()
     pred_j_woh = pred_j.copy()
     del ref_i_woh[[atom.index for atom in ref_i_woh if atom.symbol == "H"]]
     del pred_j_woh[[atom.index for atom in pred_j_woh if atom.symbol == "H"]]
-    rmsd, _ = pymatgen_match(ref_i_woh, pred_j_woh, same_order=same_order)
+    rmsd, _ = pymatgen_match(ref_i_woh, pred_j_woh, **kwargs)
     return smiles, i, j, rmsd
 
+
 def worker_fn_distance(job):
-    smiles, i, j, ref_i, pred_j, same_order = job
+    smiles, i, j, ref_i, pred_j, kwargs = job
     pos_i = ref_i.positions
     pos_j = pred_j.positions
     distance = torch.cdist(torch.tensor(pos_i), torch.tensor(pos_j))
-    if same_order:
+    if kwargs.get("same_order"):
         rmse = torch.sqrt((distance**2).mean()).item()
     else:
         Z = torch.tensor(ref_i.numbers)
@@ -784,15 +808,26 @@ WORKER_FN_DICT = {
     "distance": worker_fn_distance,
 }
 
+
 def evaluate_covmat(
-    preds, refs, thresholds, num_workers=8, worker_fn_type="rmsd", ratio=None, identifier="smiles", skip_disconnected=True
+    preds,
+    refs,
+    thresholds,
+    num_workers=8,
+    worker_fn_type="rmsd",
+    ratio=None,
+    identifier="smiles",
+    skip_disconnected=True,
+    **job_kwargs,
 ):
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     skipped = []
     for ref in refs:
         if "." in ref.info[identifier] and skip_disconnected:
             if ref.info[identifier] not in skipped:
-                logger.info(f"Skipping disconnected molecule with {identifier}={ref.info[identifier]} for covmat evaluation.")
+                logger.info(
+                    f"Skipping disconnected molecule with {identifier}={ref.info[identifier]} for covmat evaluation."
+                )
             skipped.append(ref.info[identifier])
             continue
         ref_sample_dict[ref.info[identifier]]["refs"].append(ref)
@@ -800,7 +835,10 @@ def evaluate_covmat(
         smi = pred.info[identifier]
         # Only keep a certain ratio of predictions per reference
         if ratio is not None:
-            if len(ref_sample_dict[smi]["preds"]) >= len(ref_sample_dict[smi]["refs"]) * ratio:
+            if (
+                len(ref_sample_dict[smi]["preds"])
+                >= len(ref_sample_dict[smi]["refs"]) * ratio
+            ):
                 continue
         ref_sample_dict[pred.info[identifier]]["preds"].append(pred)
 
@@ -823,15 +861,15 @@ def evaluate_covmat(
     for smiles, data in ref_sample_dict.items():
         refs = data["refs"]
         preds = data["preds"]
-        
+
         if worker_fn_type in ["rmsd_rdkit", "rmsd_rdkit_wo_h"]:
             mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
             refs = [set_rdmol_positions(mol, ref.positions) for ref in refs]
             preds = [set_rdmol_positions(mol, pred.positions) for pred in preds]
-            
+
         for i, refs_i in enumerate(refs):
             for j, preds_j in enumerate(preds):
-                jobs.append((smiles, i, j, refs_i, preds_j, False))
+                jobs.append((smiles, i, j, refs_i, preds_j, job_kwargs))
 
     if num_workers > 1:
         with Pool(num_workers) as p:
@@ -869,7 +907,7 @@ def evaluate_covmat(
         "MatchingP": amr_precision,
     }
 
-    return results
+    return results, rmsd_array
 
 
 def print_covmat_results(results, threshold):
@@ -913,6 +951,7 @@ def print_covmat_results(results, threshold):
 
     return df, metrics
 
+
 def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
     # Check if there are enough reference samples to perform PCA
     if len(refs) < 2:
@@ -920,21 +959,21 @@ def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
             f"Not enough reference samples ({len(refs)}) to perform PCA plot, skipping..."
         )
         return
-    
+
     # Check if there are common identifier values between refs and samples
     unique_identifier_ref = set([atom.info.get(identifier, "Unknown") for atom in refs])
     unique_identifier_samples = set(
         [atom.info.get(identifier, "Unknown") for atom in samples]
     )
     unique_identifier = unique_identifier_ref.intersection(unique_identifier_samples)
-    
+
     if len(unique_identifier) == 0:
         logger.debug(
             f"No common {identifier} values between refs and samples, skipping PCA plot."
         )
         return
-    
-    # Output of embedder is one long vector per molecule, and a mask that indicates 
+
+    # Output of embedder is one long vector per molecule, and a mask that indicates
     # which positions in the vector correspond to atoms.
     # Get ref embedding
     ref_pos = torch.cat(
@@ -943,7 +982,9 @@ def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
     ref_atomic_numbers = torch.cat(
         [torch.tensor(atom.get_atomic_numbers()) for atom in refs], dim=0
     ).float()
-    batch_ref = torch.cat([torch.ones(len(atom))* i for i, atom in enumerate(refs)]).long()
+    batch_ref = torch.cat(
+        [torch.ones(len(atom)) * i for i, atom in enumerate(refs)]
+    ).long()
     ref_emb, ref_mask = embedder(
         positions=ref_pos, Z=ref_atomic_numbers, batch=batch_ref
     )
@@ -955,13 +996,15 @@ def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
     samples_atomic_numbers = torch.cat(
         [torch.tensor(atom.get_atomic_numbers()) for atom in samples], dim=0
     ).float()
-    batch_samples = torch.cat([torch.ones(len(atom))* i for i, atom in enumerate(samples)]).long()
+    batch_samples = torch.cat(
+        [torch.ones(len(atom)) * i for i, atom in enumerate(samples)]
+    ).long()
     samples_emb, samples_mask = embedder(
         positions=samples_pos, Z=samples_atomic_numbers, batch=batch_samples
     )
 
     if len(unique_identifier) == 1:
-        # if only one unique identifier, plot all samples and ref together (as the 
+        # if only one unique identifier, plot all samples and ref together (as the
         # embedder will have same shape for all)
         pca = PCA(n_components=2)
         y_2d = pca.fit_transform(ref_emb.view(len(refs), -1))
@@ -994,7 +1037,13 @@ def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
             ax = axes[i]
 
             # Get reference embedding
-            ref_mask_i = torch.tensor([i for i, atom in enumerate(refs) if atom.info[identifier] == identifier_value])
+            ref_mask_i = torch.tensor(
+                [
+                    i
+                    for i, atom in enumerate(refs)
+                    if atom.info[identifier] == identifier_value
+                ]
+            )
             ref_emb_mask_i = torch.isin(ref_mask, ref_mask_i)
             ref_emb_i = ref_emb[ref_emb_mask_i]
 
@@ -1004,9 +1053,15 @@ def pca_plot(refs, samples, embedder, identifier="smiles", save_path=None):
                 )
                 unused_axes.append(i)
                 continue
-            
+
             # Get samples embedding
-            samples_mask_i = torch.tensor([i for i, atom in enumerate(samples) if atom.info[identifier] == identifier_value])
+            samples_mask_i = torch.tensor(
+                [
+                    i
+                    for i, atom in enumerate(samples)
+                    if atom.info[identifier] == identifier_value
+                ]
+            )
             samples_emb_mask_i = torch.isin(samples_mask, samples_mask_i)
             samples_emb_i = samples_emb[samples_emb_mask_i]
 

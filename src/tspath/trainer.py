@@ -401,7 +401,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # Compute metrics (coverage and matching)
         if threshold is not None:
-            results = evaluate_covmat(
+            results, _ = evaluate_covmat(
                 atoms_pred,
                 atoms_positive,
                 thresholds=np.arange(0.05, 3.05, 0.05),
