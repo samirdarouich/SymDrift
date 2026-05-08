@@ -33,7 +33,7 @@ parameters:
 # 2000 steps/epoch --> one cycle 21 epochs: 42_000 steps
 command:
   - ${env}
-  - tspath_train
+  - symdrift_train
   - experiment=geom_drugs_o3_embedded_space
   - run.id="geom_drugs/o3_embedded_space/sweep_${uuid:1}"
   - trainer.max_epochs=21

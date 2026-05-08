@@ -623,7 +623,7 @@ class PaiNN(nn.Module):
         """
 
         # combine bond and radius graph edges
-        edge_index, edge_type, _ = extend_bond_index(
+        edge_index, edge_type = extend_bond_index(
             pos=data.pos,
             batch=data.batch,
             bond_index=data.get("bonded_edge_index", None),

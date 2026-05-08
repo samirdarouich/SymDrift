@@ -33,7 +33,7 @@ parameters:
 # 10590 / 4 == 2648 steps/epoch --> fixed to 100 steps/epoch, one cycle 25 epochs: 2500 steps
 command:
   - ${env}
-  - tspath_train
+  - symdrift_train
   - experiment=geom_qm9_o3_embedded_space
   - run.id="geom_qm9/o3_embedded_space/sweep_${uuid:1}"
   - trainer.max_epochs=51

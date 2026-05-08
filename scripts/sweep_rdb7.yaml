@@ -31,7 +31,7 @@ parameters:
 
 command:
   - ${env}
-  - tspath_train
+  - symdrift_train
   - experiment=rdb7_embedded_space
   - run.id="rdb7/embedded_space/gaussian/sweeps/sweep_${uuid:1}"
   - prior=gaussian

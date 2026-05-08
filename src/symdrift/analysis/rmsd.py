@@ -1,30 +1,7 @@
 import logging
 import math
-import os
-import pickle
-from collections import defaultdict
-from copy import deepcopy
-from functools import partial
-from multiprocessing import Pool
-from typing import Any, Dict, List, Optional, Sequence, Union
 
-import datamol as dm
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import py3Dmol
-import torch
-from ase import Atoms
-from ase.data import chemical_symbols
-from ase.io import read
-
-from rdkit import Chem
-from rdkit.Chem import rdMolAlign
-from rdkit.Chem.rdmolops import RemoveHs
-from rdkit.Geometry import Point3D
-from sklearn.decomposition import PCA
-from tqdm import tqdm
-
 from pymatgen.analysis.molecule_matcher import (
     BruteForceOrderMatcher,
     GeneticOrderMatcher,
@@ -33,44 +10,17 @@ from pymatgen.analysis.molecule_matcher import (
 )
 from pymatgen.core import Molecule
 
-
-from symdrift.datasets import ToyMoleculeDataset
-from symdrift.utils import RankedLogger, build_conformer
+from symdrift.utils import RankedLogger
 
 logging.getLogger("pymatgen.analysis.molecule_matcher").setLevel(logging.WARNING)
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
-    "get_rmsd_batched_scatter",
-    "get_rmsd_batched",
+__all__ = [
+    "rmse_core",
     "pymatgen_rmse",
     "pymatgen_match",
-    
-def get_rmsd_batched_scatter(xi, xj, batch, align=False):
-    if align:
-        xj = kabsch_batched_scatter(xi, xj, batch)
-    diff = (xi - xj)**2
-    rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
-    return rmsd
-
-def get_rmsd_batched(x, y, atomic_numbers=None, align=False, permute=False, brute_force_permutations=False):
-    """
-    Compute RMSD between two batches of structures x and y, where x and y are of shape
-    (B, N, d). The RMSD is computed for each pair of structures in the batch.
-    RMSD(x,y) = sqrt(1/N * sum((x-y)^2))
-    """
-    assert x.shape == y.shape, "X and Y must have same shape"
-    if align:
-        if permute:
-            if brute_force_permutations:
-                y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
-            else:
-                y, _ = hungarian_and_kabch_batched(x, y, atomic_numbers)
-        else:
-            y, _ = kabsch_batched(x, y)
-    B, n_atoms, d = x.shape
-    rmsd = (((x - y)**2).sum(dim=(-2,-1))/n_atoms).sqrt()
-    return rmsd
+]
 
 
 def rmse_core(mol1, mol2, same_order=False, threshold=0.5, max_permutations=1e4):

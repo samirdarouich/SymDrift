@@ -15,6 +15,7 @@ from symdrift.analysis import (
     get_validity,
     pca_plot,
     print_covmat_results,
+    batch_inputs_to_atoms,
 )
 from symdrift.generative import (
     DriftingField,
@@ -23,7 +24,7 @@ from symdrift.generative import (
     HarmonicSampler,
 )
 from symdrift.model import DistanceEmbedder, GaussianMomentEmbedder
-from symdrift.utils import Queue, RankedLogger, batch_inputs_to_atoms
+from symdrift.utils import Queue, RankedLogger
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 

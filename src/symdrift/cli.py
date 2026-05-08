@@ -1,8 +1,7 @@
-import logging
+import json
 import os
 import socket
 import uuid
-import json
 
 import hydra
 import numpy as np
@@ -11,8 +10,9 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
+
 from symdrift.analysis import evaluate_covmat, print_covmat_results
-from symdrift.utils import print_config, RankedLogger, log_hyperparameters
+from symdrift.utils import RankedLogger, log_hyperparameters, print_config
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
 OmegaConf.register_new_resolver("replace", lambda s, old, new: s.replace(old, new))
@@ -82,10 +82,10 @@ def train(cfg):
         default_root_dir=os.path.join(cfg.run.id),
         **cfg.trainer,
     )
-    
+
     log.info("Logging hyperparameters...")
     log_hyperparameters(cfg, generative_trainer)
-    
+
     log.info("Starting training...")
     generative_trainer.fit(
         model=generative_process,
@@ -163,8 +163,7 @@ def sample(cfg):
             save_folder = f"{base_folder}_{i:02d}"
             i += 1
         log.info(f"New save folder: {save_folder}")
-            
-        
+
     log.info(
         f"Sampling at max {n_samples} time(s) with:\n"
         f"  NFE = {nfe} "
@@ -179,14 +178,14 @@ def sample(cfg):
     sample_seed = getattr(cfg, "sample_seed", None)
     if sample_seed is not None:
         log.info(f"Setting sample seed for every batch to {sample_seed}")
-    
+
     metrics = {}
     atoms_generated = []
     for batch in tqdm(dataloader, desc="Evaluating dataset"):
         batch = batch.to(device)
 
-        # In case batch size is bigger than one, it might be that some graphs are 
-        # oversampled in the evaluation this is corrected by only keeping at most 
+        # In case batch size is bigger than one, it might be that some graphs are
+        # oversampled in the evaluation this is corrected by only keeping at most
         # ratio*n_conformers samples per reference graph. But sample at least
         # n_samples times.
         num_conformers = batch.num_conformers.max().item()
@@ -194,9 +193,9 @@ def sample(cfg):
             total_samples = min(int(ratio * num_conformers), n_samples)
         else:
             total_samples = n_samples
-        
+
         for start in tqdm(
-            range(0, total_samples, cfg.dataset.batch_size), 
+            range(0, total_samples, cfg.dataset.batch_size),
             desc=f"Sampling {total_samples} conformers for batch",
         ):
             cur_n = min(cfg.dataset.batch_size, total_samples - start)
@@ -216,7 +215,7 @@ def sample(cfg):
 
             for k, v in batch_metrics.items():
                 metrics.setdefault(k, []).extend(v if isinstance(v, list) else [v])
-    
+
     summary_metrics = {}
     for k, v in metrics.items():
         metrics[k] = torch.tensor(v)
@@ -224,12 +223,12 @@ def sample(cfg):
             f"Test {k}: mean: {metrics[k].mean().item():.4f} "
             f"median: {metrics[k].median().item():.4f}"
         )
-        summary_metrics[k+"_mean"] = metrics[k].mean().item()
-        summary_metrics[k+"_median"] = metrics[k].median().item()
-    
+        summary_metrics[k + "_mean"] = metrics[k].mean().item()
+        summary_metrics[k + "_median"] = metrics[k].median().item()
+
     with open(os.path.join(save_folder, "metrics.json"), "w") as f:
         json.dump(summary_metrics, f, indent=4)
-            
+
     # Evaluate coverage and matching for the whole dataset if specified
     if threshold is not None:
         log.info(
@@ -239,7 +238,7 @@ def sample(cfg):
         )
         log.info("Get dataset as ASE atoms...")
         atoms_dataset = test_dataset.get_dataset_as_atoms()
-        
+
         # Evaluate coverage and matching
         results, rmsd_matrix = evaluate_covmat(
             atoms_generated,
@@ -249,14 +248,14 @@ def sample(cfg):
             worker_fn_type=worker_fn_type,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
-            skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
+            skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
         )
         df, metrics_cov = print_covmat_results(results, threshold=threshold)
-        
+
         # Log results
         for k, v in metrics_cov.items():
             log.info(f"{k}: {v}")
-            
+
         df.to_csv(os.path.join(save_folder, "covmat_results.csv"), index=False)
         np.save(os.path.join(save_folder, "covmat_rmsd_matrix.npy"), rmsd_matrix)
         with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
@@ -274,12 +273,12 @@ def run_covmat_evaluation(
     save_folder: str = "covmat_evaluation_results",
     identifier: str = "smiles",
     skip_disconnected: bool = True,
-    **job_kwargs
+    **job_kwargs,
 ):
     from ase.io import read
 
     log.info("Reading generated and dataset conformers from .xyz files...")
-    
+
     log.info(f"Generated conformers path: {path_generated}")
     atoms_generated = read(path_generated, ":")
 
@@ -290,7 +289,7 @@ def run_covmat_evaluation(
         f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
         "reference conformers."
     )
-    
+
     kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
     log.info(
         f"Analysing coverage and matching (threshold: {threshold:.2f}, "
@@ -305,11 +304,11 @@ def run_covmat_evaluation(
         worker_fn_type=worker_fn_type,
         ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
         identifier=identifier,
-        skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
+        skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
         **job_kwargs,
     )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
-    
+
     # Log results
     for k, v in metrics_cov.items():
         log.info(f"{k}: {v}")
@@ -321,5 +320,5 @@ def run_covmat_evaluation(
     np.save(os.path.join(save_folder, "covmat_rmsd_matrix.npy"), rmsd_matrix)
     with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
         json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
-    
+
     log.info("Analysis completed.")

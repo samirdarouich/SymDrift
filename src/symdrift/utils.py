@@ -1,22 +1,13 @@
-import itertools
 import logging
-from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, Mapping, Optional, Sequence, Union
 
-import datamol as dm
 import numpy as np
 import rich
-import torch
 import yaml
-from ase import Atoms
 from lightning_utilities.core.rank_zero import rank_prefixed_message, rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.utilities import rank_zero_only
-from rdkit.Chem.rdchem import Conformer
-from rdkit.Geometry import Point3D
-from rdkit import Chem
 from rich.syntax import Syntax
 from rich.tree import Tree
-from torch_scatter import scatter_mean
 
 __all__ = [
     "print_config",
@@ -32,6 +23,7 @@ def empty(*args, **kwargs):
 def todict(config: Union[DictConfig, Dict]):
     config_dict = yaml.safe_load(OmegaConf.to_yaml(config, resolve=True))
     return config_dict
+
 
 @rank_zero_only
 def print_config(
@@ -74,6 +66,7 @@ def print_config(
         branch.add(Syntax(branch_content, "yaml"))
 
     rich.print(tree)
+
 
 class RankedLogger(logging.LoggerAdapter):
     """A multi-GPU-friendly python command line logger."""
