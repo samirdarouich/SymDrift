@@ -1,0 +1,47 @@
+
+model:
+  _target_: symdrift.model.TorchMDDynamics
+  sphere_channels: 160
+  max_radius: 11.0
+  num_layers: 20
+  num_distance_basis: 64
+  rbf_type: expnorm
+  trainable_rbf: true
+  activation: silu
+  neighbor_embedding: true
+  max_z: 100
+  node_attr_dim: 10
+  edge_attr_dim: 1
+  attn_activation: silu
+  num_heads: 8
+  distance_influence: both
+  reduce_op: sum
+  qk_norm: true
+  clip_during_norm: true
+  so3_equivariant: false
+  output_layer_norm: true
+  # used to switch parity of predictions (to correct chirality)
+  parity_switch: null # post_hoc 
+  # dont use embedding for time conditioning
+  use_noise_schedule_sigma_encoding: false
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  betas: [0.95, 0.999]
+  lr: 1.0e-3
+  weight_decay: 1e-10
+
+scheduler:
+  _target_: symdrift.model.CosineAnnealingWarmupRestarts
+  _partial_: true
+  first_cycle_steps: 250_000
+  cycle_mult: 1.0
+  max_lr: 1.0e-3
+  min_lr: 1.0e-7
+  warmup_steps: 0
+  gamma: 0.05
+  last_epoch: -1
+  interval: step
+
+grad_norm_max_val: 100

@@ -1,0 +1,48 @@
+
+model:
+  _target_: symdrift.model.DiT
+  sphere_channels: 256
+  max_radius: 11.0
+  num_layers: 6
+  num_heads: 8
+  activation_fn: silu
+
+  radial_basis_bool: false
+  num_distance_basis: 8
+
+  # graph conditioning network
+  mgn_activation_fn: silu
+  mgn_num_features: 256
+  mgn_num_layers: 2
+  mgn_num_node_features: 10
+  mgn_num_edge_features: 1
+
+  # positional encoding and embedding options
+  positional_encoding_bool: True, # break permutation equivariance
+  relative_positional_embedding_bool: True, # break rotation equivariance
+  absolute_positional_embedding_bool: True, # break translation and rotation equivariance
+  act_dense_correct_bool: True
+  embed_shortest_hops_bool: false
+
+  # used to switch parity of predictions (to correct chirality)
+  parity_switch: null # post_hoc 
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1.0e-5
+  weight_decay: 0.01
+
+scheduler:
+  _target_: symdrift.model.CosineAnnealingWarmupRestarts
+  _partial_: true
+  first_cycle_steps: 200_000
+  cycle_mult: 1.0
+  max_lr: 3.0e-4
+  min_lr: 1.0e-5
+  warmup_steps: 2_000
+  gamma: 1.00
+  interval: step
+
+# No gradient clipping
+grad_norm_max_val: null 

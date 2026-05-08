@@ -1,5 +1,0 @@
-
-_target_: tspath.model.DistanceEmbedder
-
-# this constructs are sorted full pairwise distance matrix, so the output is invariant to atom permutations
-invariant: true

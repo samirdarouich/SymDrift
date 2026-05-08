@@ -1,0 +1,5 @@
+
+_target_: symdrift.model.DistanceEmbedder
+
+# this constructs are sorted full pairwise distance matrix, so the output is invariant to atom permutations
+invariant: true

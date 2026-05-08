@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel", "cython==3.0.11", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tspath"
+name = "SymDrift: One-Shot Generative Modeling under Symmetries"
 # Declaring that the version will be read dynamically.
 # This helps us not having to specify the version twice.
 # We have to specify the version only in schnetpack.__version__
@@ -13,7 +13,7 @@ authors = [
     { name = "Samir Darouich" },
 ]
 
-description = "TS Physics"
+description = "SymDrift: A framework that makes the drifting field itself symmetry-aware"
 readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.10"
@@ -41,16 +41,16 @@ dependencies = [
 [tool.setuptools]
 package-dir = { "" = "src" }
 script-files = [
-    "src/scripts/tspath_train",
-    "src/scripts/tspath_sample",
-    "src/scripts/tspath_covmat_evaluation",
+    "src/scripts/symdrift_train",
+    "src/scripts/symdrift_sample",
+    "src/scripts/symdrift_covmat_evaluation",
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "tspath.__version__"}
+version = {attr = "symdrift.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 #[tool.setuptools.package-data]
-#tspath = ["configs/**/*.yaml"]
+#symdrift = ["configs/**/*.yaml"]

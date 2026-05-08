@@ -1,0 +1,11 @@
+
+# Coordinate space 
+_target_: symdrift.generative.EquivariantDriftingField
+temperatures: [0.02, 0.05, 0.2]
+normalize_over_x: false
+normalize_drift: true
+# Equivariant drift respects the symmetry of the system (brute-force permutation
+# is only feasible for small molecules. Otherwise no strict equivariance can be guaranteed).
+aligned: true
+permuted: true
+brute_force_permutations: true 

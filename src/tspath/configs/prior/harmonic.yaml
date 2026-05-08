@@ -1,6 +1,0 @@
-
-# Use Harmonic sampler as a prior for the path sampling.
-# Uses chemical bonds as springs to define the harmonic potential. 
-# The alpha parameter controls the strength of the springs.
-_target_: tspath.generative.HarmonicSampler
-alpha: 1.0
