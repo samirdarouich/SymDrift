@@ -21,6 +21,8 @@ samples
 *.ipynb
 *.sh
 
+tests
+
 # C extensions
 *.so
 
