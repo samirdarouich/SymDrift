@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import pickle
@@ -32,6 +33,8 @@ from tqdm import tqdm
 
 from tspath.datasets import ToyMoleculeDataset
 from tspath.utils import RankedLogger, build_conformer
+
+logging.getLogger("pymatgen.analysis.molecule_matcher").setLevel(logging.WARNING)
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -907,7 +910,7 @@ def evaluate_covmat(
         "MatchingP": amr_precision,
     }
 
-    return results, rmsd_array
+    return results, rmsd_results
 
 
 def print_covmat_results(results, threshold):

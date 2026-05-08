@@ -122,16 +122,14 @@ def sample(cfg):
     if getattr(cfg.dataset, "test_dataloader", None) is not None:
         log.info("Using seperate test dataset for sampling.")
         dataloader = instantiate(cfg.dataset.test_dataloader)
-        log.info("Get dataset as ASE atoms...")
-        atoms_dataset = dataloader.dataset.get_dataset_as_atoms()
+        test_dataset = dataloader.dataset
     else:
         log.info("Using datamodule to load dataset for sampling.")
         datamodule = instantiate(cfg.dataset.datamodule)
         sampling_split = getattr(cfg.dataset, "sampling_split", "test")
         datamodule.setup(stage=sampling_split)
         dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
-        log.info("Get dataset as ASE atoms...")
-        atoms_dataset = getattr(datamodule, f"{sampling_split}_dataset").get_dataset_as_atoms()
+        test_dataset = getattr(datamodule, f"{sampling_split}_dataset")
 
     generative_process = instantiate(cfg.generative_model)
     log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.pretrained))
@@ -239,6 +237,10 @@ def sample(cfg):
             f"num_workers: {num_workers}, worker_fn_type: {worker_fn_type}, "
             f"ratio: {ratio}):"
         )
+        log.info("Get dataset as ASE atoms...")
+        atoms_dataset = test_dataset.get_dataset_as_atoms()
+        
+        # Evaluate coverage and matching
         results, rmsd_matrix = evaluate_covmat(
             atoms_generated,
             atoms_dataset,
