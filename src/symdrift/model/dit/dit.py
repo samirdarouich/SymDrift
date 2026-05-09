@@ -8,7 +8,7 @@ from symdrift.model.dit.embeddings import DiTEdgeEmbed, DiTNodeEmbed
 from symdrift.model.dit.meshgraphnet import MeshGraphNetEncoder
 from symdrift.model.dit.utils import MLP, SimpleReadout, get_activation_fn, modulate_adaLN
 from symdrift.model.utils import extend_bond_index, signed_volume
-from symdrift.utils import batch_center_systems
+from symdrift.generative import batch_center_systems
 
 class DiTLayer(nn.Module):
     def __init__(

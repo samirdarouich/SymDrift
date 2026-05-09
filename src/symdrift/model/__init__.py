@@ -3,7 +3,6 @@ from .painn import PaiNN
 from .mlp import MLP
 from .egnn import EGNN
 from .embedder import GaussianMomentEmbedder, DistanceEmbedder
-from .gvp import GVPModel
 from .dit.dit import DiT
 from .torchmdnet import TorchMDDynamics
 from .gotennet.gotennet import GotenNet

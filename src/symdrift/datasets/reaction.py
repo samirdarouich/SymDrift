@@ -13,7 +13,8 @@ from symdrift.datasets.transforms import (
     TargetReaction,
 )
 from symdrift.datasets.utils import ConformerData
-from symdrift.utils import RankedLogger, inputs_to_atoms
+from symdrift.utils import RankedLogger
+from symdrift.analysis import inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 

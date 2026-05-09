@@ -1,5 +1,5 @@
 import torch
-from tspath.utils import sample_noise_like
+from symdrift.generative import sample_noise_like
 
 __all__ = [
     "FlowScheduler",

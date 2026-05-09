@@ -4,7 +4,7 @@ from torch import nn
 from torch_geometric.nn import radius_graph
 
 from symdrift.model.painn import GaussianRBF, TimestepEmbedder
-from symdrift.utils import batch_center_systems
+from symdrift.generative import batch_center_systems
 
 __all__ = ["EGNN"]
 

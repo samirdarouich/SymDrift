@@ -6,7 +6,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from symdrift.utils import sample_isotropic_Gaussian, sample_noise_like, RankedLogger
+from symdrift.utils import RankedLogger
+from symdrift.generative import sample_isotropic_Gaussian, sample_noise_like
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 

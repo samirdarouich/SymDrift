@@ -26,7 +26,8 @@ from symdrift.model.gotennet.ops import (
     str2basis,
 )
 from symdrift.model.gotennet.outputs import Atomwise3DOut
-from symdrift.utils import RankedLogger, batch_center_systems
+from symdrift.utils import RankedLogger
+from symdrift.generative import batch_center_systems
 
 log = RankedLogger(__name__, rank_zero_only=True)
 

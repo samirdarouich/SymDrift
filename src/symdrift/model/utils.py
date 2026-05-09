@@ -1,8 +1,8 @@
+from typing import Optional, Tuple
+
 import torch
-from typing import Optional
-import torch.nn as nn
 from torch_geometric.nn import radius_graph
-from typing import Tuple
+
 
 def signed_volume(local_coords):
     """
@@ -20,6 +20,7 @@ def signed_volume(local_coords):
     vol = torch.sum(v1 * cp, dim=-1)
     return torch.sign(vol)
 
+
 def extend_graph_order_radius(
     pos: torch.Tensor,
     batch: torch.Tensor,
@@ -34,7 +35,7 @@ def extend_graph_order_radius(
         N = pos.size(0)
 
         bgraph_adj = torch.sparse_coo_tensor(edge_index, edge_type, torch.Size([N, N]))
-        
+
         rgraph_edge_index = radius_graph(
             pos, r=cutoff, batch=batch, max_num_neighbors=max_neighbors
         )  # (2, E_r)
@@ -55,9 +56,10 @@ def extend_graph_order_radius(
         new_edge_index = radius_graph(
             pos, r=cutoff, batch=batch, max_num_neighbors=max_neighbors
         )  # (2, E_r)
-        new_edge_type = torch.ones(
-            new_edge_index.size(1)
-        ).long().to(pos.device) * unspecified_type_number
+        new_edge_type = (
+            torch.ones(new_edge_index.size(1)).long().to(pos.device)
+            * unspecified_type_number
+        )
 
     return new_edge_index, new_edge_type
 
@@ -76,7 +78,9 @@ def extend_bond_index(
     if bond_attr is None:
         if bond_index is not None:
             # all molecular graph edges are type 1, radius based become 0
-            bond_type = torch.ones(bond_index.shape[1], dtype=torch.long, device=pos.device)
+            bond_type = torch.ones(
+                bond_index.shape[1], dtype=torch.long, device=pos.device
+            )
     else:
         bond_type = bond_attr.view(-1).long() + 1  # we reserve 0 for radius based edges
         assert bond_type.shape[0] == bond_index.shape[1], (
@@ -92,7 +96,7 @@ def extend_bond_index(
         max_neighbors=max_neighbors,
         unspecified_type_number=0,
     )
-    
+
     if bond_index is not None:
         assert bond_index.shape[1] == (edge_type > 0).sum().item(), (
             "Edge Type should be greater than 0 when edge is a molecular bond."

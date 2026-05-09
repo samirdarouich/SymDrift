@@ -7,7 +7,7 @@ from symdrift.alignment import (
     hungarian_and_kabch_batched,
     kabsch_batched,
 )
-from symdrift.utils import get_x_y_pairs
+from symdrift.alignment import get_x_y_pairs
 
 
 def naive_distance(x, y, **kwargs):

@@ -15,7 +15,7 @@ from .transformer_block import (
     SO2EquivariantGraphAttention,
 )
 from .equiformer_v2 import EquiformerV2S_OC20
-from symdrift.utils import batch_center_systems
+from symdrift.generative import batch_center_systems
 
 # Statistics of IS2RE 100K
 _AVG_NUM_NODES = 77.81317

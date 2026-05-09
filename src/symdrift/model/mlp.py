@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
-from symdrift.utils import batch_center_systems
+from symdrift.generative import batch_center_systems
 
 class MLP(nn.Module):
     def __init__(self, input_dim=2, hidden_dim=64, output_dim=None, num_layers=3, activation_fn=nn.ReLU, **kwargs):

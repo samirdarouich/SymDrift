@@ -13,7 +13,7 @@ from rdkit.Chem import rdMolAlign
 from rdkit.Chem.rdmolops import RemoveHs
 from rdkit.Geometry import Point3D
 from symdrift.utils import RankedLogger
-from sydrift.analysis import pymatgen_match, build_conformer
+from symdrift.analysis import pymatgen_match, build_conformer
 from tqdm import tqdm
 
 logging.getLogger("pymatgen.analysis.molecule_matcher").setLevel(logging.WARNING)

@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel", "cython==3.0.11", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "SymDrift: One-Shot Generative Modeling under Symmetries"
+name = "symdrift"
 # Declaring that the version will be read dynamically.
 # This helps us not having to specify the version twice.
 # We have to specify the version only in schnetpack.__version__

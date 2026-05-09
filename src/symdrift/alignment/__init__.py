@@ -1,3 +1,4 @@
+from .utils import get_brute_force_permutations, get_x_y_pairs
 from .alignment import (
     brute_force_and_kabch_batched,
     get_rmsd_batched,
@@ -7,4 +8,3 @@ from .alignment import (
     kabsch_batched,
     kabsch_batched_scatter,
 )
-from .utils import get_brute_force_permutations, get_x_y_pairs

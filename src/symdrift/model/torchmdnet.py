@@ -10,7 +10,7 @@ from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter
 
 from symdrift.model.utils import extend_bond_index, signed_volume
-from symdrift.utils import batch_center_systems
+from symdrift.generative import batch_center_systems
 
 
 class NeighborEmbedding(MessagePassing):

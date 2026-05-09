@@ -1,7 +1,7 @@
 import torch
 from torch_geometric.utils import get_laplacian, scatter, to_dense_adj
-from tspath.utils import batch_center_systems, sample_noise_like, RankedLogger
-import logging
+from symdrift.utils import RankedLogger
+from symdrift.generative import batch_center_systems, sample_noise_like
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
