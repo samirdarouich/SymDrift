@@ -3,11 +3,42 @@ import itertools
 import torch
 
 __all__ = [
+    "apply_permutations",
     "get_canonical_elementwise_permutations",
     "get_brute_force_permutations",
     "get_x_y_pairs",
 ]
-    
+
+
+def apply_permutations(x, y, permutations):
+    """
+    Apply given permutations to y and pair with x.
+    Arguments:
+        x: (B, n, d)
+        y: (B, n, d)
+        permutations: (P, n) list of permutations to apply to y
+    Returns:
+        x_flat, y_flat: (B*P, n, d) all pairs of x and permuted y
+    """
+    B, n, d = x.shape
+    P = permutations.shape[0]
+
+    # -------------------------------------------------
+    # 1) Apply permutations
+    # -------------------------------------------------
+    perms_exp = permutations[None, :, :, None].expand(B, P, n, d)
+    y_exp = y[:, None].expand(B, P, n, d)
+    y_perm = torch.gather(y_exp, 2, perms_exp)
+
+    # -------------------------------------------------
+    # 2) Flatten batch
+    # -------------------------------------------------
+    x_flat = x[:, None].expand(B, P, n, d).reshape(B * P, n, d)
+    y_flat = y_perm.reshape(B * P, n, d)
+
+    return x_flat, y_flat
+
+
 def get_canonical_elementwise_permutations(canonical_atomic_numbers):
     """
     canonical_atomic_numbers: (n_atoms,) sorted
@@ -42,7 +73,8 @@ def get_canonical_elementwise_permutations(canonical_atomic_numbers):
 
 def get_brute_force_permutations(x, y, atomic_numbers=None):
     """
-    Canonicalized permutation pipeline
+    Get all permutations of atoms in y and pair with x. If atomic numbers are provided,
+    only permute within same atomic number.
     """
     device = x.device
     B, n, d = x.shape
@@ -71,24 +103,7 @@ def get_brute_force_permutations(x, y, atomic_numbers=None):
         sort_idx = None
         inv_sort_idx = None
 
-    P = perms.shape[0]
-
-    # -------------------------------------------------
-    # 2) Apply permutations
-    # -------------------------------------------------
-
-    perms_exp = perms[None, :, :, None].expand(B, P, n, d)
-
-    y_exp = y[:, None].expand(B, P, n, d)
-
-    y_perm = torch.gather(y_exp, 2, perms_exp)
-
-    # -------------------------------------------------
-    # 3) Flatten batch
-    # -------------------------------------------------
-
-    x_flat = x[:, None].expand(B, P, n, d).reshape(B * P, n, d)
-    y_flat = y_perm.reshape(B * P, n, d)
+    x_flat, y_flat = apply_permutations(x, y, perms)
 
     return x_flat, y_flat, perms, sort_idx, inv_sort_idx
 
@@ -97,7 +112,7 @@ def get_x_y_pairs(x, y, atomic_numbers=None):
     """
     x: (N, n_atoms, d),
     y: (M, n_atoms, d)
-    atomic_numbers: (n_atoms,) atomic numbers of each atom in target structure. Only
+    atomic_numbers: (M*n_atoms,) atomic numbers of each atom in target structure. Only
     permute within same atomic number if provided.
 
     returns:

@@ -1,5 +1,4 @@
 from collections import defaultdict
-import random
 from typing import Callable, Tuple
 
 import datamol as dm
@@ -8,8 +7,6 @@ import torch
 from datamol.types import Mol
 from rdkit import Chem, RDLogger
 from torch_geometric.transforms import BaseTransform
-from sympy.combinatorics import Permutation, PermutationGroup
-import pynauty
 
 from symdrift.alignment import kabsch_batched_scatter
 from symdrift.datasets.utils import (
@@ -17,6 +14,7 @@ from symdrift.datasets.utils import (
     atom_to_feature_vector,
     build_conformer,
     compute_edge_index,
+    get_authomorphism_permutations,
     get_chiral_tensors,
 )
 
@@ -33,6 +31,7 @@ __all__ = [
     "AlignReaction",
     "TargetReaction",
     "BoltzmannWeightingConformers",
+    "GraphAutomorphism",
     "FeaturizeMolecule",
     "FeaturizeReaction",
 ]
@@ -60,6 +59,7 @@ class RemoveCOMReaction(BaseTransform):
             data[pos_key] = pos - com
         return data
 
+
 class RemoveCOMConformer(BaseTransform):
     def forward(self, data):
         pos = data.pos
@@ -69,7 +69,8 @@ class RemoveCOMConformer(BaseTransform):
         com = pos.mean(dim=1, keepdim=True)
         data.pos = (pos - com).view(-1, 3)
         return data
-    
+
+
 class RemoveCOM(BaseTransform):
     def forward(self, data):
         for pos_key in ["pos"]:
@@ -114,18 +115,21 @@ class RandomPermute(BaseTransform):
         # Apply permutation
         data.pos = data.pos[perm]
         data.x = data.x[perm]
-        
+
         return data
 
 
 class ConformerAugment(BaseTransform):
-    def __init__(self, num_augs=1, rotate=True, permute=True):
+    def __init__(self, num_augs=1, rotate=True, permute=True, ignore_hs=False, use_atom_features=True):
         self.num_augs = num_augs
         self.rotate = rotate
         self.permute = permute
+        self.ignore_hs = ignore_hs
+        self.use_atom_features = use_atom_features
+        self.cache = defaultdict(dict)
 
-    def random_rotation(self):
-         # Sample random unit quaternion
+    def get_random_rotation(self):
+        # Sample random unit quaternion
         q = torch.randn(4)
         q = q / q.norm()
 
@@ -141,83 +145,56 @@ class ConformerAugment(BaseTransform):
         )
         return R
 
-    def random_permutation(self, x, graph_edges):
+    @cache_decorator
+    def get_authomorphism_permutations(self, smiles):
         """Find random permutations of atoms that preserve atom types and bonding structure."""
-        num_nodes = x.shape[0]
-        graph = pynauty.Graph(number_of_vertices=num_nodes, directed=False)
-        
-        edge_index_forward = graph_edges[:, ::2]
-        for i in range(edge_index_forward.shape[1]):
-            graph.connect_vertex(edge_index_forward[0, i].item(), [edge_index_forward[1, i].item()])
-        
-        color_groups = defaultdict(set)
-        for node in range(num_nodes):
-            color = x[node].cpu().numpy().item()
-            color_groups[color].add(node)
-        vertex_colors = list(color_groups.values())
-        graph.set_vertex_coloring(vertex_colors)
-                    
-        generators, _, _, _, _ = pynauty.autgrp(graph)       
-        
-        generators_sympy = [Permutation(g) for g in generators]
-        random.shuffle(generators_sympy)
-        # Construct the permutation group
-        aut_group = PermutationGroup(generators_sympy)
-        
-        # Print all isomorphisms (automorphisms)
-        all_perms = [np.arange(num_nodes)]
+        mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
+        authomorphism_permutations = get_authomorphism_permutations(
+            mol=mol, ignore_hs=self.ignore_hs, use_atom_features=self.use_atom_features
+        )
+        return authomorphism_permutations
 
-        for perm in aut_group.generate():
-            if len(perm.array_form) == 0:
-                continue
-            perm_array = np.array(perm.array_form)
-            signature = np.where(perm_array != np.arange(len(perm_array)))[0]
-            if len(signature) == 0:
-                continue
-            all_perms.append(perm.array_form)
-            if len(all_perms) >= self.num_augs:
-                break
-        
-        num_perms = len(all_perms)
-        if num_perms == 0:
-            all_perms = torch.full((self.num_augs, num_nodes), -1, dtype=torch.long)
-            all_perms[0] = torch.arange(num_nodes)
-        else:
-            all_perms = torch.stack([torch.tensor(perm, dtype=torch.long) for perm in all_perms])
-            num_perms = all_perms.size(0)
-        
+    def get_random_permutation(self, smiles, x):
+        all_perms = self.get_authomorphism_permutations(smiles)
+        num_perms = all_perms.size(0)
         if num_perms < self.num_augs:
             # fill the rest by subsampling (with replacement) from found permutations
             needed = self.num_augs - num_perms
             idx = torch.randint(0, num_perms, (needed,), device=all_perms.device)
             sampled = all_perms[idx]
             all_perms = torch.cat([all_perms, sampled], dim=0)
-                    
+        elif num_perms > self.num_augs:
+            # subsample (without replacement) from found permutations
+            idx = torch.randperm(num_perms, device=all_perms.device)[: self.num_augs]
+            all_perms = all_perms[idx]
+
         # Verify that the permutations preserve atom types
         x_repeated = x.unsqueeze(0).expand(self.num_augs, -1)
         perm_indices = torch.arange(self.num_augs)[:, None]
-        assert (x_repeated[perm_indices, all_perms] == x_repeated).all(), "Permutation should preserve atom types"
+        assert (x_repeated[perm_indices, all_perms] == x_repeated).all(), (
+            "Permutation should preserve atom types"
+        )
         return all_perms
-    
+
     def forward(self, data):
         pos_list = []
         x_list = []
         conf_idx_list = []
 
+        smiles = data.smiles
         pos = data.pos
         x = data.x_conf
         conf_idx = data.conformer_index
-        graph_edges = data.bonded_edge_index
 
         # Get permutations that preserve the bonding structure and atom types, if needed
         if self.permute:
-            permutations = self.random_permutation(data.x, graph_edges=graph_edges)
-            
+            permutations = self.get_random_permutation(smiles, data.x)
+
         unique_confs = conf_idx.unique()
         new_conf_counter = 0
 
         for conf in unique_confs:
-            mask = (conf_idx == conf)
+            mask = conf_idx == conf
             pos_c = pos[mask]
             x_c = x[mask]
             for i in range(self.num_augs):
@@ -226,9 +203,9 @@ class ConformerAugment(BaseTransform):
 
                 # --- Rotation per conformer ---
                 if self.rotate:
-                    R = self.random_rotation()
+                    R = self.get_random_rotation()
                     pos_aug = pos_aug @ R.T
-                
+
                 # --- Permutation within conformer ---
                 if self.permute:
                     perm = permutations[i]
@@ -251,7 +228,8 @@ class ConformerAugment(BaseTransform):
         data.num_conformers *= self.num_augs
 
         return data
-    
+
+
 class AlignReaction(BaseTransform):
     def forward(self, data):
         pos_r = data.pos_r
@@ -265,14 +243,16 @@ class AlignReaction(BaseTransform):
         data.pos_p = pos_p_aligned
         return data
 
+
 class TargetReaction(BaseTransform):
     def __init__(self, target_str="pos_ts"):
         super().__init__()
         self.target_str = target_str
-    
+
     def forward(self, data):
         data.pos = getattr(data, self.target_str).clone()
         return data
+
 
 class BoltzmannWeightingConformers(BaseTransform):
     def __init__(self, keep_top_n=30):
@@ -302,6 +282,37 @@ class BoltzmannWeightingConformers(BaseTransform):
         return data
 
 
+class GraphAutomorphism(BaseTransform):
+    def __init__(self, smiles_key="smiles", use_atom_features=True, ignore_hs=False):
+        # smiles based cache
+        self.cache = defaultdict(dict)
+        self.smiles_key = smiles_key
+        self.use_atom_features = use_atom_features
+        self.ignore_hs = ignore_hs
+
+    def forward(self, data):
+        if hasattr(data, self.smiles_key):
+            smiles = getattr(data, self.smiles_key)
+            authomorphism_permutations = self.get_authomorphism_permutations(smiles)
+            data.authomorphism_permutations = authomorphism_permutations.view(-1)
+            data.num_authomorphism_permutations = torch.tensor(
+                len(authomorphism_permutations), dtype=torch.long
+            )
+        return data
+
+    def get_mol(self, smiles: str) -> Mol:
+        return dm.to_mol(smiles, remove_hs=False, ordered=True)
+    
+    @cache_decorator
+    def get_authomorphism_permutations(self, smiles: str):
+        mol = self.get_mol(smiles)
+        authomorphism_permutations = get_authomorphism_permutations(
+            mol, use_atom_features=self.use_atom_features, ignore_hs=self.ignore_hs
+        )
+        self.cache[smiles]["authomorphism_permutations"] = authomorphism_permutations
+        return authomorphism_permutations
+
+
 class FeaturizeMolecule(BaseTransform):
     def __init__(self, smiles_key="smiles"):
         # smiles based cache
@@ -313,7 +324,7 @@ class FeaturizeMolecule(BaseTransform):
             smiles = getattr(data, self.smiles_key)
             node_attr = self.get_atom_features(smiles, use_ogb_feat=True)
             chiral_index, chiral_nbr_index, chiral_tag = self.get_chiral_centers(smiles)
-            bonded_edge_index, edge_attr, shortest_hops = self.get_edge_index(
+            bonded_edge_index, edge_attr = self.get_edge_index(
                 smiles, use_edge_feat=True
             )
 
@@ -321,7 +332,6 @@ class FeaturizeMolecule(BaseTransform):
             data.chiral_index = chiral_index
             data.chiral_nbr_index = chiral_nbr_index
             data.chiral_tag = chiral_tag
-            data.shortest_hops = shortest_hops
             data.bonded_edge_index = bonded_edge_index
             data.edge_attr = edge_attr
         return data
@@ -355,10 +365,8 @@ class FeaturizeMolecule(BaseTransform):
         self, mol: Mol, use_edge_feat: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns edge index and edge attributes and shortest_hops for a given mol object."""
-        edge_index, edge_attr, shortest_hops = compute_edge_index(
-            mol, with_edge_attr=use_edge_feat
-        )
-        return edge_index, edge_attr, shortest_hops
+        edge_index, edge_attr = compute_edge_index(mol, with_edge_attr=use_edge_feat)
+        return edge_index, edge_attr
 
     @cache_decorator
     def get_chiral_centers(self, smiles: str) -> torch.Tensor:
@@ -390,26 +398,22 @@ class FeaturizeMolecule(BaseTransform):
         self,
         smiles: str,
         use_edge_feat: bool,
-        use_shortest_hops: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Returns edge index and edge attributes and shortest_hops for a given smiles."""
+        """Returns edge index and edge attributes for a given smiles."""
         # compute edge index
         mol = self.get_mol(smiles)
-        edge_index, edge_attr, shortest_hops = self.get_edge_index_from_mol(
-            mol, use_edge_feat=use_edge_feat, use_shortest_hops=use_shortest_hops
+        edge_index, edge_attr = self.get_edge_index_from_mol(
+            mol, use_edge_feat=use_edge_feat
         )
 
         self.cache[smiles]["edge_index"] = edge_index
         self.cache[smiles]["edge_attr"] = edge_attr
-        self.cache[smiles]["shortest_hops"] = shortest_hops
-        return edge_index, edge_attr, shortest_hops
+        return edge_index, edge_attr
 
     @cache_decorator
     def get_atom_features(self, smiles: str, use_ogb_feat: bool = True) -> torch.Tensor:
         # compute atom features
         mol = self.get_mol(smiles)
-        if mol is None:
-            breakpoint()
         atom_features = self.get_atom_features_from_mol(mol, use_ogb_feat=use_ogb_feat)
         return atom_features
 
@@ -447,7 +451,9 @@ class FeaturizeReaction(BaseTransform):
 
         perm, perm_inv = self.get_canonicalized_permutation(mol)
         canonical_atoms = np.array(mol.GetAtoms())[perm_inv]
-        z = torch.tensor([atom.GetAtomicNum() for atom in canonical_atoms], dtype=torch.long)
+        z = torch.tensor(
+            [atom.GetAtomicNum() for atom in canonical_atoms], dtype=torch.long
+        )
 
         if use_ogb_feat:
             atom_features = torch.tensor(
@@ -470,7 +476,7 @@ class FeaturizeReaction(BaseTransform):
         """Returns edge index and edge attributes and shortest_hops for a given smiles."""
         # compute edge index
         N = mol_r.GetNumAtoms()
-        
+
         _, perm_inv_r = self.get_canonicalized_permutation(mol_r)
         _, perm_inv_p = self.get_canonicalized_permutation(mol_p)
 
@@ -486,7 +492,10 @@ class FeaturizeReaction(BaseTransform):
         col = torch.from_numpy(col).long()
 
         # get edge attributes using the original indices
-        row_r, col_r = torch.from_numpy(perm_inv_r[row]).long(), torch.from_numpy(perm_inv_r[col]).long()
+        row_r, col_r = (
+            torch.from_numpy(perm_inv_r[row]).long(),
+            torch.from_numpy(perm_inv_r[col]).long(),
+        )
         _, edge_attr_r, _ = compute_edge_index(
             mol_r,
             with_edge_attr=use_edge_feat,
@@ -494,26 +503,29 @@ class FeaturizeReaction(BaseTransform):
             edge_index=torch.stack([row_r, col_r]),
         )
 
-        row_p, col_p = torch.from_numpy(perm_inv_p[row]).long(), torch.from_numpy(perm_inv_p[col]).long()
+        row_p, col_p = (
+            torch.from_numpy(perm_inv_p[row]).long(),
+            torch.from_numpy(perm_inv_p[col]).long(),
+        )
         _, edge_attr_p, _ = compute_edge_index(
             mol_p,
             with_edge_attr=use_edge_feat,
             with_shortest_hops=False,
             edge_index=torch.stack([row_p, col_p]),
         )
-        
+
         # Sort edges (PyG convention: row-major sort)
         edge_index = torch.stack([row, col])
         perm = (edge_index[0] * N + edge_index[1]).argsort()
 
         no_of_bonds = len(allowable_features["possible_bond_type_list"])
-        
+
         # adapt edge attribute such that no bond equals 0
         edge_attr_r = edge_attr_r + 1
         edge_attr_p = edge_attr_p + 1
-        edge_attr_r[edge_attr_r==no_of_bonds] = 0
-        edge_attr_p[edge_attr_p==no_of_bonds] = 0
-        
+        edge_attr_r[edge_attr_r == no_of_bonds] = 0
+        edge_attr_p[edge_attr_p == no_of_bonds] = 0
+
         edge_index = edge_index[:, perm]
         edge_attr = (edge_attr_r[perm] * no_of_bonds) + edge_attr_p[perm]
 
@@ -527,12 +539,20 @@ class FeaturizeReaction(BaseTransform):
             mol_r = self.get_mol(smiles_r)
             mol_p = self.get_mol(smiles_p)
 
-            r_node_attr, r_canonical_atoms = self.get_atom_features_from_mol(mol_r, use_ogb_feat=True)
-            p_node_attr, p_canonical_atoms = self.get_atom_features_from_mol(mol_p, use_ogb_feat=True)
+            r_node_attr, r_canonical_atoms = self.get_atom_features_from_mol(
+                mol_r, use_ogb_feat=True
+            )
+            p_node_attr, p_canonical_atoms = self.get_atom_features_from_mol(
+                mol_p, use_ogb_feat=True
+            )
 
-            assert (r_canonical_atoms == p_canonical_atoms).all(), "Canonical atom order should be the same for reactant and product"
-            assert (r_canonical_atoms == data.x).all(), "Canonical atom order should be the same as in the xyz file"
-            
+            assert (r_canonical_atoms == p_canonical_atoms).all(), (
+                "Canonical atom order should be the same for reactant and product"
+            )
+            assert (r_canonical_atoms == data.x).all(), (
+                "Canonical atom order should be the same as in the xyz file"
+            )
+
             bonded_edge_index, edge_attr = self.get_edge_index(
                 mol_r, mol_p, use_edge_feat=True
             )

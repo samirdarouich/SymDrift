@@ -1,8 +1,10 @@
 import torch
 from torch_linear_assignment import batch_linear_assignment
-from torch_scatter import scatter_mean
 
-from symdrift.alignment import get_brute_force_permutations
+from symdrift.alignment import apply_permutations, get_brute_force_permutations
+from symdrift.utils import RankedLogger
+
+logger = RankedLogger(__name__, rank_zero_only=True)
 
 __all__ = [
     "kabsch_batched_scatter",
@@ -10,9 +12,19 @@ __all__ = [
     "hungarian_batched",
     "hungarian_and_kabch_batched",
     "brute_force_and_kabch_batched",
-    "get_rmsd_batched_scatter",
-    "get_rmsd_batched",
 ]
+
+
+def _get_rmsd(x, y):
+    """
+    Compute RMSD between two batches of structures x and y, where x and y are of shape
+    (B, N, d). The RMSD is computed for each pair of structures in the batch.
+    RMSD(x,y) = sqrt(1/N * sum((x-y)^2))
+    """
+    assert x.shape == y.shape, "X and Y must have same shape"
+    B, n_atoms, d = x.shape
+    rmsd = (((x - y) ** 2).sum(dim=(-2, -1)) / n_atoms).sqrt()
+    return rmsd
 
 
 def kabsch_batched_scatter(x_0_N_3, x_1_N_3, batch):
@@ -139,7 +151,7 @@ def hungarian_batched(x, y, atomic_numbers=None):
 
 
 def hungarian_and_kabch_batched(
-    x, y, atomic_numbers=None, max_iter=3, tol=1e-2, rotate_before=True, verbose=False
+    x, y, atomic_numbers=None, max_iter=3, tol=1e-2, rotate_before=True
 ):
     """Perform permutations and aligment of y to x using Hungarian and Kabsch algorithm
     in an iterative manner.
@@ -164,8 +176,6 @@ def hungarian_and_kabch_batched(
         convergence threshold for mean change in RMSD between iterations
     rotate_before : bool
         whether to perform a Kabsch alignment before the first iteration
-    verbose : bool
-        whether to print convergence information at each iteration
 
     Returns
     -------
@@ -175,44 +185,41 @@ def hungarian_and_kabch_batched(
     B, n_atoms, d = x.shape
     y_aligned = y.clone()
     perm_total = torch.arange(n_atoms, device=y.device).unsqueeze(0).repeat(B, 1)
-    rmsds = [get_rmsd_batched(x, y_aligned).max().item()]
-    if verbose:
-        print(f"Initial RMSD: {rmsds[-1]:.6f}")
+    rmsds = [_get_rmsd(x, y_aligned).max().item()]
+    logger.debug(f"Initial RMSD: {rmsds[-1]:.6f}")
 
     if rotate_before:
         y_aligned, _ = kabsch_batched(x, y_aligned)
-        rmsds.append(get_rmsd_batched(x, y_aligned).max().item())
-        if verbose:
-            print(f"After initial Kabsch RMSD: {rmsds[-1]:.6f}")
+        rmsds.append(_get_rmsd(x, y_aligned).max().item())
+        logger.debug(f"After initial Kabsch RMSD: {rmsds[-1]:.6f}")
 
     for i in range(max_iter):
         # find permutation that minimizes RMSD to x (if specified respect atomic numbers)
         y_permuted, perm_i = hungarian_batched(x, y_aligned, atomic_numbers)
         perm_total = perm_total.gather(1, perm_i)
         y_new, _ = kabsch_batched(x, y_permuted)
-        rmsd = get_rmsd_batched(x, y_new).max().item()
+        rmsd = _get_rmsd(x, y_new).max().item()
         y_aligned = y_new
         rmsds.append(rmsd)
         delta_rmsd = abs(rmsds[-1] - rmsds[-2])
-        if verbose:
-            print(
-                f"Iteration {i}: RMSD: {rmsds[-1]:.6f}, delta RMSD = {delta_rmsd:.6f}"
-            )
+        logger.debug(
+            f"Iteration {i}: RMSD: {rmsds[-1]:.6f}, delta RMSD = {delta_rmsd:.6f}"
+        )
         if delta_rmsd < tol or rmsd < tol:
-            if verbose:
-                print(
-                    f"Converged after {i} iterations with delta RMSD: {rmsds[-1]:.6f}"
-                )
+            logger.debug(
+                f"Converged after {i} iterations with delta RMSD: {rmsds[-1]:.6f}"
+            )
             break
     return y_aligned, perm_total
 
 
-def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
+def brute_force_and_kabch_batched(x, y, atomic_numbers=None, permutations=None):
     """Perform permutations and aligment of y to x using brute force permutation and
     Kabsch algorithm.
 
-    1) Get all possible permutations of atoms in y ()
-    2) For each permutation, align to x using Kabsch and compute RMSD
+    1) Get all possible permutations of atoms in y (if atomic numbers are provided, only
+       permute within same atomic number) or use provided permutations.
+    2) For each permutation, align y to x using Kabsch and compute RMSD
     3) Select permutation with lowest RMSD.
 
     Parameters
@@ -226,12 +233,11 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
         same atomic number (B, n_atoms). ! This assumes that x and y do have the same
         atomic number ordering, if not the algorithm will do incorrect permutations
         between different atom types.
-    max_iter : int
-        maximum number of iterations to perform
-    tol : float
-        convergence threshold for mean change in RMSD between iterations
-    verbose : bool
-        whether to print convergence information at each iteration
+    permutations : (P, n_atoms)
+        precomputed permutations to apply. If none, compute brute force permutations
+        for all atoms (n_atoms!). If atomic numbers are provided, only compute brute
+        force permutations within same atomic number (prod(n_i!)) where n_i is the
+        number of atoms of each type.
 
     Returns
     -------
@@ -243,9 +249,18 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
     """
     B, n_atoms, d = x.shape
 
-    x_flat, y_flat, perms, sort_idx, inv_sort_idx = get_brute_force_permutations(
-        x, y, atomic_numbers
-    )
+    if permutations is not None:
+        assert permutations.shape[1] == n_atoms, (
+            "Permutations must have shape (P, n_atoms)"
+        )
+        x_flat, y_flat = apply_permutations(x, y, permutations)
+        # Assume that permutations are already in canonical ordering if provided
+        perms = permutations
+        inv_sort_idx = None
+    else:
+        x_flat, y_flat, perms, sort_idx, inv_sort_idx = get_brute_force_permutations(
+            x, y, atomic_numbers
+        )
 
     P = perms.shape[0]
 
@@ -253,7 +268,7 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
     y_aligned_flat, _ = kabsch_batched(x_flat, y_flat)
 
     # --- RMSD ---
-    rmsd = get_rmsd_batched(x_flat, y_aligned_flat)
+    rmsd = _get_rmsd(x_flat, y_aligned_flat)
     rmsd = rmsd.view(B, P)
 
     batch_idx = torch.arange(B, device=x.device)
@@ -278,38 +293,3 @@ def brute_force_and_kabch_batched(x, y, atomic_numbers=None):
         best_perm = torch.gather(best_perm, 1, inv_sort_idx)
 
     return y_best_aligned, best_perm
-
-
-def get_rmsd_batched_scatter(xi, xj, batch, align=False):
-    if align:
-        xj = kabsch_batched_scatter(xi, xj, batch)
-    diff = (xi - xj) ** 2
-    rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
-    return rmsd
-
-
-def get_rmsd_batched(
-    x,
-    y,
-    atomic_numbers=None,
-    align=False,
-    permute=False,
-    brute_force_permutations=False,
-):
-    """
-    Compute RMSD between two batches of structures x and y, where x and y are of shape
-    (B, N, d). The RMSD is computed for each pair of structures in the batch.
-    RMSD(x,y) = sqrt(1/N * sum((x-y)^2))
-    """
-    assert x.shape == y.shape, "X and Y must have same shape"
-    if align:
-        if permute:
-            if brute_force_permutations:
-                y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
-            else:
-                y, _ = hungarian_and_kabch_batched(x, y, atomic_numbers)
-        else:
-            y, _ = kabsch_batched(x, y)
-    B, n_atoms, d = x.shape
-    rmsd = (((x - y) ** 2).sum(dim=(-2, -1)) / n_atoms).sqrt()
-    return rmsd

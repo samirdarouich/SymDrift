@@ -9,7 +9,14 @@ from pymatgen.analysis.molecule_matcher import (
     KabschMatcher,
 )
 from pymatgen.core import Molecule
+from torch_scatter import scatter_mean
 
+from symdrift.alignment import (
+    brute_force_and_kabch_batched,
+    hungarian_and_kabch_batched,
+    kabsch_batched,
+    kabsch_batched_scatter,
+)
 from symdrift.utils import RankedLogger
 
 logging.getLogger("pymatgen.analysis.molecule_matcher").setLevel(logging.WARNING)
@@ -20,6 +27,8 @@ __all__ = [
     "rmse_core",
     "pymatgen_rmse",
     "pymatgen_match",
+    "get_rmsd_batched_scatter",
+    "get_rmsd_batched",
 ]
 
 
@@ -122,3 +131,38 @@ def pymatgen_match(
     aligned_sample.numbers = ref.numbers
     aligned_sample.positions = aligned.cart_coords
     return rmsd, aligned_sample
+
+
+def get_rmsd_batched_scatter(xi, xj, batch, align=False):
+    if align:
+        xj = kabsch_batched_scatter(xi, xj, batch)
+    diff = (xi - xj) ** 2
+    rmsd = scatter_mean(diff.sum(-1), batch, dim=0).sqrt()
+    return rmsd
+
+
+def get_rmsd_batched(
+    x,
+    y,
+    atomic_numbers=None,
+    align=False,
+    permute=False,
+    brute_force_permutations=False,
+):
+    """
+    Compute RMSD between two batches of structures x and y, where x and y are of shape
+    (B, N, d). The RMSD is computed for each pair of structures in the batch.
+    RMSD(x,y) = sqrt(1/N * sum((x-y)^2))
+    """
+    assert x.shape == y.shape, "X and Y must have same shape"
+    if align:
+        if permute:
+            if brute_force_permutations:
+                y, _ = brute_force_and_kabch_batched(x, y, atomic_numbers)
+            else:
+                y, _ = hungarian_and_kabch_batched(x, y, atomic_numbers)
+        else:
+            y, _ = kabsch_batched(x, y)
+    B, n_atoms, d = x.shape
+    rmsd = (((x - y) ** 2).sum(dim=(-2, -1)) / n_atoms).sqrt()
+    return rmsd

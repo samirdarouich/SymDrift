@@ -1485,7 +1485,6 @@ class NodeInit(MessagePassing):
         self.concat = concat
         # self.embedding = nn.Embedding(max_z, last_channel)
         self.atom_cgr_embedding = AtomCGREmbedding(n_atom_rdkit_feats, last_channel)
-        self.edge_cgr_embedding = EdgeCGREmbedding(last_channel)
 
         if self.concat:
             # self.embedding_src = nn.Embedding(max_z, first_channel)
@@ -1494,6 +1493,7 @@ class NodeInit(MessagePassing):
                                      norm=proj_ln, weight_init=weight_init, bias_init=bias_init,
                                      last_activation=activation if last_activation else None)
         else:
+            self.edge_cgr_embedding = EdgeCGREmbedding(last_channel)
             self.distance_proj = MLP([num_rbf] + [last_channel], activation=None, norm='', weight_init=weight_init,
                                      bias_init=bias_init,
                                      last_activation=None)

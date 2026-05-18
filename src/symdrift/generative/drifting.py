@@ -4,10 +4,10 @@ import torch
 
 from symdrift.alignment import (
     brute_force_and_kabch_batched,
+    get_x_y_pairs,
     hungarian_and_kabch_batched,
     kabsch_batched,
 )
-from symdrift.alignment import get_x_y_pairs
 
 
 def naive_distance(x, y, **kwargs):
@@ -68,6 +68,7 @@ def minimal_distance_permuted(
     x,
     y,
     atomic_numbers=None,
+    permutations=None,
     brute_force_permutations=False,
     max_iter=3,
     tol=1e-2,
@@ -85,6 +86,10 @@ def minimal_distance_permuted(
     atomic_numbers : array
         atomic numbers of each atom in target structure, used to only permute within
         same atomic number (M*n_atoms,)
+    permutations : array
+        precomputed permutations to apply to y (P, n_atoms).
+    brute_force_permutations : bool
+        whether to use brute force permutations (overrides permutations if True)
     max_iter : int
         maximum number of iterations to perform
     tol : float
@@ -110,7 +115,11 @@ def minimal_distance_permuted(
     # and Kabsch to align)
     if brute_force_permutations:
         y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
-            x_flat, y_flat, atomic_numbers_flat
+            x_flat, y_flat, atomic_numbers=atomic_numbers_flat
+        )
+    elif permutations is not None:
+        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
+            x_flat, y_flat, permutations=permutations
         )
     else:
         y_aligned_and_permuted, _ = hungarian_and_kabch_batched(
@@ -296,6 +305,8 @@ class EquivariantDriftingField:
         n_atoms,
         atomic_numbers_pos=None,
         atomic_numbers_neg=None,
+        permutations_pos=None,
+        permutations_neg=None,
         temperatures=None,
         aligned=None,
         permuted=None,
@@ -310,6 +321,8 @@ class EquivariantDriftingField:
             used to only permute within same atomic number (M*n_atoms,)
         atomic_numbers_neg: (M*n_atoms,) atomic numbers of each atom in y_neg,
             used to only permute within same atomic number (M*n_atoms,)
+        permutations_pos: (P, n_atoms) precomputed permutations to apply to y_pos.
+        permutations_neg: (P, n_atoms) precomputed permutations to apply to y_neg.
         temperatures: (T,) array of temperatures to use for each drift field (optional, if provided overrides self.temperatures)
         aligned: bool (optional, if provided overrides self.aligned and updates distance function)
         permuted: bool (optional, if provided overrides self.permuted and updates distance function)
@@ -360,13 +373,20 @@ class EquivariantDriftingField:
                         .view(-1)
                     )
 
+        if permutations_pos is not None:
+            assert permutations_pos.shape[1] == n_atoms, (
+                f"Expected permutations_pos to have shape (P, {n_atoms}, got {permutations_pos.shape}"
+            )
+            if permutations_neg is None:
+                permutations_neg = permutations_pos
+
         # Distances are RMSD, hence they are normalized by sqrt of number of atoms, so
         # that they are transfearable between different molecule sizes.
         dist_pos, diff_pos = self.distance_fn(
-            x_, y_pos_, atomic_numbers=atomic_numbers_pos
+            x_, y_pos_, atomic_numbers=atomic_numbers_pos, permutations=permutations_pos
         )
         dist_neg, diff_neg = self.distance_fn(
-            x_, y_neg_, atomic_numbers=atomic_numbers_neg
+            x_, y_neg_, atomic_numbers=atomic_numbers_neg, permutations=permutations_neg
         )
 
         # 2. Mask self-distances (when y_neg contains x)

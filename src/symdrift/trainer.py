@@ -9,13 +9,13 @@ import torch
 from ase.io import write
 from torch_geometric.data import Batch
 
-from symdrift.alignment import get_rmsd_batched_scatter
 from symdrift.analysis import (
+    batch_inputs_to_atoms,
     evaluate_covmat,
+    get_rmsd_batched_scatter,
     get_validity,
     pca_plot,
     print_covmat_results,
-    batch_inputs_to_atoms,
 )
 from symdrift.generative import (
     DriftingField,
@@ -378,9 +378,7 @@ class DriftingMolecules(pl.LightningModule):
         self.model.eval()
 
         # Sample prior noise
-        batch_sampling = self.sample_negative_batch(
-            batch_pos, n_neg_per_pos=n_samples
-        )
+        batch_sampling = self.sample_negative_batch(batch_pos, n_neg_per_pos=n_samples)
 
         # generate samples
         start_time = time.time()
@@ -416,8 +414,8 @@ class DriftingMolecules(pl.LightningModule):
             df, metrics_cov = None, {}
 
         metrics = {
-            **metrics_val, 
-            **metrics_cov, 
+            **metrics_val,
+            **metrics_cov,
             "sampling_time": elapsed_time / len(atoms_pred),
         }
 

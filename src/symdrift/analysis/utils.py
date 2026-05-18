@@ -13,7 +13,7 @@ __all__ = [
     "build_conformer"
 ]
 
-def inputs_to_atoms(inputs, pos_key="pos", info_keys=[]):
+def inputs_to_atoms(inputs, atom_key="x", pos_key="pos", info_keys=[]):
     """
     Converts a single input to an ASE Atoms object.
 
@@ -24,7 +24,7 @@ def inputs_to_atoms(inputs, pos_key="pos", info_keys=[]):
         Atoms: The ASE Atoms object.
     """
     R = inputs[pos_key].detach().cpu().numpy()
-    Z = inputs.x.detach().cpu().numpy()
+    Z = inputs[atom_key].detach().cpu().numpy()
     info = {}
     for key in info_keys:
         if hasattr(inputs, key):

@@ -31,6 +31,8 @@ augment_conformers:
   num_augs: 10
   rotate: true
   permute: true
+  ignore_hs: false
+  use_atom_features: true
 
 train_transform:
   _target_: torch_geometric.transforms.Compose

@@ -379,7 +379,7 @@ class ConformerDatasetDisk(ConformerShared, Dataset):
         transform=None,
         pre_transform=Compose([RemoveCOMConformer(), FeaturizeMolecule()]),
         pre_filter=None,
-        shard_size: int = 1024,
+        shard_size: int = 512,
         shard_cache_size: int = 2,
         **kwargs,
     ):

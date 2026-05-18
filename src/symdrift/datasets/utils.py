@@ -1,14 +1,17 @@
 # allowable multiple choice node and edge features
 import os
 import pickle
+from collections import defaultdict
 from copy import deepcopy
 from typing import Optional
 
 import numpy as np
+import pynauty
 import torch
 from rdkit import Chem
 from rdkit.Chem.rdchem import ChiralType, Conformer
 from rdkit.Geometry import Point3D
+from sympy.combinatorics import Permutation, PermutationGroup
 from torch_geometric.data import Data
 
 __all__ = [
@@ -22,6 +25,7 @@ __all__ = [
     "compute_edge_index",
     "get_neighbor_ids",
     "get_chiral_tensors",
+    "get_authomorphism_permutations",
     "build_conformer",
     "load_pkl",
     "check_disconnected_components",
@@ -221,6 +225,77 @@ def get_chiral_tensors(mol):
 
     return chiral_index, chiral_nbr_index, chiral_tag
 
+def get_mol_properties(mol):
+    num_atoms = mol.GetNumAtoms()
+    num_bonds = mol.GetNumBonds()
+    atomic_numbers = np.array(get_atomic_numbers_from_mol(mol))
+    bonds = np.array(
+        [[bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()] for bond in mol.GetBonds()]
+    )
+    return num_atoms, num_bonds, atomic_numbers, bonds
+
+def get_graph_from_mol(mol, use_atom_features=True):
+    # Get atom types and edges from the molecule
+    _, _, x, graph_edges = get_mol_properties(mol)
+    
+    # Using node features makes the graph even more unique. So only nodes that are 
+    # truely interchangeable are considered the same.
+    if use_atom_features:
+        atomic_features = np.array(
+            [atom_to_feature_vector(atom) for atom in mol.GetAtoms()]
+        )
+    
+    num_nodes = x.shape[0]
+    graph = pynauty.Graph(number_of_vertices=num_nodes, directed=False)
+    for edge in graph_edges:
+        graph.connect_vertex(edge[0].item(), [edge[1].item()])
+
+    color_groups = defaultdict(set)
+    for node in range(num_nodes):
+        color = [x[node].item()]
+        if use_atom_features:
+            color += atomic_features[node].tolist()
+        color_groups[tuple(color)].add(node)
+    vertex_colors = list(color_groups.values())
+    graph.set_vertex_coloring(vertex_colors)
+    return x, graph_edges, graph
+
+def get_authomorphism_permutations(mol, ignore_hs=False, max_no_perm=None, use_atom_features=True):
+    """Returns a list of permutations corresponding to the automorphisms of the molecule"""
+
+    # Get the graph representation of the molecule
+    x, _, graph = get_graph_from_mol(mol, use_atom_features=use_atom_features)
+
+    # Get the automorphism group of the graph
+    generators, _, _, _, _ = pynauty.autgrp(graph)
+    generators_sympy = [Permutation(g) for g in generators]
+
+    # Construct the permutation group
+    aut_group = PermutationGroup(generators_sympy)
+
+    # Print all isomorphisms (automorphisms)
+    num_nodes = x.shape[0]
+    all_perms = [np.arange(num_nodes)]
+
+    if ignore_hs:
+        mask = x != 1
+    else:
+        mask = np.ones_like(x).astype(bool)
+
+    for perm in aut_group.generate():
+        if len(perm.array_form) == 0:
+            continue
+        perm_array = np.array(perm.array_form)
+        moved = np.where(perm_array != np.arange(len(perm_array)))[0]
+        signature = moved[mask[moved]]
+        if len(signature) == 0:
+            continue
+        all_perms.append(perm.array_form)
+        if max_no_perm is not None and len(all_perms) >= max_no_perm:
+            break
+
+    return torch.stack([torch.tensor(perm, dtype=torch.long) for perm in all_perms])
+
 
 def build_conformer(pos):
     if isinstance(pos, torch.Tensor) or isinstance(pos, np.ndarray):
@@ -299,17 +374,6 @@ def check_smiles(smiles, smiles_mol):
         return False
 
     return True
-
-
-def get_mol_properties(mol):
-    num_atoms = mol.GetNumAtoms()
-    num_bonds = mol.GetNumBonds()
-    atomic_numbers = np.array(get_atomic_numbers_from_mol(mol))
-    bonds = np.array(
-        [[bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()] for bond in mol.GetBonds()]
-    )
-
-    return num_atoms, num_bonds, atomic_numbers, bonds
 
 
 def check_conformer(conformer_mol, num_atoms, num_bonds, atomic_numbers, bonds):

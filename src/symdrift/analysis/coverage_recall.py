@@ -28,6 +28,7 @@ __all__ = [
     "evaluate_covmat",
     "print_covmat_results",
 ]
+
 def calc_coverage_recall(rmsd_array, thresholds):
     """
     Compute coverage recall (COV-R) for a set of generated conformers.

@@ -87,7 +87,7 @@ def extend_bond_index(
             "Edge type should have same shape as number of edges."
         )
 
-    edge_index, edge_type, shortest_hops = extend_graph_order_radius(
+    edge_index, edge_type = extend_graph_order_radius(
         pos=pos,
         edge_index=bond_index,
         edge_type=bond_type,
