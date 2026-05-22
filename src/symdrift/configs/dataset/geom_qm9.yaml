@@ -1,4 +1,7 @@
 # Dataset configuration for GEOM QM9 dataset
+defaults:
+  - /transforms@transforms: conformer
+  - _self_
 
 # Dataset specific parameters (assume data lies in the run folder under the dataset name e.g. data/geom_qm9 for the geom_qm9 dataset)
 name: geom_qm9
@@ -19,22 +22,6 @@ test_batch_size: 1
 num_workers: 4
 persistent_workers: true
 pin_memory: true
-follow_batch: [x_conf] # creates additional batch mask for each conformer
-
-# Define transforms to apply when loading data
-subselect_top_k_conformers:
-  _target_: symdrift.datasets.BoltzmannWeightingConformers
-  keep_top_n: 30
-
-train_transform:
-  _target_: torch_geometric.transforms.Compose
-  transforms:
-    - ${dataset.subselect_top_k_conformers}
-
-val_transform:
-  _target_: torch_geometric.transforms.Compose
-  transforms:
-    - ${dataset.subselect_top_k_conformers}
 
 # Define datamodule for training
 datamodule:
@@ -45,15 +32,16 @@ datamodule:
     source: ${dataset.name}
     identifier: ${dataset.identifier}
   split_identifier: ${dataset.split_identifier}
-  train_transform: ${dataset.train_transform}
-  val_transform: ${dataset.val_transform}
+  train_transform: ${dataset.transforms.train_transform}
+  val_transform: ${dataset.transforms.val_transform}
+  test_transform: ${dataset.transforms.test_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
   test_batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
-  follow_batch: ${dataset.follow_batch}
+  follow_batch: ${dataset.transforms.follow_batch}
   shuffle_train: true
   drop_last_train: false
 
@@ -65,10 +53,11 @@ test_dataloader:
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}
+    transform: ${dataset.transforms.test_transform}
   batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
-  follow_batch: ${dataset.follow_batch}
+  follow_batch: ${dataset.transforms.follow_batch}
   shuffle: false
   drop_last: false

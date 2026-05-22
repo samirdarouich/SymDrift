@@ -1,6 +1,6 @@
 """Implementation of the Gaussian moment descriptor to encode local atomic environment from Zaverkin et al. (https://doi.org/10.1021/acs.jctc.0c00347)"""
 
-from typing import Optional
+from typing import List, Optional
 
 import einops
 import numpy as np
@@ -411,11 +411,16 @@ class GaussianMomentEmbedder:
 
 class DistanceEmbedder:
     def __init__(
-        self, r_max: Optional[float] = None, invariant=True, max_num_neighbors=500
+        self,
+        r_max: Optional[float] = None,
+        invariant=True,
+        use_automorphisms: bool = True,
+        max_num_neighbors=500,
     ):
         self.invariant = invariant
         if r_max is None:
             r_max = float("inf")
+        self.use_automorphisms = use_automorphisms
         self.r_max = r_max
         self.max_num_neighbors = max_num_neighbors
 
@@ -423,14 +428,88 @@ class DistanceEmbedder:
         return (
             f"DistanceEmbedder(invariant={self.invariant}, "
             f"r_max={self.r_max}, "
-            f"max_num_neighbors={self.max_num_neighbors})"
+            f"max_num_neighbors={self.max_num_neighbors}, "
+            f"use_automorphisms={self.use_automorphisms})"
         )
+
+    def _compute_automorphism_ids(
+        self,
+        row: Tensor,
+        col: Tensor,
+        batch: Tensor,
+        automorphisms: Tensor,
+        edge_batch: Tensor,
+    ) -> Tensor:
+        """
+        Computes a topological 'orbit_id' for each edge based purely on the
+        graph automorphism group.
+        """
+        orbit_ids = torch.zeros_like(row)
+        num_graphs = batch.max().item() + 1
+
+        for g_id in range(num_graphs):
+            # Isolate edges for the current graph
+            e_mask = batch[row] == g_id
+            g_row = row[e_mask]
+            g_col = col[e_mask]
+
+            # Map global node indices (e.g., 50-100) to local graph indices (0-50)
+            node_mask = batch == g_id
+            node_offset = node_mask.nonzero(as_tuple=True)[0][0]
+            local_row = g_row - node_offset
+            local_col = g_col - node_offset
+
+            # G shape: (Num_Permutations, Num_Nodes_in_Graph)
+            G = automorphisms[g_id]
+            N_local = G.shape[1]
+
+            # Apply all permutations simultaneously to the edge connections
+            # Shapes become (Num_Permutations, Num_Edges_in_Graph)
+            G_row = G[:, local_row]
+            G_col = G[:, local_col]
+
+            # Force undirected symmetry (order of nodes in an edge doesn't matter)
+            p_min = torch.minimum(G_row, G_col)
+            p_max = torch.maximum(G_row, G_col)
+
+            # Hash the permuted node pairs into a single integer
+            pair_hash = p_min * N_local + p_max
+
+            # Pick the Canonical Representative: the smallest hash across all allowed
+            # permutations.
+            local_orbit_id = pair_hash.min(dim=0).values
+
+            orbit_ids[e_mask] = local_orbit_id
+
+        max_orbit_id = orbit_ids.max() + 1
+        group_id = edge_batch * max_orbit_id + orbit_ids
+
+        return group_id
+
+    def _compute_atom_type_ids(
+        self, row: Tensor, col: Tensor, Z: Tensor, edge_batch: Tensor
+    ) -> Tensor:
+
+        # sort edges within the same pair_type to make it permutation invariant
+        Zi, Zj = Z[row], Z[col]
+
+        # sorting key: (graph, pair_type, distance)
+        Zmax_val = Z.max() + 1
+        pair_type = Zi * Zmax_val + Zj
+
+        # sorting key: (graph, pair_type, distance)
+        Zmax_val = Z.max() + 1
+        pair_type = Zi * Zmax_val + Zj
+        group_id = edge_batch * (Zmax_val**2) + pair_type
+
+        return group_id
 
     def __call__(
         self,
         positions: Tensor,
         batch: Optional[Tensor] = None,
         Z: Optional[Tensor] = None,
+        automorphisms: Optional[List[Tensor]] = None,
         edge_index: Optional[Tensor] = None,
         invariant: Optional[bool] = None,
         **kwargs,
@@ -446,6 +525,9 @@ class DistanceEmbedder:
             Z (Tensor, optional):
                 Tensor of shape (B*n_atoms) containing the atomic numbers of the atoms.
                 Needed if `invariant` is True to compute the invariant embedding.
+            automorphisms (List[Tensor], optional):
+                List of tensors, each of shape (P, n_atoms) containing the automorphism
+                group for each graph.
             edge_index (Tensor, optional):
               Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
             invariant (bool, optional):
@@ -476,7 +558,7 @@ class DistanceEmbedder:
             row, col = row[mask], col[mask]
         else:
             row, col = edge_index
-        
+
         # compute distances for the edges (assuming fully connected graph, reconstructs
         # the full distance matrix)
         dist = (positions[row] - positions[col]).norm(dim=-1)
@@ -487,14 +569,22 @@ class DistanceEmbedder:
         if not self.invariant:
             return dist, edge_batch
 
-        # sort edges within the same pair_type to make it permutation invariant
-        Zi, Zj = Z[row], Z[col]
+        if automorphisms is not None and self.use_automorphisms:
+            # compute the orbit_id for each edge based on the graph automorphisms
+            group_id = self._compute_automorphism_ids(
+                row, col, batch, automorphisms, edge_batch
+            )
+        elif Z is not None:
+            group_id = self._compute_atom_type_ids(row, col, Z, edge_batch)
+        else:
+            raise ValueError(
+                "To compute an invariant embedding, either automorphisms or atomic "
+                "numbers Z must be provided."
+            )
 
-        # sorting key: (graph, pair_type, distance)
-        Zmax_val = Z.max() + 1
-        pair_type = Zi * Zmax_val + Zj
+        # sort edges within the same group type (either defined by same atomic type or
+        # considered the same under automorphisms) to make it permutation invariant.
         max_dist = dist.max().detach() + 1.0
-        group_id = edge_batch * (Zmax_val**2) + pair_type
         key = group_id * max_dist + dist
 
         # apply permutation

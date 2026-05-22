@@ -1,0 +1,10 @@
+# Define transforms to apply when loading data
+
+follow_batch: [x_conf]
+
+
+train_transform: null
+
+val_transform: null
+
+test_transform: null

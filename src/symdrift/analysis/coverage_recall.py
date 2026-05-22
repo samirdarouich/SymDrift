@@ -12,9 +12,11 @@ from rdkit import Chem
 from rdkit.Chem import rdMolAlign
 from rdkit.Chem.rdmolops import RemoveHs
 from rdkit.Geometry import Point3D
-from symdrift.utils import RankedLogger
-from symdrift.analysis import pymatgen_match, build_conformer
 from tqdm import tqdm
+
+from symdrift.alignment import minimal_distance_permuted
+from symdrift.analysis import build_conformer, pymatgen_match
+from symdrift.utils import RankedLogger
 
 logging.getLogger("pymatgen.analysis.molecule_matcher").setLevel(logging.WARNING)
 
@@ -26,8 +28,10 @@ __all__ = [
     "calc_amr_recall",
     "calc_amr_precision",
     "evaluate_covmat",
+    "evaluate_covmat_batched",
     "print_covmat_results",
 ]
+
 
 def calc_coverage_recall(rmsd_array, thresholds):
     """
@@ -163,6 +167,140 @@ def worker_fn_rmsd_wo_h(job):
     return smiles, i, j, rmsd
 
 
+def worker_fn_rmsd_batched(
+    x, y, data, brute_force_permutations=False, max_iter=5, tol=1e-2, rotate_before=True
+):
+    """Compute the RMSD between two sets of conformers x and y, where x is of shape
+    (num_samples, num_atoms, 3) and y is of shape (num_refs, num_atoms, 3). The RMSD is
+    computed as the minimal RMSD between each sample in x and each reference in y,
+    after applying the optimal permutation of atoms and rotation to minimize the RMSD.
+    The function returns a tensor of shape (num_samples, num_refs) containing the RMSD
+    values.
+
+    Arguments:
+        x: Tensor of shape (num_samples, num_atoms, 3) containing the coordinates of
+            the generated conformers.
+        y: Tensor of shape (num_refs, num_atoms, 3) containing the coordinates of
+            the reference conformers.
+        data: The original data object containing the atomic numbers and permutations
+            for the molecule. This is used to determine which permutations to apply when
+            computing the RMSD.
+        brute_force_permutations: If True, compute the RMSD for all possible
+            permutations of atoms.
+        max_iter: The maximum number of iterations to perform when optimizing the
+            permutation and rotation iteratively using the Hungarian algorithm.
+        tol: The tolerance for convergence when optimizing the permutation and rotation.
+        rotate_before: If True, perform an initial rotation to align the centroids of x
+            and y before optimizing the permutation and rotation.
+    """
+    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
+    n_refs, n_atoms, _ = y.shape
+
+    permutations = getattr(data, "authomorphism_permutations", None)
+    atomic_numbers = data.x_conf.view(n_refs, n_atoms)
+
+    rmsd_batch, _ = minimal_distance_permuted(
+        x=x,
+        y=y,
+        permutations=permutations,
+        atomic_numbers=atomic_numbers,
+        brute_force_permutations=brute_force_permutations,
+        max_iter=max_iter,
+        tol=tol,
+        rotate_before=rotate_before,
+    )
+
+    return rmsd_batch
+
+
+def worker_fn_rmsd_wo_h_batched(
+    x, y, data, brute_force_permutations=False, max_iter=5, tol=1e-2, rotate_before=True
+):
+    """Compute the RMSD between two sets of conformers x and y, where x is of shape
+    (num_samples, num_atoms, 3) and y is of shape (num_refs, num_atoms, 3). The RMSD is
+    computed as the minimal RMSD between each sample in x and each reference in y,
+    after applying the optimal permutation of atoms and rotation to minimize the RMSD.
+    The function returns a tensor of shape (num_samples, num_refs) containing the RMSD
+    values.
+
+    This function does only consider heavy atoms when computing the RMSD.
+
+    Arguments:
+        x: Tensor of shape (num_samples, num_atoms, 3) containing the coordinates of
+            the generated conformers.
+        y: Tensor of shape (num_refs, num_atoms, 3) containing the coordinates of
+            the reference conformers.
+        data: The original data object containing the atomic numbers and permutations
+            for the molecule. This is used to determine which permutations to apply when
+            computing the RMSD.
+        brute_force_permutations: If True, compute the RMSD for all possible
+            permutations of atoms.
+        max_iter: The maximum number of iterations to perform when optimizing the
+            permutation and rotation iteratively using the Hungarian algorithm.
+        tol: The tolerance for convergence when optimizing the permutation and rotation.
+        rotate_before: If True, perform an initial rotation to align the centroids of x
+            and y before optimizing the permutation and rotation.
+    """
+    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
+    n_refs, n_atoms, _ = y.shape
+
+    permutations = getattr(data, "authomorphism_permutations", None)
+    atomic_numbers = data.x_conf.view(n_refs, n_atoms)
+    hydrogen_mask = data.x == 1
+
+    # Assumes that the order of atoms in x and y is the same (and x_conf is repeated for
+    # each sample in x if there are multiple samples)
+    atomic_numbers_woh = atomic_numbers[:, ~hydrogen_mask]
+    x_woh = x[:, ~hydrogen_mask]
+    y_woh = y[:, ~hydrogen_mask]
+
+    # If permutations are provided, we need to filter out permutations were only
+    # hydrogen moves and reindex the remaining permutations to match the new indexing of
+    # atoms after removing hydrogens.
+    if permutations is not None:
+        permutations = permutations.view(-1, n_atoms)
+
+        keep_mask = data.x != 1
+        old_to_new = -torch.ones_like(data.x)
+        old_to_new[keep_mask] = torch.arange(
+            keep_mask.sum(), device=atomic_numbers.device
+        )
+        perms_woh = old_to_new[permutations]
+        perms_woh = perms_woh[:, (perms_woh >= 0).all(dim=0)].unique(dim=0)
+
+        P = perms_woh.shape[0]
+        atomic_numbers_woh_repeated = data.x[keep_mask].repeat(P, 1)
+        batch_indices = torch.arange(P, device=atomic_numbers.device).unsqueeze(1)
+        assert (
+            (
+                atomic_numbers_woh_repeated[batch_indices, perms_woh]
+                == atomic_numbers_woh_repeated
+            )
+            .all()
+            .item()
+        ), "Permutations must preserve atomic numbers after removing hydrogens."
+
+        assert x_woh.shape[1] == y_woh.shape[1] == perms_woh.shape[1], (
+            f"Number of atoms in x and y must match the number of atoms in permutations. "
+            f"Got {x_woh.shape[1]} and {y_woh.shape[1]} atoms, but permutations has {permutations.shape[1]} atoms."
+        )
+    else:
+        perms_woh = None
+
+    rmsd_batch, _ = minimal_distance_permuted(
+        x=x_woh,
+        y=y_woh,
+        permutations=perms_woh,
+        atomic_numbers=atomic_numbers_woh,
+        brute_force_permutations=brute_force_permutations,
+        max_iter=max_iter,
+        tol=tol,
+        rotate_before=rotate_before,
+    )
+
+    return rmsd_batch
+
+
 def worker_fn_distance(job):
     smiles, i, j, ref_i, pred_j, kwargs = job
     pos_i = ref_i.positions
@@ -192,8 +330,11 @@ WORKER_FN_DICT = {
     "rmsd_wo_h": worker_fn_rmsd_wo_h,
     "rmsd_rdkit": worker_fn_rmsd_rdkit,
     "rmsd_rdkit_wo_h": worker_fn_rmsd_rdkit_wo_h,
+    "rmsd_batched": worker_fn_rmsd_batched,
+    "rmsd_wo_h_batched": worker_fn_rmsd_wo_h_batched,
     "distance": worker_fn_distance,
 }
+
 
 def evaluate_covmat(
     preds,
@@ -206,6 +347,9 @@ def evaluate_covmat(
     skip_disconnected=True,
     **job_kwargs,
 ):
+    assert worker_fn_type in WORKER_FN_DICT, (
+        f"Unsupported worker function type: {worker_fn_type}"
+    )
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     skipped = []
     for ref in refs:
@@ -248,6 +392,8 @@ def evaluate_covmat(
         refs = data["refs"]
         preds = data["preds"]
 
+        # Use Graphautomorphism permutations defined by the SMILES to speed up RMSD
+        # computation
         if worker_fn_type in ["rmsd_rdkit", "rmsd_rdkit_wo_h"]:
             mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
             refs = [set_rdmol_positions(mol, ref.positions) for ref in refs]
@@ -274,6 +420,86 @@ def evaluate_covmat(
             desc="Computing RMSD matrix",
         ):
             populate_results(res)
+
+    coverage_recall, coverage_precision = [], []
+    amr_recall, amr_precision = [], []
+    for rmsd_array in rmsd_results.values():
+        if rmsd_array.shape[1] == 0:
+            continue
+        coverage_recall.append(calc_coverage_recall(rmsd_array, thresholds))
+        coverage_precision.append(calc_coverage_precision(rmsd_array, thresholds))
+        amr_recall.append(calc_amr_recall(rmsd_array))
+        amr_precision.append(calc_amr_precision(rmsd_array))
+
+    results = {
+        "thresholds": np.array(thresholds),
+        "CoverageR": coverage_recall,
+        "CoverageP": coverage_precision,
+        "MatchingR": amr_recall,
+        "MatchingP": amr_precision,
+    }
+
+    return results, rmsd_results
+
+
+def evaluate_covmat_batched(
+    data,
+    thresholds,
+    worker_fn_type="rmsd_batched",
+    batch_size=64,
+    ratio=None,
+    identifier="smiles",
+    skip_disconnected=True,
+    **job_kwargs,
+):
+    assert worker_fn_type in ["rmsd_batched", "rmsd_wo_h_batched"], (
+        "Only batched worker functions are supported in evaluate_covmat_batched."
+    )
+    batch_size = max(batch_size, 1)
+
+    rmsd_results = {}
+    total_rmsd_computations = 0
+    for d in data:
+        identifier_value = d[identifier]
+        if "." in identifier_value and skip_disconnected:
+            logger.info(
+                f"Skipping disconnected molecule with {identifier}={identifier_value} for covmat evaluation."
+            )
+            continue
+
+        n_atoms = d.num_atoms.item()
+        refs = d.pos.view(-1, n_atoms, 3)
+        preds = d.pos_generated.view(-1, n_atoms, 3)
+        num_refs = refs.shape[0]
+        num_preds = preds.shape[0]
+
+        if ratio is not None and num_preds > int(num_refs * ratio):
+            num_preds = int(num_refs * ratio)
+            preds = preds[:num_preds]
+        total_rmsd_computations += num_refs * num_preds
+
+        # compute RMSD between generated and reference conformers in batches over
+        # samples.
+        rmsd_list = []
+        for i0 in tqdm(
+            range(0, num_preds, batch_size), desc="Computing RMSD in batches"
+        ):
+            i1 = min(i0 + batch_size, num_preds)
+            x_batch = preds[i0:i1]
+            rmsd_batch = WORKER_FN_DICT[worker_fn_type](
+                x=x_batch,
+                y=refs,
+                data=d,
+                **job_kwargs,
+            )
+            rmsd_list.append(rmsd_batch)
+
+        rmsd = torch.cat(rmsd_list, dim=0)
+        # transpose as its defined over (num_samples, num_refs) and we want
+        # (num_refs, num_samples)
+        rmsd_results[identifier_value] = rmsd.cpu().numpy().T
+
+    logger.info(f"Total RMSD computations: {total_rmsd_computations}")
 
     coverage_recall, coverage_precision = [], []
     amr_recall, amr_precision = [], []

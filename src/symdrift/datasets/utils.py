@@ -25,7 +25,7 @@ __all__ = [
     "compute_edge_index",
     "get_neighbor_ids",
     "get_chiral_tensors",
-    "get_authomorphism_permutations",
+    "get_automorphisms",
     "build_conformer",
     "load_pkl",
     "check_disconnected_components",
@@ -260,7 +260,7 @@ def get_graph_from_mol(mol, use_atom_features=True):
     graph.set_vertex_coloring(vertex_colors)
     return x, graph_edges, graph
 
-def get_authomorphism_permutations(mol, ignore_hs=False, max_no_perm=None, use_atom_features=True):
+def get_automorphisms(mol, ignore_hs=False, max_no_perm=None, use_atom_features=True):
     """Returns a list of permutations corresponding to the automorphisms of the molecule"""
 
     # Get the graph representation of the molecule

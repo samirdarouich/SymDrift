@@ -159,6 +159,10 @@ class DriftingMolecules(pl.LightningModule):
         y_pos = batch_pos.pos.clone()
         z_pos = batch_pos.x_conf.clone()
 
+        perms_pos = getattr(batch_pos, "automorphisms", None)
+        if perms_pos is not None:
+            perms_pos = perms_pos.clone()
+            
         # Per class compute the drift seperately
         V_total = torch.zeros_like(x)
         V_pos_total = torch.zeros_like(x)
@@ -167,6 +171,13 @@ class DriftingMolecules(pl.LightningModule):
             mask_pos = batch_pos.x_conf_batch == i
             y_i_pos = y_pos[mask_pos]
             z_i_pos = z_pos[mask_pos]
+            
+            if perms_pos is not None:
+                mask_pos_perms = batch_pos.automorphisms_batch == i
+                num_perms_i = batch_pos.num_automorphisms[i]
+                perms_i_pos = perms_pos[mask_pos_perms].view(num_perms_i, -1)
+            else:
+                perms_i_pos = None
 
             # search negative samples corresponding to the current positive sample
             start = i * self.n_neg_per_pos
@@ -184,6 +195,7 @@ class DriftingMolecules(pl.LightningModule):
                     batch_pos.num_atoms[i],
                     atomic_numbers_pos=z_i_pos,
                     atomic_numbers_neg=z_i_neg,
+                    permutations_pos=perms_i_pos,
                 )
             V_total[mask_neg] = V
             V_pos_total[mask_neg] = V_pos
@@ -219,14 +231,38 @@ class DriftingMolecules(pl.LightningModule):
         z_pos = batch_pos.x_conf.clone()
         conformer_offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()
 
+        automorphisms_pos = getattr(batch_pos, "automorphisms", None)
+        if automorphisms_pos is not None:
+            automorphisms_batch = batch_pos.automorphisms_batch
+            automorphisms_pos_list = []
+            automorphisms_neg_list = []
+            for i in range(batch_pos.num_graphs):
+                n_atoms_i = batch_pos.num_atoms[i]
+                n_perms_i = batch_pos.num_automorphisms[i]
+                n_conformers_i = batch_pos.num_conformers[i]
+                mask_i = automorphisms_batch == i
+                automorphisms_i = automorphisms_pos[mask_i]
+                automorphisms_i = automorphisms_i.view(n_perms_i, n_atoms_i)
+                automorphisms_pos_list.extend([automorphisms_i] * n_conformers_i)
+                automorphisms_neg_list.extend([automorphisms_i] * self.n_neg_per_pos)
+        else:
+            automorphisms_pos_list = None
+            automorphisms_neg_list = None
+
         # Call the embedder for the whole batch. Embedding output is one flatten vector
         # and a mask indicating which embedding belong to which batch element
         y_pos_embedded, mask_pos = self.embedder(
-            positions=y_pos, Z=z_pos, batch=batch_mask_pos
+            positions=y_pos,
+            Z=z_pos,
+            batch=batch_mask_pos,
+            automorphisms=automorphisms_pos_list,
         )
 
         x_embedded, mask_x = self.embedder(
-            positions=x, Z=batch_neg.x, batch=batch_neg.batch
+            positions=x,
+            Z=batch_neg.x,
+            batch=batch_neg.batch,
+            automorphisms=automorphisms_neg_list,
         )
 
         # Per class compute the drift seperately
@@ -271,7 +307,7 @@ class DriftingMolecules(pl.LightningModule):
 
         # normalize loss by the number of graphs in the batch
         loss = loss / batch_pos.num_graphs
-        
+
         # Log metrics
         metrics = {"loss": loss}
         for metric_name, metric in metrics.items():
@@ -459,7 +495,7 @@ class DriftingMolecules(pl.LightningModule):
         if was_training:
             self.model.train()
 
-        return atoms_pred, metrics
+        return x, atoms_pred, metrics
 
     def _get_pos_atoms(self, batch_pos):
         """Treating each conformer as a separate graph in the batch"""

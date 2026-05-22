@@ -1,4 +1,7 @@
 # Dataset configuration for RDB7 dataset
+defaults:
+  - /transforms: base
+  - _self_
 
 # Dataset specific parameters (assume data lies in the run folder under the dataset name e.g. data/geom_qm9 for the geom_qm9 dataset)
 name: rdb7
@@ -21,13 +24,6 @@ persistent_workers: false
 pin_memory: true
 follow_batch: [x_conf] # creates additional batch mask for each conformer
 
-# Define transforms to apply when loading data
-train_transform: null
-
-val_transform: null
-
-test_transform: null
-
 # Define datamodule
 datamodule:
   _target_: symdrift.datasets.DataModule
@@ -37,9 +33,9 @@ datamodule:
     source: ${dataset.name}
     identifier: ${dataset.identifier}
   split_identifier: ${dataset.split_identifier}
-  train_transform: ${dataset.train_transform}
-  val_transform: ${dataset.val_transform}
-  test_transform: ${dataset.test_transform}
+  train_transform: ${train_transform}
+  val_transform: ${val_transform}
+  test_transform: ${test_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
   test_batch_size: ${dataset.test_batch_size}

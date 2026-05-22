@@ -14,7 +14,7 @@ from symdrift.datasets.utils import (
     atom_to_feature_vector,
     build_conformer,
     compute_edge_index,
-    get_authomorphism_permutations,
+    get_automorphisms,
     get_chiral_tensors,
 )
 
@@ -120,7 +120,14 @@ class RandomPermute(BaseTransform):
 
 
 class ConformerAugment(BaseTransform):
-    def __init__(self, num_augs=1, rotate=True, permute=True, ignore_hs=False, use_atom_features=True):
+    def __init__(
+        self,
+        num_augs=1,
+        rotate=True,
+        permute=True,
+        ignore_hs=False,
+        use_atom_features=True,
+    ):
         self.num_augs = num_augs
         self.rotate = rotate
         self.permute = permute
@@ -146,16 +153,16 @@ class ConformerAugment(BaseTransform):
         return R
 
     @cache_decorator
-    def get_authomorphism_permutations(self, smiles):
+    def get_automorphisms(self, smiles):
         """Find random permutations of atoms that preserve atom types and bonding structure."""
         mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
-        authomorphism_permutations = get_authomorphism_permutations(
+        automorphisms = get_automorphisms(
             mol=mol, ignore_hs=self.ignore_hs, use_atom_features=self.use_atom_features
         )
-        return authomorphism_permutations
+        return automorphisms
 
     def get_random_permutation(self, smiles, x):
-        all_perms = self.get_authomorphism_permutations(smiles)
+        all_perms = self.get_automorphisms(smiles)
         num_perms = all_perms.size(0)
         if num_perms < self.num_augs:
             # fill the rest by subsampling (with replacement) from found permutations
@@ -293,24 +300,23 @@ class GraphAutomorphism(BaseTransform):
     def forward(self, data):
         if hasattr(data, self.smiles_key):
             smiles = getattr(data, self.smiles_key)
-            authomorphism_permutations = self.get_authomorphism_permutations(smiles)
-            data.authomorphism_permutations = authomorphism_permutations.view(-1)
-            data.num_authomorphism_permutations = torch.tensor(
-                len(authomorphism_permutations), dtype=torch.long
+            automorphisms = self.get_automorphisms(smiles)
+            data.automorphisms = automorphisms.view(-1)
+            data.num_automorphisms = torch.tensor(
+                len(automorphisms), dtype=torch.long
             )
         return data
 
     def get_mol(self, smiles: str) -> Mol:
         return dm.to_mol(smiles, remove_hs=False, ordered=True)
-    
+
     @cache_decorator
-    def get_authomorphism_permutations(self, smiles: str):
+    def get_automorphisms(self, smiles: str):
         mol = self.get_mol(smiles)
-        authomorphism_permutations = get_authomorphism_permutations(
+        automorphisms = get_automorphisms(
             mol, use_atom_features=self.use_atom_features, ignore_hs=self.ignore_hs
         )
-        self.cache[smiles]["authomorphism_permutations"] = authomorphism_permutations
-        return authomorphism_permutations
+        return automorphisms
 
 
 class FeaturizeMolecule(BaseTransform):

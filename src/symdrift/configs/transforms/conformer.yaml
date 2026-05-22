@@ -1,0 +1,22 @@
+# Define transforms to apply when loading data
+
+follow_batch: [x_conf] # creates additional batch mask for each conformer
+
+# Filter conformers based on their Boltzmann weight, keeping only the top n conformers per graph.
+subselect_top_k_conformers:
+  _target_: symdrift.datasets.BoltzmannWeightingConformers
+  keep_top_n: 30
+
+train_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+
+val_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+
+test_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms: []

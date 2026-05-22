@@ -5,4 +5,7 @@ from .alignment import (
     hungarian_batched,
     kabsch_batched,
     kabsch_batched_scatter,
+    naive_distance,
+    minimal_distance,
+    minimal_distance_permuted,
 )

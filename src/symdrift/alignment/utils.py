@@ -112,7 +112,7 @@ def get_x_y_pairs(x, y, atomic_numbers=None):
     """
     x: (N, n_atoms, d),
     y: (M, n_atoms, d)
-    atomic_numbers: (M*n_atoms,) atomic numbers of each atom in target structure. Only
+    atomic_numbers: (M, n_atoms) atomic numbers of each atom in target structure. Only
     permute within same atomic number if provided.
 
     returns:
@@ -130,11 +130,10 @@ def get_x_y_pairs(x, y, atomic_numbers=None):
 
     atomic_numbers_b = None
     if atomic_numbers is not None:
-        assert atomic_numbers.shape == (M * n_atoms,), (
-            f"Atomic numbers should have shape (M*n_atoms,) not {atomic_numbers.shape}"
-        )
-        atomic_numbers_b = atomic_numbers.view(M, n_atoms).repeat(
-            N, 1
-        )  # (N*M, n_atoms)
+        assert atomic_numbers.shape == (
+            M,
+            n_atoms,
+        ), f"Atomic numbers should have shape (M, n_atoms) not {atomic_numbers.shape}"
+        atomic_numbers_b = atomic_numbers.repeat(N, 1)  # (N*M, n_atoms)
 
     return x_flat, y_flat, atomic_numbers_b

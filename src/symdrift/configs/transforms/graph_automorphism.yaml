@@ -1,0 +1,34 @@
+# Define transforms to apply when loading data
+
+# Filter conformers based on their Boltzmann weight, keeping only the top n conformers per graph.
+subselect_top_k_conformers:
+  _target_: symdrift.datasets.BoltzmannWeightingConformers
+  keep_top_n: 30
+
+# Gather all permutations allowed by graph automorphisms.
+# If "ignore_hs" is true, hydrogens will be ignored for graph automorphisms. 
+# If "use_atom_features" is true these will be considered addiitonally to 
+# define the graph automorphisms (reduces number of interchangeable atoms)
+graph_automorphism:
+  _target_: symdrift.datasets.GraphAutomorphism
+  ignore_hs: false
+  use_atom_features: true
+
+follow_batch: [x_conf, authomorphism_permutations]
+
+train_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.graph_automorphism}
+
+val_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.graph_automorphism}
+
+test_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.graph_automorphism}

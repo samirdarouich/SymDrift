@@ -64,15 +64,22 @@ generative_model:
   # Ratio between conformers and generated samples to use for evaluation (if null, all conformers will be used)
   ratio: null
 
-  # Use RDKIT to compute the RMSD without considering hydrogens
-  worker_fn_type: rmsd_rdkit_wo_h
+  # Compute RMSD without considering hydrogens
+  worker_fn_type: rmsd_wo_h_batched
 
   # Whether to skip disconnected ground truth graphs during evaluation
   skip_disconnected: true
 
-  # Number of workers to evaluate the RMSD in parallel (if 0, no parallelization will be used)
+  # Number of workers / batch size to evaluate the RMSD in parallel (if 0, no parallelization will be used)
   num_workers: 0
-  
+
+  # Arguments for computing the batched RMSD
+  job_kwargs:
+    brute_force_permutations: False
+    max_iter: 10
+    tol: 1e-3
+    rotate_before: True
+
   # Maximum value for adaptive gradient clipping (compare EDM)
   grad_norm_max_val: ${model.grad_norm_max_val}
 

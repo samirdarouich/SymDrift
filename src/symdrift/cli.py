@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import uuid
+from typing import Optional
 
 import hydra
 import numpy as np
@@ -11,7 +12,11 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from symdrift.analysis import evaluate_covmat, print_covmat_results
+from symdrift.analysis import (
+    evaluate_covmat,
+    evaluate_covmat_batched,
+    print_covmat_results,
+)
 from symdrift.utils import RankedLogger, log_hyperparameters, print_config
 
 OmegaConf.register_new_resolver("uuid", lambda x: str(uuid.uuid1()))
@@ -122,14 +127,13 @@ def sample(cfg):
     if getattr(cfg.dataset, "test_dataloader", None) is not None:
         log.info("Using seperate test dataset for sampling.")
         dataloader = instantiate(cfg.dataset.test_dataloader)
-        test_dataset = dataloader.dataset
     else:
         log.info("Using datamodule to load dataset for sampling.")
         datamodule = instantiate(cfg.dataset.datamodule)
         sampling_split = getattr(cfg.dataset, "sampling_split", "test")
+        # setattr(datamodule, f"{sampling_split}_batch_size", cfg.dataset.test_batch_size)
         datamodule.setup(stage=sampling_split)
         dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
-        test_dataset = getattr(datamodule, f"{sampling_split}_dataset")
 
     generative_process = instantiate(cfg.generative_model)
     log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.pretrained))
@@ -150,6 +154,7 @@ def sample(cfg):
     num_workers = getattr(cfg.generative_model, "num_workers", 8)
     worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
     skip_disconnected = getattr(cfg.generative_model, "skip_disconnected", True)
+    job_kwargs = getattr(cfg.generative_model, "job_kwargs", {})
     save_trajectory = getattr(cfg, "save_trajectory", False)
     save_pca_plot = getattr(cfg, "save_pca_plot", False)
     prior_type = generative_process.prior_sampler.type
@@ -181,6 +186,7 @@ def sample(cfg):
 
     metrics = {}
     atoms_generated = []
+    data_generated = []
     for batch in tqdm(dataloader, desc="Evaluating dataset"):
         batch = batch.to(device)
 
@@ -194,27 +200,53 @@ def sample(cfg):
         else:
             total_samples = n_samples
 
+        pos_generated = []
         for start in tqdm(
             range(0, total_samples, cfg.dataset.batch_size),
             desc=f"Sampling {total_samples} conformers for batch",
         ):
             cur_n = min(cfg.dataset.batch_size, total_samples - start)
-            batch_atoms_generated, batch_metrics = generative_process.sample(
-                batch_pos=batch,
-                num_steps=nfe,
-                n_samples=cur_n,
-                save_folder=save_folder,
-                save_trajectory=save_trajectory,
-                save_pca_plot=save_pca_plot,
-                conditioned=conditioned,
-                guidance_scale=guidance_scale,
-                seed=None if sample_seed is None else sample_seed + start,
+            batch_pos_generated, batch_atoms_generated, batch_metrics = (
+                generative_process.sample(
+                    batch_pos=batch,
+                    num_steps=nfe,
+                    n_samples=cur_n,
+                    save_folder=save_folder,
+                    save_trajectory=save_trajectory,
+                    save_pca_plot=save_pca_plot,
+                    conditioned=conditioned,
+                    guidance_scale=guidance_scale,
+                    seed=None if sample_seed is None else sample_seed + start,
+                )
             )
 
             atoms_generated.extend(batch_atoms_generated)
+            pos_generated.append(batch_pos_generated)
 
             for k, v in batch_metrics.items():
                 metrics.setdefault(k, []).extend(v if isinstance(v, list) else [v])
+
+        # Add pos_generated to batch and add slicing information in case loop through
+        # the dataset is done with batch_size > 1.
+        num_atoms = batch.num_atoms
+        sizes = num_atoms * total_samples
+        slices = torch.cat(
+            [
+                torch.zeros(1, device=sizes.device, dtype=torch.long),
+                torch.cumsum(sizes, dim=0),
+            ]
+        )
+
+        batch._slice_dict["pos_generated"] = slices
+        batch._inc_dict["pos_generated"] = torch.zeros_like(slices[:-1])
+        batch._slice_dict["num_samples"] = batch._slice_dict["num_conformers"]
+        batch._inc_dict["num_samples"] = batch._slice_dict["num_conformers"]
+
+        batch.pos_generated = torch.cat(pos_generated, dim=0)
+        batch.num_samples = torch.tensor(
+            [total_samples] * batch.num_graphs, dtype=torch.long
+        )
+        data_generated.extend(batch.to_data_list())
 
     summary_metrics = {}
     for k, v in metrics.items():
@@ -229,26 +261,28 @@ def sample(cfg):
     with open(os.path.join(save_folder, "metrics.json"), "w") as f:
         json.dump(summary_metrics, f, indent=4)
 
+    # Save generated data as a PyTorch file for later analysis
+    torch.save(data_generated, os.path.join(save_folder, "data_generated.pt"))
+
     # Evaluate coverage and matching for the whole dataset if specified
     if threshold is not None:
+        job_kwargs_str = ", "+", ".join(f"{k}={v}" for k, v in job_kwargs.items())
         log.info(
             f"Analysing coverage and matching (threshold: {threshold:.2f}, "
             f"num_workers: {num_workers}, worker_fn_type: {worker_fn_type}, "
-            f"ratio: {ratio}):"
+            f"ratio: {ratio}{job_kwargs_str}):"
         )
-        log.info("Get dataset as ASE atoms...")
-        atoms_dataset = test_dataset.get_dataset_as_atoms()
 
         # Evaluate coverage and matching
-        results, rmsd_matrix = evaluate_covmat(
-            atoms_generated,
-            atoms_dataset,
+        results, rmsd_matrix = evaluate_covmat_batched(
+            data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
-            num_workers=num_workers,
             worker_fn_type=worker_fn_type,
+            batch_size=num_workers,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
             skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
+            **job_kwargs,
         )
         df, metrics_cov = print_covmat_results(results, threshold=threshold)
 
@@ -265,7 +299,7 @@ def sample(cfg):
 
 def run_covmat_evaluation(
     path_generated: str,
-    path_dataset: str,
+    path_dataset: Optional[str] = None,
     num_workers: int = 8,
     worker_fn_type: str = "rmsd_rdkit_wo_h",
     threshold: float = 0.5,
@@ -275,38 +309,74 @@ def run_covmat_evaluation(
     skip_disconnected: bool = True,
     **job_kwargs,
 ):
-    from ase.io import read
+    if not os.path.exists(path_generated):
+        log.error(f"Generated conformers file not found: {path_generated}")
+        return
 
-    log.info("Reading generated and dataset conformers from .xyz files...")
+    if ".pt" in path_generated:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        log.info(f"Loading generated conformers from PyTorch file: {path_generated}")
+        log.info(f"Using '{device}' for RMSD computation.")
+        data_generated = torch.load(
+            path_generated, weights_only=False, map_location=device
+        )
 
-    log.info(f"Generated conformers path: {path_generated}")
-    atoms_generated = read(path_generated, ":")
+        no_ref_conformers = sum(d.num_conformers.item() for d in data_generated)
+        no_samples = sum(d.num_samples.item() for d in data_generated)
 
-    log.info(f"Dataset conformers path: {path_dataset}")
-    atoms_dataset = read(path_dataset, ":")
+        log.info(
+            f"Loaded {no_samples} generated conformers and {no_ref_conformers} "
+            "reference conformers."
+        )
 
-    log.info(
-        f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
-        "reference conformers."
-    )
+        results, rmsd_matrix = evaluate_covmat_batched(
+            data_generated,
+            thresholds=np.arange(0.05, 3.05, 0.05),
+            batch_size=num_workers,
+            worker_fn_type=worker_fn_type,
+            ratio=ratio, # only keep at most ratio*n_conformers predictions per reference
+            identifier=identifier,
+            skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
+            **job_kwargs,
+        )
 
-    kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
-    log.info(
-        f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-        f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
-        f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
-    )
-    results, rmsd_matrix = evaluate_covmat(
-        atoms_generated,
-        atoms_dataset,
-        thresholds=np.arange(0.05, 3.05, 0.05),
-        num_workers=num_workers,
-        worker_fn_type=worker_fn_type,
-        ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
-        identifier=identifier,
-        skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
-        **job_kwargs,
-    )
+    elif ".xyz" in path_generated:
+        if not os.path.exists(path_dataset):
+            log.error(f"Dataset conformers file not found: {path_dataset}")
+            return
+
+        from ase.io import read
+
+        log.info("Reading generated and dataset conformers from .xyz files...")
+
+        log.info(f"Generated conformers path: {path_generated}")
+        atoms_generated = read(path_generated, ":")
+
+        log.info(f"Dataset conformers path: {path_dataset}")
+        atoms_dataset = read(path_dataset, ":")
+
+        log.info(
+            f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
+            "reference conformers."
+        )
+
+        kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
+        log.info(
+            f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+            f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
+            f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
+        )
+        results, rmsd_matrix = evaluate_covmat(
+            atoms_generated,
+            atoms_dataset,
+            thresholds=np.arange(0.05, 3.05, 0.05),
+            num_workers=num_workers,
+            worker_fn_type=worker_fn_type,
+            ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
+            identifier=identifier,
+            skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
+            **job_kwargs,
+        )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
 
     # Log results

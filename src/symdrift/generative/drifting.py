@@ -3,141 +3,10 @@ from functools import partial
 import torch
 
 from symdrift.alignment import (
-    brute_force_and_kabch_batched,
-    get_x_y_pairs,
-    hungarian_and_kabch_batched,
-    kabsch_batched,
+    minimal_distance,
+    minimal_distance_permuted,
+    naive_distance,
 )
-
-
-def naive_distance(x, y, **kwargs):
-    """
-    x: array
-        (N, n_atoms, d)
-    y: array
-        (M, n_atoms, d)
-
-    Returns
-    -------
-    rmsd: array
-        RMSD matrix (N, M)
-    diff_pos: array
-        directional difference y-x of shape (N, M, n_atoms, d)
-    """
-    N, n_atoms, d = x.shape
-    diff_pos = y[None, :, :, :] - x[:, None, :, :]  # (N, M, n_atoms, 3)
-    rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)  # (N, M)
-    return rmsd, diff_pos
-
-
-def minimal_distance(x, y, **kwargs):
-    """
-    x: array
-        (N, n_atoms, d)
-    y: array
-        (M, n_atoms, d)
-
-    Assuming x and y are in the same atom ordering
-    Returns
-    -------
-    rmsd: array
-        RMSD matrix (N, M)
-    diff_pos: array
-        aligned directional difference y-x of shape (N, M, n_atoms, d)
-    """
-    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
-    N, n_atoms, d = x.shape
-    M = y.shape[0]
-
-    # Create all N x M pairs
-    x_flat, y_flat, _ = get_x_y_pairs(x, y)
-
-    # Get aligned y for all pairs at once
-    y_aligned, _ = kabsch_batched(x_flat, y_flat)
-
-    # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
-    diff_pos = (y_aligned - x_flat).view(N, M, n_atoms, d)
-
-    # Compute RMSD for all pairs at once (N, M)
-    rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)
-
-    return rmsd, diff_pos
-
-
-def minimal_distance_permuted(
-    x,
-    y,
-    atomic_numbers=None,
-    permutations=None,
-    brute_force_permutations=False,
-    max_iter=3,
-    tol=1e-2,
-    rotate_before=True,
-    **kwargs,
-):
-    """Compute EOT plan for batch of molecules. Reorder and permute y to match x.
-
-    Parameters
-    ----------
-    x : array
-        trial structures (N, n_atoms, d)
-    y : array
-        reference structures (M, n_atoms, d)
-    atomic_numbers : array
-        atomic numbers of each atom in target structure, used to only permute within
-        same atomic number (M*n_atoms,)
-    permutations : array
-        precomputed permutations to apply to y (P, n_atoms).
-    brute_force_permutations : bool
-        whether to use brute force permutations (overrides permutations if True)
-    max_iter : int
-        maximum number of iterations to perform
-    tol : float
-        convergence threshold for mean change in RMSD between iterations
-    rotate_before : bool
-        whether to perform a Kabsch alignment before the first iteration
-
-    Returns
-    -------
-    rmsd: array
-        RMSD matrix (N, M)
-    diff_pos: array
-        aligned and permuted directional difference y-x of shape (N, M, n_atoms, d)
-    """
-    assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
-    N, n_atoms, d = x.shape
-    M = y.shape[0]
-
-    # Create all N x M pairs
-    x_flat, y_flat, atomic_numbers_flat = get_x_y_pairs(x, y, atomic_numbers)
-
-    # Get aligned and permuted y for all pairs (use Hungarian algorithm to permute y
-    # and Kabsch to align)
-    if brute_force_permutations:
-        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
-            x_flat, y_flat, atomic_numbers=atomic_numbers_flat
-        )
-    elif permutations is not None:
-        y_aligned_and_permuted, _ = brute_force_and_kabch_batched(
-            x_flat, y_flat, permutations=permutations
-        )
-    else:
-        y_aligned_and_permuted, _ = hungarian_and_kabch_batched(
-            x_flat,
-            y_flat,
-            atomic_numbers=atomic_numbers_flat,
-            max_iter=max_iter,
-            rotate_before=rotate_before,
-            tol=tol,
-        )
-
-    # Compute directional difference for all pairs at once and reshape to (N, M, n_atoms, d)
-    diff_pos = (y_aligned_and_permuted - x_flat).view(N, M, n_atoms, d)
-
-    # Compute RMSD for all pairs at once (N, M)
-    rmsd = torch.sqrt((diff_pos**2).sum(dim=(2, 3)) / n_atoms)
-
-    return rmsd, diff_pos
 
 
 class DriftingField:
@@ -362,16 +231,20 @@ class EquivariantDriftingField:
             assert atomic_numbers_pos.shape == (N_pos * n_atoms,), (
                 f"Expected atomic_numbers_pos to have shape {(N_pos * n_atoms,)}, got {atomic_numbers_pos.shape}"
             )
+            atomic_numbers_pos = atomic_numbers_pos.view(N_pos, n_atoms)
             if atomic_numbers_neg is None:
                 if N_pos != N_neg:
                     # assume negative samples are just repeated positive samples
                     # (e.g. for each positive sample we have x negative sample which is
                     # the same molecule but with different noise)
-                    atomic_numbers_neg = (
-                        atomic_numbers_pos.view(N_pos, n_atoms)
-                        .repeat_interleave(N_neg // N_pos, dim=0)
-                        .view(-1)
+                    atomic_numbers_neg = atomic_numbers_pos.repeat_interleave(
+                        N_neg // N_pos, dim=0
                     )
+            else:
+                assert atomic_numbers_neg.shape == (N_neg * n_atoms,), (
+                    f"Expected atomic_numbers_neg to have shape {(N_neg * n_atoms,)}, got {atomic_numbers_neg.shape}"
+                )
+                atomic_numbers_neg = atomic_numbers_neg.view(N_neg, n_atoms)
 
         if permutations_pos is not None:
             assert permutations_pos.shape[1] == n_atoms, (

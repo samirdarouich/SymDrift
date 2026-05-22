@@ -1,0 +1,37 @@
+# Define transforms to apply when loading data
+
+# Filter conformers based on their Boltzmann weight, keeping only the top n conformers per graph.
+subselect_top_k_conformers:
+  _target_: symdrift.datasets.BoltzmannWeightingConformers
+  keep_top_n: 30
+
+# Augment conformers by applying random rotations and permutations. Per conformer "num_augs" augmented conformers will be generated.
+# If "rotate" is true, random rotations will be applied. If "permute" is true, random permutations (allowed by graph automorphisms) of the atoms will be applied.
+# If "ignore_hs" is true, hydrogens will be ignored for graph automorphisms. 
+# If "use_atom_features" is true these will be considered addiitonally to define the graph automorphisms (reduces number of interchangeable atoms).
+augment_conformers:
+  _target_: symdrift.datasets.ConformerAugment
+  num_augs: 10
+  rotate: true
+  permute: true
+  ignore_hs: false
+  use_atom_features: true
+
+follow_batch: [x_conf]
+
+
+train_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.augment_conformers}
+
+val_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.augment_conformers}
+
+test_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms: []
