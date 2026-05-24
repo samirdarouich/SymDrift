@@ -2,7 +2,6 @@
 
 follow_batch: [x_conf]
 
-
 train_transform: null
 
 val_transform: null

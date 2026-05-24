@@ -22,7 +22,6 @@ test_batch_size: 1
 num_workers: 4
 persistent_workers: true
 pin_memory: true
-follow_batch: [x_conf] # creates additional batch mask for each conformer
 
 # Define datamodule
 datamodule:
@@ -33,16 +32,16 @@ datamodule:
     source: ${dataset.name}
     identifier: ${dataset.identifier}
   split_identifier: ${dataset.split_identifier}
-  train_transform: ${train_transform}
-  val_transform: ${val_transform}
-  test_transform: ${test_transform}
+  train_transform: ${dataset.transforms.train_transform}
+  val_transform: ${dataset.transforms.val_transform}
+  test_transform: ${dataset.transforms.test_transform}
   train_batch_size: ${dataset.batch_size}
   val_batch_size: ${dataset.batch_size}
   test_batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
-  follow_batch: ${dataset.follow_batch}
+  follow_batch: ${dataset.transforms.follow_batch}
   shuffle_train: true
   drop_last_train: false
 
@@ -54,11 +53,11 @@ test_dataloader:
     root: ${dataset.root}
     source: ${dataset.name}
     identifier: ${dataset.identifier}
-    transform: ${test_transform}
+    transform: ${dataset.transforms.test_transform}
   batch_size: ${dataset.test_batch_size}
   num_workers: ${dataset.num_workers}
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
-  follow_batch: ${dataset.follow_batch}
+  follow_batch: ${dataset.transforms.follow_batch}
   shuffle: false
   drop_last: false

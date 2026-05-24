@@ -17,8 +17,8 @@ augment_conformers:
   ignore_hs: false
   use_atom_features: true
 
+# creates additional batch mask for each conformer
 follow_batch: [x_conf]
-
 
 train_transform:
   _target_: torch_geometric.transforms.Compose

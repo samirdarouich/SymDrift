@@ -14,7 +14,8 @@ graph_automorphism:
   ignore_hs: false
   use_atom_features: true
 
-follow_batch: [x_conf, authomorphism_permutations]
+# creates additional batch mask for each conformer and each automorphism permutation
+follow_batch: [x_conf, automorphisms]
 
 train_transform:
   _target_: torch_geometric.transforms.Compose
