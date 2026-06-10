@@ -140,6 +140,7 @@ class DriftingMolecules(pl.LightningModule):
                 "energy",
                 "boltzmann_weights",
                 "conformer_index",
+                "automorphisms",
             ],
         )
 
