@@ -329,7 +329,12 @@ class ConformerDatasetInMemory(ConformerShared, InMemoryDataset):
 
     @property
     def raw_file_names(self):
-        return glob.glob(osp.join(self.raw_dir, "*.pickle"))
+        files = glob.glob(osp.join(self.raw_dir, "*.pickle"))
+        if len(files) == 0:
+            raise FileNotFoundError(
+                f"No pickle files found in raw directory: {self.raw_dir}"
+            )
+        return files
 
     @property
     def processed_file_names(self):
@@ -414,6 +419,10 @@ class ConformerDatasetDisk(ConformerShared, Dataset):
     @property
     def raw_file_names(self):
         files = sorted(glob.glob(osp.join(self.raw_dir, "*.pickle")))
+        if len(files) == 0:
+            raise FileNotFoundError(
+                f"No pickle files found in raw directory: {self.raw_dir}"
+            )
         return [os.path.basename(f) for f in files]
 
     @property

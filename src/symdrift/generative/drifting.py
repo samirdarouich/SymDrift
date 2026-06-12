@@ -248,7 +248,7 @@ class EquivariantDriftingField:
 
         if permutations_pos is not None:
             assert permutations_pos.shape[1] == n_atoms, (
-                f"Expected permutations_pos to have shape (P, {n_atoms}, got {permutations_pos.shape}"
+                f"Expected permutations_pos to have shape (P, {n_atoms}), got {permutations_pos.shape}"
             )
             if permutations_neg is None:
                 permutations_neg = permutations_pos

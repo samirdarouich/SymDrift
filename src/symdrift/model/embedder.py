@@ -1,6 +1,6 @@
 """Implementation of the Gaussian moment descriptor to encode local atomic environment from Zaverkin et al. (https://doi.org/10.1021/acs.jctc.0c00347)"""
 
-from typing import List, Optional
+from typing import Optional
 
 import einops
 import numpy as np
@@ -8,6 +8,8 @@ import torch
 from torch import Tensor
 from torch_geometric.nn import radius_graph
 from torch_scatter import scatter, scatter_add
+
+from symdrift.model.utils import get_fully_connected_triu_edges
 
 __all__ = ["GaussianMomentEmbedder", "DistanceEmbedder"]
 
@@ -432,76 +434,28 @@ class DistanceEmbedder:
             f"use_automorphisms={self.use_automorphisms})"
         )
 
-    def _compute_automorphism_ids(
-        self,
-        row: Tensor,
-        col: Tensor,
-        batch: Tensor,
-        automorphisms: Tensor,
-        edge_batch: Tensor,
-    ) -> Tensor:
-        """
-        Computes a topological 'orbit_id' for each edge based purely on the
-        graph automorphism group.
-        """
-        orbit_ids = torch.zeros_like(row)
-        num_graphs = batch.max().item() + 1
-
-        for g_id in range(num_graphs):
-            # Isolate edges for the current graph
-            e_mask = batch[row] == g_id
-            g_row = row[e_mask]
-            g_col = col[e_mask]
-
-            # Map global node indices (e.g., 50-100) to local graph indices (0-50)
-            node_mask = batch == g_id
-            node_offset = node_mask.nonzero(as_tuple=True)[0][0]
-            local_row = g_row - node_offset
-            local_col = g_col - node_offset
-
-            # G shape: (Num_Permutations, Num_Nodes_in_Graph)
-            G = automorphisms[g_id]
-            N_local = G.shape[1]
-
-            # Apply all permutations simultaneously to the edge connections
-            # Shapes become (Num_Permutations, Num_Edges_in_Graph)
-            G_row = G[:, local_row]
-            G_col = G[:, local_col]
-
-            # Force undirected symmetry (order of nodes in an edge doesn't matter)
-            p_min = torch.minimum(G_row, G_col)
-            p_max = torch.maximum(G_row, G_col)
-
-            # Hash the permuted node pairs into a single integer
-            pair_hash = p_min * N_local + p_max
-
-            # Pick the Canonical Representative: the smallest hash across all allowed
-            # permutations.
-            local_orbit_id = pair_hash.min(dim=0).values
-
-            orbit_ids[e_mask] = local_orbit_id
-
-        max_orbit_id = orbit_ids.max() + 1
-        group_id = edge_batch * max_orbit_id + orbit_ids
-
-        return group_id
-
     def _compute_atom_type_ids(
         self, row: Tensor, col: Tensor, Z: Tensor, edge_batch: Tensor
     ) -> Tensor:
-
-        # sort edges within the same pair_type to make it permutation invariant
+        """Compute group IDs by treating every atom of the same type as interchangeable."""
         Zi, Zj = Z[row], Z[col]
-
-        # sorting key: (graph, pair_type, distance)
         Zmax_val = Z.max() + 1
-        pair_type = Zi * Zmax_val + Zj
-
-        # sorting key: (graph, pair_type, distance)
-        Zmax_val = Z.max() + 1
-        pair_type = Zi * Zmax_val + Zj
+        pair_type = torch.minimum(Zi, Zj) * Zmax_val + torch.maximum(Zi, Zj)
         group_id = edge_batch * (Zmax_val**2) + pair_type
 
+        return group_id
+
+    def _compute_orbit_ids(
+        self,
+        row: Tensor,
+        col: Tensor,
+        orbit_ids: Tensor,
+        edge_batch: Tensor,
+    ) -> Tensor:
+        """Compute group IDs by treating every atom which are considered
+        interchangeable under graph automorphisms as interchangeable.
+        """
+        group_id = edge_batch * (orbit_ids.max() + 1) + orbit_ids
         return group_id
 
     def __call__(
@@ -509,7 +463,7 @@ class DistanceEmbedder:
         positions: Tensor,
         batch: Optional[Tensor] = None,
         Z: Optional[Tensor] = None,
-        automorphisms: Optional[List[Tensor]] = None,
+        orbit_ids: Optional[Tensor] = None,
         edge_index: Optional[Tensor] = None,
         invariant: Optional[bool] = None,
         **kwargs,
@@ -524,10 +478,17 @@ class DistanceEmbedder:
                 Tensor of shape (B*n_atoms,) containing the batch indices for each atom.
             Z (Tensor, optional):
                 Tensor of shape (B*n_atoms) containing the atomic numbers of the atoms.
-                Needed if `invariant` is True to compute the invariant embedding.
-            automorphisms (List[Tensor], optional):
-                List of tensors, each of shape (P, n_atoms) containing the automorphism
-                group for each graph.
+                This will be used to compute the invariant embedding by treating atoms 
+                of the same type as interchangeable. Needed if `invariant` is True to 
+                compute the invariant embedding.
+            orbit_ids (Tensor, optional):
+                Flat [sum(n_pairs_i)] tensor of precomputed upper-triangle orbit IDs
+                assigning each pair of atoms to an orbit defined by the automorphisms.
+                This will treat pairs of atoms that are considered interchangeable under
+                graph automorphisms as interchangeable, which is a more fine-grained 
+                notion of invariance than just treating atoms of the same type as 
+                interchangeable. Needed if `invariant` is True and `use_automorphisms` 
+                is True to compute the invariant embedding.
             edge_index (Tensor, optional):
               Tensor of shape (2, n_edges) containing the indices of neighboring atoms.
             invariant (bool, optional):
@@ -536,8 +497,10 @@ class DistanceEmbedder:
                 If None, it will use the class attribute `self.invariant`.
 
         Output:
-            dist (Tensor): Tensor of shape (n_edges,) containing the distances for each edge.
-            edge_batch (Tensor): Tensor of shape (n_edges,) containing the batch index for each edge.
+            dist (Tensor): 
+                Tensor of shape (n_edges,) containing the distances for each edge.
+            edge_batch (Tensor): 
+                Tensor of shape (n_edges,) containing the batch index for each edge.
         """
         if invariant is not None:
             # if desired overwrite invariant attribute with forward argument
@@ -546,7 +509,14 @@ class DistanceEmbedder:
             batch = torch.zeros(
                 positions.shape[0], dtype=torch.long, device=positions.device
             )
-        if edge_index is None:
+        if edge_index is not None:
+            row, col = edge_index
+        elif self.r_max < float("inf"):
+            assert orbit_ids is None, (
+                "Precomputed orbit_ids should not be provided when using radius "
+                "graph with finite r_max since the edges won't align with the fully "
+                "connected upper triangular format used to compute the orbit_ids."
+            )
             row, col = radius_graph(
                 positions,
                 r=self.r_max,
@@ -557,7 +527,7 @@ class DistanceEmbedder:
             mask = row < col
             row, col = row[mask], col[mask]
         else:
-            row, col = edge_index
+            row, col = get_fully_connected_triu_edges(batch)
 
         # compute distances for the edges (assuming fully connected graph, reconstructs
         # the full distance matrix)
@@ -569,21 +539,19 @@ class DistanceEmbedder:
         if not self.invariant:
             return dist, edge_batch
 
-        if automorphisms is not None and self.use_automorphisms:
-            # compute the orbit_id for each edge based on the graph automorphisms
-            group_id = self._compute_automorphism_ids(
-                row, col, batch, automorphisms, edge_batch
-            )
+        if orbit_ids is not None and self.use_automorphisms:
+            group_id = self._compute_orbit_ids(row, col, orbit_ids, edge_batch)
         elif Z is not None:
             group_id = self._compute_atom_type_ids(row, col, Z, edge_batch)
         else:
             raise ValueError(
-                "To compute an invariant embedding, either automorphisms or atomic "
-                "numbers Z must be provided."
+                "To compute an invariant embedding, either orbit_ids, "
+                "or atomic numbers Z must be provided."
             )
 
-        # sort edges within the same group type (either defined by same atomic type or
-        # considered the same under automorphisms) to make it permutation invariant.
+        # sort edges by distance that lie within the same group type (either defined by
+        # same atomic type or considered the same under automorphisms) to make it 
+        # permutation invariant.
         max_dist = dist.max().detach() + 1.0
         key = group_id * max_dist + dist
 

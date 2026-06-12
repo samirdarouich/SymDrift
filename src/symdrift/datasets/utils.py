@@ -26,6 +26,7 @@ __all__ = [
     "get_neighbor_ids",
     "get_chiral_tensors",
     "get_automorphisms",
+    "compute_orbit_id_matrix",
     "build_conformer",
     "load_pkl",
     "check_disconnected_components",
@@ -296,6 +297,45 @@ def get_automorphisms(mol, ignore_hs=False, max_no_perm=None, use_atom_features=
 
     return torch.stack([torch.tensor(perm, dtype=torch.long) for perm in all_perms])
 
+def compute_orbit_id_matrix(
+    automorphisms: torch.Tensor, chunk_size: int = 512
+) -> torch.Tensor:
+    """
+    Compute a canonical orbit-ID matrix from a set of graph automorphisms.
+
+    Each entry [i, j] holds the canonical hash of the edge orbit containing pair
+    (i, j): the minimum over all automorphisms π of hash(min(π(i),π(j)), max(π(i),π(j))).
+    Two edges are in the same orbit if they share the same hash value.
+
+    Permutations are processed in chunks to keep peak memory at
+    O(chunk_size x n_pairs) rather than O(n_perms x n_pairs).
+
+    Args:
+        automorphisms: [n_perms, n_atoms] long tensor of permutation arrays.
+        chunk_size:    number of permutations to process at once.
+
+    Returns:
+        Symmetric [n_atoms, n_atoms] long tensor of orbit IDs.
+    """
+    n_perms, n_atoms = automorphisms.shape
+    rows, cols = torch.triu_indices(n_atoms, n_atoms, offset=1)
+
+    # Initialise with a value larger than any valid hash (max hash = (N-1)*N + (N-1))
+    orbit_ids = torch.full((rows.shape[0],), n_atoms * n_atoms, dtype=torch.long)
+
+    for start in range(0, n_perms, chunk_size):
+        G_chunk = automorphisms[start : start + chunk_size]  # [chunk, n_atoms]
+        pi_rows = G_chunk[:, rows]                           # [chunk, n_pairs]
+        pi_cols = G_chunk[:, cols]                           # [chunk, n_pairs]
+        p_min = torch.minimum(pi_rows, pi_cols)
+        p_max = torch.maximum(pi_rows, pi_cols)
+        pair_hash = p_min * n_atoms + p_max                  # [chunk, n_pairs]
+        orbit_ids = torch.minimum(orbit_ids, pair_hash.min(dim=0).values)
+
+    orbit_id_matrix = torch.zeros(n_atoms, n_atoms, dtype=torch.long)
+    orbit_id_matrix[rows, cols] = orbit_ids
+    orbit_id_matrix[cols, rows] = orbit_ids
+    return orbit_id_matrix
 
 def build_conformer(pos):
     if isinstance(pos, torch.Tensor) or isinstance(pos, np.ndarray):

@@ -19,6 +19,7 @@ augment_conformers:
 
 # creates additional batch mask for each conformer
 follow_batch: [x_conf]
+exclude_keys: null
 
 train_transform:
   _target_: torch_geometric.transforms.Compose

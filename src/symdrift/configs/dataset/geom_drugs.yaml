@@ -42,6 +42,7 @@ datamodule:
   pin_memory: ${dataset.pin_memory}
   persistent_workers: ${dataset.persistent_workers}
   follow_batch: ${dataset.transforms.follow_batch}
+  exclude_keys: ${dataset.transforms.exclude_keys}
   shuffle_train: true
   drop_last_train: false
 

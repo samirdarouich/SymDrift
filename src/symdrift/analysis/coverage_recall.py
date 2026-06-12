@@ -27,6 +27,15 @@ __all__ = [
     "calc_coverage_precision",
     "calc_amr_recall",
     "calc_amr_precision",
+    "mol_from_ase",
+    "set_rdmol_positions",
+    "get_best_rmsd_rdkit",
+    "worker_fn_rmsd_rdkit",
+    "worker_fn_rmsd_rdkit_wo_h",
+    "worker_fn_rmsd",
+    "worker_fn_rmsd_wo_h",
+    "worker_fn_rmsd_batched",
+    "worker_fn_rmsd_wo_h_batched",
     "evaluate_covmat",
     "evaluate_covmat_batched",
     "print_covmat_results",
@@ -347,6 +356,9 @@ def evaluate_covmat(
     skip_disconnected=True,
     **job_kwargs,
 ):
+    assert "batched" not in worker_fn_type, (
+        "Batched worker functions are not supported in evaluate_covmat. Use evaluate_covmat_batched instead."
+    )
     assert worker_fn_type in WORKER_FN_DICT, (
         f"Unsupported worker function type: {worker_fn_type}"
     )

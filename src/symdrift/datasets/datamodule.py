@@ -35,6 +35,7 @@ class DataModule(pl.LightningDataModule):
         pin_memory: bool = False,
         persistent_workers: bool = False,
         follow_batch: Optional[List[str]] = None,
+        exclude_keys: Optional[List[str]] = None,
         shuffle_train: bool = True,
         drop_last_train: bool = False,
     ):
@@ -53,6 +54,7 @@ class DataModule(pl.LightningDataModule):
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers if self.num_workers > 0 else False
         self.follow_batch = follow_batch
+        self.exclude_keys = exclude_keys
         self.shuffle_train = shuffle_train
         self.drop_last_train = drop_last_train
 
@@ -86,6 +88,7 @@ class DataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             follow_batch=self.follow_batch,
+            exclude_keys=self.exclude_keys,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -98,6 +101,7 @@ class DataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             follow_batch=self.follow_batch,
+            exclude_keys=self.exclude_keys,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -110,6 +114,7 @@ class DataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             follow_batch=self.follow_batch,
+            exclude_keys=self.exclude_keys,
         )
 
     def _build_split_dataset(self, split: str, transform: Optional[BaseTransform]):

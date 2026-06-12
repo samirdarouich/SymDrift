@@ -15,6 +15,7 @@ from symdrift.datasets.utils import (
     build_conformer,
     compute_edge_index,
     get_automorphisms,
+    compute_orbit_id_matrix,
     get_chiral_tensors,
 )
 
@@ -290,12 +291,19 @@ class BoltzmannWeightingConformers(BaseTransform):
 
 
 class GraphAutomorphism(BaseTransform):
-    def __init__(self, smiles_key="smiles", use_atom_features=True, ignore_hs=False):
+    def __init__(
+        self,
+        smiles_key="smiles",
+        use_atom_features=True,
+        ignore_hs=False,
+        perm_chunk_size: int = 512,
+    ):
         # smiles based cache
         self.cache = defaultdict(dict)
         self.smiles_key = smiles_key
         self.use_atom_features = use_atom_features
         self.ignore_hs = ignore_hs
+        self.perm_chunk_size = perm_chunk_size
 
     def forward(self, data):
         if hasattr(data, self.smiles_key):
@@ -305,6 +313,8 @@ class GraphAutomorphism(BaseTransform):
             data.num_automorphisms = torch.tensor(
                 len(automorphisms), dtype=torch.long
             )
+            data.orbit_ids = self.get_orbit_ids(smiles)  # [n_pairs]
+            
         return data
 
     def get_mol(self, smiles: str) -> Mol:
@@ -317,6 +327,23 @@ class GraphAutomorphism(BaseTransform):
             mol, use_atom_features=self.use_atom_features, ignore_hs=self.ignore_hs
         )
         return automorphisms
+
+    @cache_decorator
+    def get_orbit_ids(self, smiles: str) -> torch.Tensor:
+        """Computed the [n_atoms, n_atoms] symmetric orbit-ID matrix for a molecular graph
+        using the automorphisms. The (i,j) entry of the matrix is the ID of the orbit that 
+        the pair (i,j) belongs to. Only take upper triangular part of the matrix 
+        (excluding diagonal) since it's symmetric and diagonal is trivial.
+        
+        Every interaction (i,j) belongs to an orbit defined by the set of automorphisms
+        that map i to some k and j to some l. This means these interactions are 
+        equivalent under graph symmetries and can be treated interchangably.
+        """
+        automorphisms = self.get_automorphisms(smiles)  # [n_perms, n_atoms]
+        orbit_ids = compute_orbit_id_matrix(automorphisms)  # [n_atoms, n_atoms]
+        n_atoms = orbit_ids.shape[0]
+        triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
+        return orbit_ids[triu_r, triu_c]
 
 
 class FeaturizeMolecule(BaseTransform):

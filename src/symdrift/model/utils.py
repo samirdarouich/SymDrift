@@ -1,7 +1,15 @@
 from typing import Optional, Tuple
 
 import torch
+from torch import Tensor
 from torch_geometric.nn import radius_graph
+
+__all__ = [
+    "signed_volume",
+    "extend_graph_order_radius",
+    "extend_bond_index",
+    "get_fully_connected_triu_edges",
+]
 
 
 def signed_volume(local_coords):
@@ -110,3 +118,61 @@ def extend_bond_index(
         ).float()
 
     return edge_index, edge_type
+
+
+def get_fully_connected_triu_edges(batch: Tensor) -> tuple[Tensor, Tensor]:
+    """
+    Return upper-triangle edge indices for a batch of fully-connected graphs.
+
+    Produces edges in canonical row-major (triu_indices) order within each
+    graph.
+
+    The key insight: atoms within each graph occupy a contiguous block of
+    global indices, so for atom k (local index l in graph g) every
+    upper-triangle neighbour is simply k+1, k+2, ..., k+(n_g-l-1).
+
+    Args:
+        batch: node-to-graph assignment, shape [n_nodes].
+
+    Returns:
+        (row, col): each shape [total_pairs], dtype=long, on same device as batch.
+    """
+    device = batch.device
+    n_nodes = batch.shape[0]
+    num_atoms = batch.bincount()  # [n_graphs]
+
+    node_offsets = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.long, device=device),
+            num_atoms.cumsum(0)[:-1],
+        ]
+    )  # [n_graphs]
+
+    # Local index of each node within its graph
+    local_idx = torch.arange(n_nodes, device=device) - node_offsets[batch]  # [n_nodes]
+
+    # Number of upper-triangle edges originating from each node
+    n_edges_from_node = (num_atoms[batch] - local_idx - 1).clamp(min=0)  # [n_nodes]
+
+    total_pairs = n_edges_from_node.sum()
+
+    # Row: repeat each global node index by its edge count
+    row = torch.repeat_interleave(
+        torch.arange(n_nodes, device=device), n_edges_from_node
+    )  # [total_pairs]
+
+    # Intra-run offset: 0, 1, ..., n_edges_from_node[k]-1 for node k
+    run_start = torch.repeat_interleave(
+        torch.cat(
+            [
+                torch.zeros(1, dtype=torch.long, device=device),
+                n_edges_from_node.cumsum(0)[:-1],
+            ]
+        ),
+        n_edges_from_node,
+    )  # [total_pairs]
+    col = (
+        row + (torch.arange(total_pairs, device=device) - run_start) + 1
+    )  # [total_pairs]
+
+    return row, col

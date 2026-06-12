@@ -9,13 +9,22 @@ subselect_top_k_conformers:
 # If "ignore_hs" is true, hydrogens will be ignored for graph automorphisms. 
 # If "use_atom_features" is true these will be considered addiitonally to 
 # define the graph automorphisms (reduces number of interchangeable atoms)
+# This also defines orbit_ids which assigns each upper triangular pair interaction 
+# to an orbit. Interactions in the same orbit are interchangeable in the invariant 
+# embedding.
 graph_automorphism:
   _target_: symdrift.datasets.GraphAutomorphism
   ignore_hs: false
   use_atom_features: true
 
-# creates additional batch mask for each conformer and each automorphism permutation
+# creates additional batch mask for each conformer. 
 follow_batch: [x_conf, automorphisms]
+
+# exclude automorphisms from the data object, as invariant embedding only needed orbit_ids 
+# which are derived from the automorphisms but not the automorphisms themselves. In case
+# automorphisms should be used to find the right alignment in coordinate space, this needs 
+# to be set to null.
+exclude_keys: [automorphisms]
 
 train_transform:
   _target_: torch_geometric.transforms.Compose
