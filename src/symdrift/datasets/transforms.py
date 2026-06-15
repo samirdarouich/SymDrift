@@ -297,36 +297,46 @@ class GraphAutomorphism(BaseTransform):
         use_atom_features=True,
         ignore_hs=False,
         perm_chunk_size: int = 512,
+        save_automorphisms: bool = False,
     ):
+        """Computes the graph automorphisms of the molecule and the orbit IDs for each
+        pair of atoms."""
         # smiles based cache
         self.cache = defaultdict(dict)
         self.smiles_key = smiles_key
         self.use_atom_features = use_atom_features
         self.ignore_hs = ignore_hs
         self.perm_chunk_size = perm_chunk_size
+        # Saving the automorphisms in the cache can take a lot of memory.
+        self.save_automorphisms = save_automorphisms
 
     def forward(self, data):
         if hasattr(data, self.smiles_key):
             smiles = getattr(data, self.smiles_key)
-            automorphisms = self.get_automorphisms(smiles)
-            data.automorphisms = automorphisms.view(-1)
-            data.num_automorphisms = torch.tensor(
-                len(automorphisms), dtype=torch.long
-            )
+            if self.save_automorphisms:
+                automorphisms = self.get_automorphisms(smiles)
+                data.automorphisms = automorphisms.view(-1) # [n_perms * n_atoms]
+                data.num_automorphisms = torch.tensor(
+                    len(automorphisms), dtype=torch.long
+                )
             data.orbit_ids = self.get_orbit_ids(smiles)  # [n_pairs]
-            
+
         return data
 
     def get_mol(self, smiles: str) -> Mol:
         return dm.to_mol(smiles, remove_hs=False, ordered=True)
 
-    @cache_decorator
     def get_automorphisms(self, smiles: str):
+        cache_key = "get_automorphisms"
+        if self.save_automorphisms and smiles in self.cache and cache_key in self.cache[smiles]:
+            return self.cache[smiles][cache_key]
         mol = self.get_mol(smiles)
-        automorphisms = get_automorphisms(
+        result = get_automorphisms(
             mol, use_atom_features=self.use_atom_features, ignore_hs=self.ignore_hs
         )
-        return automorphisms
+        if self.save_automorphisms:
+            self.cache[smiles][cache_key] = result
+        return result
 
     @cache_decorator
     def get_orbit_ids(self, smiles: str) -> torch.Tensor:

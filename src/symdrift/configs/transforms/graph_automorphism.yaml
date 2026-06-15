@@ -11,20 +11,19 @@ subselect_top_k_conformers:
 # define the graph automorphisms (reduces number of interchangeable atoms)
 # This also defines orbit_ids which assigns each upper triangular pair interaction 
 # to an orbit. Interactions in the same orbit are interchangeable in the invariant 
-# embedding.
+# embedding. Saving the automorphisms can take a lot of memory, so this can be turned
+# on only if the actual automorphisms should be used (for example to find the right 
+# alignment in coordinate space). If only the orbit_ids are needed for the invariant 
+# embedding, the automorphisms do not need to be saved.
 graph_automorphism:
   _target_: symdrift.datasets.GraphAutomorphism
   ignore_hs: false
   use_atom_features: true
+  save_automorphisms: false
 
 # creates additional batch mask for each conformer. 
 follow_batch: [x_conf, automorphisms]
-
-# exclude automorphisms from the data object, as invariant embedding only needed orbit_ids 
-# which are derived from the automorphisms but not the automorphisms themselves. In case
-# automorphisms should be used to find the right alignment in coordinate space, this needs 
-# to be set to null.
-exclude_keys: [automorphisms]
+exclude_keys: null
 
 train_transform:
   _target_: torch_geometric.transforms.Compose
