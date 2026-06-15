@@ -75,8 +75,14 @@ Outputs, checkpoints, and logs are stored automatically in Hydra output director
 
 Generate samples from a trained checkpoint:
 
+Using the test samples provided through the dataset
 ```bash
 symdrift_sample experiment=geom_qm9_equi_coordinate_space generative_model.pretrained=/your/custom/reference/path
+```
+
+Using a csv file specifing the smiles
+```bash
+symdrift_sample experiment=geom_qm9_equi_coordinate_space generative_model.pretrained=/your/custom/reference/path dataset=gen_via_smiles dataset.csv_path=/your/custom/csv/path
 ```
 
 ## Reproduction

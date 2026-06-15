@@ -1,6 +1,7 @@
 from .datamodule import DataModule
 from .molecule import (
     ConformerDatasetDisk,
+    ConformerDatasetFromSMILES,
     ConformerDatasetInMemory,
     ConformerDatasetTest,
     MoleculeDataset,

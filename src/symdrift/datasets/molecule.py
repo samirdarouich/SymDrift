@@ -29,7 +29,7 @@ from symdrift.analysis import inputs_to_atoms
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
-__all__ = ["MoleculeDataset", "ConformerDatasetInMemory", "ConformerDatasetTest", "ConformerDatasetDisk"]
+__all__ = ["MoleculeDataset", "ConformerDatasetInMemory", "ConformerDatasetTest", "ConformerDatasetDisk", "ConformerDatasetFromSMILES"]
 
 
 class MoleculeDataset(InMemoryDataset):
@@ -269,14 +269,20 @@ class ConformerShared:
 
             formula = rdMolDescriptors.CalcMolFormula(mol)
 
-            # Collect conformer positions and energies
+            # Collect conformer positions if provided
             positions = []
             for mol in mols:
+                if mol.GetNumConformers() == 0:
+                    continue
                 pos = torch.from_numpy(mol.GetConformer().GetPositions()).float()
                 positions.append(pos)
 
             # Stack conformer data
-            positions = torch.stack(positions)  # [num_conformers, num_atoms, 3]
+            if len(positions) == 0:
+                logger.debug(f"No conformer positions found for {smiles}.")
+                positions = torch.zeros((1, len(atomic_numbers), 3), dtype=torch.float)
+            else:
+                positions = torch.stack(positions)  # [num_conformers, num_atoms, 3]
 
             num_conformers = positions.shape[0]
             num_atoms = positions.shape[1]
@@ -518,3 +524,53 @@ class ConformerDatasetDisk(ConformerShared, Dataset):
             "shard_size": self.shard_size,
         }
         torch.save(meta_dict, osp.join(self.processed_dir, "meta.pt"))
+
+
+class ConformerDatasetFromSMILES(ConformerShared):
+    """Pure in-memory dataset built from a CSV of SMILES strings.
+
+    For each SMILES processes it via ``process_test_mol`` and applies ``pre_transform`` 
+    (default: RemoveCOMConformer + FeaturizeMolecule).
+    """
+
+    def __init__(
+        self,
+        csv_path: str,
+        smiles_col: str = "smiles",
+        transform=None,
+        pre_transform=None,
+    ):
+        import pandas as pd
+
+        self.transform = transform
+
+        if pre_transform is None:
+            pre_transform = Compose([RemoveCOMConformer(), FeaturizeMolecule()])
+
+        df = pd.read_csv(csv_path)
+        if smiles_col not in df.columns:
+            raise ValueError(f"Column '{smiles_col}' not found in {csv_path}. Available: {list(df.columns)}")
+
+        self.data_list = []
+        for smiles in tqdm(df[smiles_col].tolist(), desc="Processing SMILES"):
+            mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
+            if mol is None:
+                logger.warning(f"Could not parse SMILES: {smiles}. Skipping.")
+                continue
+            data = self.process_test_mol([mol])
+            if data is None:
+                continue
+            if pre_transform is not None:
+                data = pre_transform(data)
+            self.data_list.append(data)
+
+        logger.info(f"Built in-memory dataset with {len(self.data_list)} molecules from '{csv_path}'.")
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        data = self.data_list[idx]
+        if self.transform is not None:
+            data = self.transform(data)
+        return data

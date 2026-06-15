@@ -1,0 +1,28 @@
+# Configuration for generating conformers from a CSV of SMILES strings.
+defaults:
+  - /transforms: conformer
+  - _self_
+
+test_batch_size: 1
+num_workers: 1
+persistent_workers: false
+pin_memory: false
+csv_path: ???
+identifier: smiles
+
+# Define test loader
+test_dataloader:
+  _target_: torch_geometric.loader.DataLoader
+  dataset:
+    _target_: symdrift.datasets.ConformerDatasetFromSMILES
+    csv_path: ${dataset.csv_path}
+    smiles_col: ${dataset.identifier}     # column name containing SMILES strings
+    transform: null
+    pre_transform: null    # defaults to RemoveCOMConformer + FeaturizeMolecule
+  batch_size: ${dataset.test_batch_size}
+  num_workers: ${dataset.num_workers}
+  pin_memory: ${dataset.pin_memory}
+  persistent_workers: ${dataset.persistent_workers}
+  follow_batch: ${dataset.transforms.follow_batch}
+  shuffle: false
+  drop_last: false
