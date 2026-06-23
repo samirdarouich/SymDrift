@@ -1,6 +1,0 @@
-
-_target_: symdrift.model.DistanceEmbedder
-
-# Uses Graph Automorphisms to make the output invariant to atom permutations. 
-invariant: true
-use_automorphisms: true

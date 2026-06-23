@@ -26,7 +26,8 @@ __all__ = [
     "get_neighbor_ids",
     "get_chiral_tensors",
     "get_automorphisms",
-    "compute_orbit_id_matrix",
+    "compute_orbit_id_matrix_automorphism",
+    "compute_orbit_id_matrix_atom_type",
     "build_conformer",
     "load_pkl",
     "check_disconnected_components",
@@ -297,7 +298,7 @@ def get_automorphisms(mol, ignore_hs=False, max_no_perm=None, use_atom_features=
 
     return torch.stack([torch.tensor(perm, dtype=torch.long) for perm in all_perms])
 
-def compute_orbit_id_matrix(
+def compute_orbit_id_matrix_automorphism(
     automorphisms: torch.Tensor, chunk_size: int = 512
 ) -> torch.Tensor:
     """
@@ -335,6 +336,54 @@ def compute_orbit_id_matrix(
     orbit_id_matrix = torch.zeros(n_atoms, n_atoms, dtype=torch.long)
     orbit_id_matrix[rows, cols] = orbit_ids
     orbit_id_matrix[cols, rows] = orbit_ids
+    return orbit_id_matrix
+
+def compute_orbit_id_matrix_atom_type(atomic_numbers: torch.Tensor) -> torch.Tensor:
+    """Compute a canonical orbit-ID matrix based on atom types.
+    Each entry [i, j] holds the canonical hash of the edge orbit containing pair
+    (i, j): hash(min(Zi, Zj), max(Zi, Zj)) where Zi is the atomic number of atom i.
+    Two edges are in the same orbit if they share the same hash value.
+    
+    Args:
+        atomic_numbers: [n_atoms] long tensor of atomic numbers.
+    
+    Returns:
+        Symmetric [n_atoms, n_atoms] long tensor of orbit IDs.
+    """
+    n_atoms = len(atomic_numbers)
+    triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
+
+    Zi, Zj = atomic_numbers[triu_r], atomic_numbers[triu_c]
+    Zmax_val = atomic_numbers.max() + 1
+    pair_hash = torch.minimum(Zi, Zj) * Zmax_val + torch.maximum(Zi, Zj)
+
+    orbit_id_matrix = torch.zeros(n_atoms, n_atoms, dtype=torch.long)
+    orbit_id_matrix[triu_r, triu_c] = pair_hash
+    orbit_id_matrix[triu_c, triu_r] = pair_hash
+    return orbit_id_matrix
+
+def compute_orbit_id_matrix_atom_type_legacy(atomic_numbers: torch.Tensor) -> torch.Tensor:
+    """Compute a canonical orbit-ID matrix based on atom types.
+    Each entry [i, j] holds the canonical hash of the edge orbit containing pair
+    (i, j): hash(min(Zi, Zj), max(Zi, Zj)) where Zi is the atomic number of atom i.
+    Two edges are in the same orbit if they share the same hash value.
+    
+    Args:
+        atomic_numbers: [n_atoms] long tensor of atomic numbers.
+    
+    Returns:
+        Symmetric [n_atoms, n_atoms] long tensor of orbit IDs.
+    """
+    n_atoms = len(atomic_numbers)
+    triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
+
+    Zi, Zj = atomic_numbers[triu_r], atomic_numbers[triu_c]
+    Zmax_val = atomic_numbers.max() + 1
+    pair_hash = Zi * Zmax_val + Zj
+
+    orbit_id_matrix = torch.zeros(n_atoms, n_atoms, dtype=torch.long)
+    orbit_id_matrix[triu_r, triu_c] = pair_hash
+    orbit_id_matrix[triu_c, triu_r] = pair_hash
     return orbit_id_matrix
 
 def build_conformer(pos):

@@ -14,11 +14,15 @@ subselect_top_k_conformers:
 # embedding. Saving the automorphisms can take a lot of memory, so this can be turned
 # on only if the actual automorphisms should be used (for example to find the right 
 # alignment in coordinate space). If only the orbit_ids are needed for the invariant 
-# embedding, the automorphisms do not need to be saved.
-graph_automorphism:
-  _target_: symdrift.datasets.GraphAutomorphism
+# embedding, the automorphisms do not need to be saved. Use at max 10_000 automorphisms
+# to avoid combinatorial explosion for large molecules.
+generate_orbit_ids:
+  _target_: symdrift.datasets.transforms.OrbitIds
+  smiles_key: smiles
+  orbit_type: automorphism
   ignore_hs: false
   use_atom_features: true
+  max_automorphisms: 10_000
   save_automorphisms: false
 
 # creates additional batch mask for each conformer. 
@@ -29,15 +33,15 @@ train_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
     - ${dataset.transforms.subselect_top_k_conformers}
-    - ${dataset.transforms.graph_automorphism}
+    - ${dataset.transforms.generate_orbit_ids}
 
 val_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
     - ${dataset.transforms.subselect_top_k_conformers}
-    - ${dataset.transforms.graph_automorphism}
+    - ${dataset.transforms.generate_orbit_ids}
 
 test_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
-    - ${dataset.transforms.graph_automorphism}
+    - ${dataset.transforms.generate_orbit_ids}

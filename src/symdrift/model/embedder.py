@@ -414,15 +414,13 @@ class GaussianMomentEmbedder:
 class DistanceEmbedder:
     def __init__(
         self,
-        r_max: Optional[float] = None,
         invariant=True,
-        use_automorphisms: bool = True,
+        r_max: Optional[float] = None,
         max_num_neighbors=500,
     ):
         self.invariant = invariant
         if r_max is None:
             r_max = float("inf")
-        self.use_automorphisms = use_automorphisms
         self.r_max = r_max
         self.max_num_neighbors = max_num_neighbors
 
@@ -430,30 +428,27 @@ class DistanceEmbedder:
         return (
             f"DistanceEmbedder(invariant={self.invariant}, "
             f"r_max={self.r_max}, "
-            f"max_num_neighbors={self.max_num_neighbors}, "
-            f"use_automorphisms={self.use_automorphisms})"
+            f"max_num_neighbors={self.max_num_neighbors})"
         )
 
-    def _compute_atom_type_ids(
-        self, row: Tensor, col: Tensor, Z: Tensor, edge_batch: Tensor
+    def _compute_atom_type_orbit_ids(
+        self, row: Tensor, col: Tensor, Z: Tensor
     ) -> Tensor:
-        """Compute group IDs by treating every atom of the same type as interchangeable."""
+        """Compute orbit IDs by treating every atom of the same type as interchangeable.
+        """
         Zi, Zj = Z[row], Z[col]
         Zmax_val = Z.max() + 1
-        pair_type = torch.minimum(Zi, Zj) * Zmax_val + torch.maximum(Zi, Zj)
-        group_id = edge_batch * (Zmax_val**2) + pair_type
+        orbit_ids = torch.minimum(Zi, Zj) * Zmax_val + torch.maximum(Zi, Zj)
+        return orbit_ids
 
-        return group_id
-
-    def _compute_orbit_ids(
+    def _broadcast_orbit_ids(
         self,
-        row: Tensor,
-        col: Tensor,
         orbit_ids: Tensor,
         edge_batch: Tensor,
     ) -> Tensor:
-        """Compute group IDs by treating every atom which are considered
-        interchangeable under graph automorphisms as interchangeable.
+        """Use the orbit IDs provided per batch edge and broadcast them along the edge
+        batch. This will make sure that no edges that belong to different batches will
+        be treated as interchangeable when sorting.
         """
         group_id = edge_batch * (orbit_ids.max() + 1) + orbit_ids
         return group_id
@@ -539,18 +534,22 @@ class DistanceEmbedder:
         if not self.invariant:
             return dist, edge_batch
 
-        if orbit_ids is not None and self.use_automorphisms:
-            group_id = self._compute_orbit_ids(row, col, orbit_ids, edge_batch)
+        # Use the orbit IDs provided per batch edge and broadcast them along the edge batch. 
+        # Edges that belong to the same group will be treated as interchangeable when 
+        # sorting, which ensures the embedding is invariant to permutations of atoms 
+        # that are considered interchangeable under the provided orbit IDs.
+        if orbit_ids is not None:
+            group_id = self._broadcast_orbit_ids(orbit_ids, edge_batch)
         elif Z is not None:
-            group_id = self._compute_atom_type_ids(row, col, Z, edge_batch)
+            orbit_ids = self._compute_atom_type_orbit_ids(row, col, Z)
+            group_id = self._broadcast_orbit_ids(orbit_ids, edge_batch)
         else:
             raise ValueError(
                 "To compute an invariant embedding, either orbit_ids, "
                 "or atomic numbers Z must be provided."
             )
 
-        # sort edges by distance that lie within the same group type (either defined by
-        # same atomic type or considered the same under automorphisms) to make it 
+        # sort edges by distance that lie within the same group type to make it 
         # permutation invariant.
         max_dist = dist.max().detach() + 1.0
         key = group_id * max_dist + dist

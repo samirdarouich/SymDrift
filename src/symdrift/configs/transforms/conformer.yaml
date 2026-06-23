@@ -5,6 +5,15 @@ subselect_top_k_conformers:
   _target_: symdrift.datasets.BoltzmannWeightingConformers
   keep_top_n: 30
 
+# This defines orbit_ids which assigns each upper triangular pair interaction 
+# to an orbit. Assigns two pairs (i,j) and (k,l) to the same orbit if the 
+# atom types of (i,k) and (j,l) are the same. This is equivalent to treating 
+# all atoms of the same type as interchangeable
+generate_orbit_ids:
+  _target_: symdrift.datasets.transforms.OrbitIds
+  smiles_key: smiles
+  orbit_type: atom_type
+
 # creates additional batch mask for each conformer
 follow_batch: [x_conf] 
 exclude_keys: null
@@ -13,12 +22,15 @@ train_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
     - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.generate_orbit_ids}
 
 val_transform:
   _target_: torch_geometric.transforms.Compose
   transforms:
     - ${dataset.transforms.subselect_top_k_conformers}
+    - ${dataset.transforms.generate_orbit_ids}
 
 test_transform:
   _target_: torch_geometric.transforms.Compose
-  transforms: []
+  transforms:
+    - ${dataset.transforms.generate_orbit_ids}

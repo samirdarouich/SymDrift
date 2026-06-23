@@ -71,7 +71,7 @@ generative_model:
   skip_disconnected: true
 
   # Number of workers / batch size to evaluate the RMSD in parallel (if 0, no parallelization will be used)
-  num_workers: 0
+  num_parallel: 16
 
   # Arguments for computing the batched RMSD
   job_kwargs:

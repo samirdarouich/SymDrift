@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from symdrift.analysis import (
     evaluate_covmat,
-    evaluate_covmat_batched,
+    add_predictions,
     print_covmat_results,
 )
 from symdrift.utils import RankedLogger, log_hyperparameters, print_config
@@ -131,7 +131,7 @@ def sample(cfg):
         log.info("Using datamodule to load dataset for sampling.")
         datamodule = instantiate(cfg.dataset.datamodule)
         sampling_split = getattr(cfg.dataset, "sampling_split", "test")
-        # setattr(datamodule, f"{sampling_split}_batch_size", cfg.dataset.test_batch_size)
+        setattr(datamodule, f"{sampling_split}_batch_size", cfg.dataset.test_batch_size)
         datamodule.setup(stage=sampling_split)
         dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
 
@@ -228,23 +228,11 @@ def sample(cfg):
 
         # Add pos_generated to batch and add slicing information in case loop through
         # the dataset is done with batch_size > 1.
-        num_atoms = batch.num_atoms
-        sizes = num_atoms * total_samples
-        slices = torch.cat(
-            [
-                torch.zeros(1, device=sizes.device, dtype=torch.long),
-                torch.cumsum(sizes, dim=0),
-            ]
-        )
-
-        batch._slice_dict["pos_generated"] = slices
-        batch._inc_dict["pos_generated"] = torch.zeros_like(slices[:-1])
-        batch._slice_dict["num_samples"] = batch._slice_dict["num_conformers"]
-        batch._inc_dict["num_samples"] = batch._slice_dict["num_conformers"]
-
-        batch.pos_generated = torch.cat(pos_generated, dim=0)
-        batch.num_samples = torch.tensor(
-            [total_samples] * batch.num_graphs, dtype=torch.long
+        add_predictions(
+            batch, 
+            total_samples=total_samples, 
+            positions=torch.cat(pos_generated, dim=0), 
+            key="pos_generated"
         )
         data_generated.extend(batch.to_data_list())
 
@@ -274,11 +262,11 @@ def sample(cfg):
         )
 
         # Evaluate coverage and matching
-        results, rmsd_matrix = evaluate_covmat_batched(
+        results, rmsd_matrix = evaluate_covmat(
             data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
             worker_fn_type=worker_fn_type,
-            batch_size=num_workers,
+            num_parallel=num_workers,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
             skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
@@ -329,10 +317,10 @@ def run_covmat_evaluation(
             "reference conformers."
         )
 
-        results, rmsd_matrix = evaluate_covmat_batched(
+        results, rmsd_matrix = evaluate_covmat(
             data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
-            batch_size=num_workers,
+            num_parallel=num_workers,
             worker_fn_type=worker_fn_type,
             ratio=ratio, # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
@@ -370,7 +358,7 @@ def run_covmat_evaluation(
             atoms_generated,
             atoms_dataset,
             thresholds=np.arange(0.05, 3.05, 0.05),
-            num_workers=num_workers,
+            num_parallel=num_workers,
             worker_fn_type=worker_fn_type,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,

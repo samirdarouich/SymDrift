@@ -23,6 +23,11 @@ num_workers: 0
 persistent_workers: false
 pin_memory: true
 
+# Use reactant smiles to get atomic numbers (same atom ordering as product smiles)
+transforms:
+  generate_orbit_ids:
+    smiles_key: r_smiles
+
 # Define datamodule
 datamodule:
   _target_: symdrift.datasets.DataModule

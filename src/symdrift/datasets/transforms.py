@@ -15,7 +15,9 @@ from symdrift.datasets.utils import (
     build_conformer,
     compute_edge_index,
     get_automorphisms,
-    compute_orbit_id_matrix,
+    compute_orbit_id_matrix_automorphism,
+    compute_orbit_id_matrix_atom_type,
+    compute_orbit_id_matrix_atom_type_legacy,
     get_chiral_tensors,
 )
 
@@ -32,7 +34,7 @@ __all__ = [
     "AlignReaction",
     "TargetReaction",
     "BoltzmannWeightingConformers",
-    "GraphAutomorphism",
+    "OrbitIds",
     "FeaturizeMolecule",
     "FeaturizeReaction",
 ]
@@ -289,31 +291,37 @@ class BoltzmannWeightingConformers(BaseTransform):
         data.conformer_index = data.conformer_index[: self.keep_top_n * num_atoms]
         return data
 
-
-class GraphAutomorphism(BaseTransform):
+class OrbitIds(BaseTransform):
     def __init__(
         self,
         smiles_key="smiles",
+        orbit_type="automorphism",
         use_atom_features=True,
         ignore_hs=False,
         perm_chunk_size: int = 512,
+        max_automorphisms: int = 10_000,
         save_automorphisms: bool = False,
+        legacy=False,
     ):
         """Computes the graph automorphisms of the molecule and the orbit IDs for each
         pair of atoms."""
+        assert orbit_type in ["automorphism", "atom_type"], "orbit_type must be either 'automorphism' or 'atom_type'"
         # smiles based cache
         self.cache = defaultdict(dict)
         self.smiles_key = smiles_key
+        self.orbit_type = orbit_type
         self.use_atom_features = use_atom_features
         self.ignore_hs = ignore_hs
         self.perm_chunk_size = perm_chunk_size
+        self.max_automorphisms = max_automorphisms
         # Saving the automorphisms in the cache can take a lot of memory.
         self.save_automorphisms = save_automorphisms
+        self.legacy = legacy
 
     def forward(self, data):
         if hasattr(data, self.smiles_key):
             smiles = getattr(data, self.smiles_key)
-            if self.save_automorphisms:
+            if self.orbit_type == "automorphism" and self.save_automorphisms:
                 automorphisms = self.get_automorphisms(smiles)
                 data.automorphisms = automorphisms.view(-1) # [n_perms * n_atoms]
                 data.num_automorphisms = torch.tensor(
@@ -332,14 +340,17 @@ class GraphAutomorphism(BaseTransform):
             return self.cache[smiles][cache_key]
         mol = self.get_mol(smiles)
         result = get_automorphisms(
-            mol, use_atom_features=self.use_atom_features, ignore_hs=self.ignore_hs
+            mol, 
+            use_atom_features=self.use_atom_features, 
+            ignore_hs=self.ignore_hs, 
+            max_no_perm=self.max_automorphisms,
         )
         if self.save_automorphisms:
             self.cache[smiles][cache_key] = result
         return result
 
     @cache_decorator
-    def get_orbit_ids(self, smiles: str) -> torch.Tensor:
+    def get_orbit_ids_automorphism(self, smiles: str) -> torch.Tensor:
         """Computed the [n_atoms, n_atoms] symmetric orbit-ID matrix for a molecular graph
         using the automorphisms. The (i,j) entry of the matrix is the ID of the orbit that 
         the pair (i,j) belongs to. Only take upper triangular part of the matrix 
@@ -350,11 +361,39 @@ class GraphAutomorphism(BaseTransform):
         equivalent under graph symmetries and can be treated interchangably.
         """
         automorphisms = self.get_automorphisms(smiles)  # [n_perms, n_atoms]
-        orbit_ids = compute_orbit_id_matrix(automorphisms)  # [n_atoms, n_atoms]
+        orbit_ids = compute_orbit_id_matrix_automorphism(automorphisms)  # [n_atoms, n_atoms]
         n_atoms = orbit_ids.shape[0]
         triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
         return orbit_ids[triu_r, triu_c]
-
+    
+    @cache_decorator
+    def get_orbit_ids_atom_type(self, smiles: str) -> torch.Tensor:
+        """Compute the orbit IDs based on atom types. This is a simple heuristic that 
+        assigns two pairs (i,j) and (k,l) to the same orbit if the atom types of (i,k) 
+        and (j,l) are the same. This is equivalent to treating all atoms of the same 
+        type as interchangeable, which is a coarser equivalence relation than the one 
+        defined by the automorphisms.
+        """
+        mol = self.get_mol(smiles)
+        atomic_numbers = torch.tensor(
+            [atom.GetAtomicNum() for atom in mol.GetAtoms()],
+            dtype=torch.long,
+        )
+        if self.legacy:
+            orbit_ids = compute_orbit_id_matrix_atom_type_legacy(atomic_numbers) # [n_atoms, n_atoms]
+        else:
+            orbit_ids = compute_orbit_id_matrix_atom_type(atomic_numbers)  # [n_atoms, n_atoms]
+        n_atoms = orbit_ids.shape[0]
+        triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
+        return orbit_ids[triu_r, triu_c]
+    
+    def get_orbit_ids(self, smiles: str) -> torch.Tensor:
+        if self.orbit_type == "automorphism":
+            return self.get_orbit_ids_automorphism(smiles)
+        elif self.orbit_type == "atom_type":
+            return self.get_orbit_ids_atom_type(smiles)
+        else:
+            raise ValueError("Invalid orbit_type. Must be either 'automorphism' or 'atom_type'")
 
 class FeaturizeMolecule(BaseTransform):
     def __init__(self, smiles_key="smiles"):

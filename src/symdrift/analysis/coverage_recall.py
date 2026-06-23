@@ -36,8 +36,9 @@ __all__ = [
     "worker_fn_rmsd_wo_h",
     "worker_fn_rmsd_batched",
     "worker_fn_rmsd_wo_h_batched",
+    "evaluate_rmsd_single",
+    "evaluate_rmsd_batched",
     "evaluate_covmat",
-    "evaluate_covmat_batched",
     "print_covmat_results",
 ]
 
@@ -205,7 +206,7 @@ def worker_fn_rmsd_batched(
     assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
     n_refs, n_atoms, _ = y.shape
 
-    permutations = getattr(data, "authomorphism_permutations", None)
+    permutations = getattr(data, "automorphisms", None)
     atomic_numbers = data.x_conf.view(n_refs, n_atoms)
 
     rmsd_batch, _ = minimal_distance_permuted(
@@ -253,7 +254,7 @@ def worker_fn_rmsd_wo_h_batched(
     assert x.shape[1] == y.shape[1], "X and Y must have same number of atoms"
     n_refs, n_atoms, _ = y.shape
 
-    permutations = getattr(data, "authomorphism_permutations", None)
+    permutations = getattr(data, "automorphisms", None)
     atomic_numbers = data.x_conf.view(n_refs, n_atoms)
     hydrogen_mask = data.x == 1
 
@@ -310,30 +311,6 @@ def worker_fn_rmsd_wo_h_batched(
     return rmsd_batch
 
 
-def worker_fn_distance(job):
-    smiles, i, j, ref_i, pred_j, kwargs = job
-    pos_i = ref_i.positions
-    pos_j = pred_j.positions
-    distance = torch.cdist(torch.tensor(pos_i), torch.tensor(pos_j))
-    if kwargs.get("same_order"):
-        rmse = torch.sqrt((distance**2).mean()).item()
-    else:
-        Z = torch.tensor(ref_i.numbers)
-        unique_types = torch.unique(Z)
-        d = []
-        for Zi in unique_types:
-            for Zj in unique_types:
-                mask_i = (Z == Zi)[:, None]  # (N,1)
-                mask_j = (Z == Zj)[None, :]  # (1,N)
-                pair_mask = mask_i & mask_j  # (N,N)
-                d_ = distance[pair_mask].view(1, -1)
-                d_ = torch.sort(d_, dim=1)[0]
-                d.append(d_)
-        d = torch.cat(d, dim=1)
-        rmse = torch.sqrt((d**2).mean()).item()
-    return smiles, i, j, rmse
-
-
 WORKER_FN_DICT = {
     "rmsd": worker_fn_rmsd,
     "rmsd_wo_h": worker_fn_rmsd_wo_h,
@@ -341,14 +318,12 @@ WORKER_FN_DICT = {
     "rmsd_rdkit_wo_h": worker_fn_rmsd_rdkit_wo_h,
     "rmsd_batched": worker_fn_rmsd_batched,
     "rmsd_wo_h_batched": worker_fn_rmsd_wo_h_batched,
-    "distance": worker_fn_distance,
 }
 
 
-def evaluate_covmat(
+def evaluate_rmsd_single(
     preds,
     refs,
-    thresholds,
     num_workers=8,
     worker_fn_type="rmsd",
     ratio=None,
@@ -365,7 +340,7 @@ def evaluate_covmat(
     ref_sample_dict = defaultdict(lambda: defaultdict(list))
     skipped = []
     for ref in refs:
-        if "." in ref.info[identifier] and skip_disconnected:
+        if type(ref.info[identifier]) == str and "." in ref.info[identifier] and skip_disconnected:
             if ref.info[identifier] not in skipped:
                 logger.info(
                     f"Skipping disconnected molecule with {identifier}={ref.info[identifier]} for covmat evaluation."
@@ -433,30 +408,13 @@ def evaluate_covmat(
         ):
             populate_results(res)
 
-    coverage_recall, coverage_precision = [], []
-    amr_recall, amr_precision = [], []
-    for rmsd_array in rmsd_results.values():
-        if rmsd_array.shape[1] == 0:
-            continue
-        coverage_recall.append(calc_coverage_recall(rmsd_array, thresholds))
-        coverage_precision.append(calc_coverage_precision(rmsd_array, thresholds))
-        amr_recall.append(calc_amr_recall(rmsd_array))
-        amr_precision.append(calc_amr_precision(rmsd_array))
-
-    results = {
-        "thresholds": np.array(thresholds),
-        "CoverageR": coverage_recall,
-        "CoverageP": coverage_precision,
-        "MatchingR": amr_recall,
-        "MatchingP": amr_precision,
-    }
-
-    return results, rmsd_results
+    logger.info(f"Total RMSD computations: {len(jobs)}")
+    
+    return rmsd_results
 
 
-def evaluate_covmat_batched(
-    data,
-    thresholds,
+def evaluate_rmsd_batched(
+    gen_data,
     worker_fn_type="rmsd_batched",
     batch_size=64,
     ratio=None,
@@ -471,9 +429,9 @@ def evaluate_covmat_batched(
 
     rmsd_results = {}
     total_rmsd_computations = 0
-    for d in data:
+    for d in gen_data:
         identifier_value = d[identifier]
-        if "." in identifier_value and skip_disconnected:
+        if type(identifier_value) == str and "." in identifier_value and skip_disconnected:
             logger.info(
                 f"Skipping disconnected molecule with {identifier}={identifier_value} for covmat evaluation."
             )
@@ -513,6 +471,75 @@ def evaluate_covmat_batched(
 
     logger.info(f"Total RMSD computations: {total_rmsd_computations}")
 
+    return rmsd_results
+
+def evaluate_covmat(
+    preds,
+    refs=None,
+    thresholds=None,
+    num_parallel=8,
+    worker_fn_type="rmsd",
+    ratio=None,
+    identifier="smiles",
+    skip_disconnected=True,
+    **job_kwargs,
+):
+    """Compute coverage-recall/precision and AMR metrics over a set of molecules.
+
+    For non-batched worker functions (rmsd, rmsd_wo_h, rmsd_rdkit, rmsd_rdkit_wo_h):
+        preds -- list of ASE atoms objects for generated conformers
+        refs  -- list of ASE atoms objects for reference conformers (required)
+
+    For batched worker functions (rmsd_batched, rmsd_wo_h_batched):
+        preds -- iterable of PyG data objects, each carrying both pos and pos_generated
+        refs  -- not used (pass None or omit)
+    
+    Args:
+        preds: See above.
+        refs: See above.
+        thresholds: List of RMSD thresholds to compute coverage metrics at.
+        num_parallel: Number of parallel workers / batch size to use for RMSD computation.
+        worker_fn_type: Type of worker function to use for RMSD computation. Must be one of
+            "rmsd", "rmsd_wo_h", "rmsd_rdkit", "rmsd_rdkit_wo_h", "rmsd_batched", or
+            "rmsd_wo_h_batched".
+        ratio: If not None, limits the number of predictions per reference conformer to
+            at most ratio * num_refs.
+        identifier: The key  to use as identifier for grouping conformers. Either present
+            via data object or ase.atoms.info. Default is "smiles".
+        skip_disconnected: If True, skip molecules that are identified as disconnected
+            based on the presence of a "." in the SMILES.
+        **job_kwargs: Additional keyword arguments to pass to the worker function.
+    """
+    if thresholds is None:
+        raise ValueError("thresholds must be provided.")
+    thresholds = np.asarray(thresholds)
+
+    is_batched = "batched" in worker_fn_type
+
+    if is_batched:
+        rmsd_results = evaluate_rmsd_batched(
+            gen_data=preds,
+            worker_fn_type=worker_fn_type,
+            batch_size=num_parallel,
+            ratio=ratio,
+            identifier=identifier,
+            skip_disconnected=skip_disconnected,
+            **job_kwargs,
+        )
+    else:
+        if refs is None:
+            raise ValueError("refs must be provided for non-batched worker functions.")
+        rmsd_results = evaluate_rmsd_single(
+            preds=preds,
+            refs=refs,
+            num_workers=num_parallel,
+            worker_fn_type=worker_fn_type,
+            ratio=ratio,
+            identifier=identifier,
+            skip_disconnected=skip_disconnected,
+            **job_kwargs,
+        )
+
     coverage_recall, coverage_precision = [], []
     amr_recall, amr_precision = [], []
     for rmsd_array in rmsd_results.values():
@@ -524,7 +551,7 @@ def evaluate_covmat_batched(
         amr_precision.append(calc_amr_precision(rmsd_array))
 
     results = {
-        "thresholds": np.array(thresholds),
+        "thresholds": thresholds,
         "CoverageR": coverage_recall,
         "CoverageP": coverage_precision,
         "MatchingR": amr_recall,
@@ -533,6 +560,8 @@ def evaluate_covmat_batched(
 
     return results, rmsd_results
 
+
+evaluate_covmat_batched = evaluate_covmat
 
 def print_covmat_results(results, threshold):
 

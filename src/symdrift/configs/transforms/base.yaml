@@ -1,10 +1,29 @@
 # Define transforms to apply when loading data
 
-follow_batch: [x_conf]
+# This defines orbit_ids which assigns each upper triangular pair interaction 
+# to an orbit. Assigns two pairs (i,j) and (k,l) to the same orbit if the 
+# atom types of (i,k) and (j,l) are the same. This is equivalent to treating 
+# all atoms of the same type as interchangeable
+generate_orbit_ids:
+  _target_: symdrift.datasets.transforms.OrbitIds
+  smiles_key: "smiles"
+  orbit_type: "atom_type" # or "automorphism"
+
+# creates additional batch mask for each conformer
+follow_batch: [x_conf] 
 exclude_keys: null
 
-train_transform: null
+train_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.generate_orbit_ids}
 
-val_transform: null
+val_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.generate_orbit_ids}
 
-test_transform: null
+test_transform:
+  _target_: torch_geometric.transforms.Compose
+  transforms:
+    - ${dataset.transforms.generate_orbit_ids}

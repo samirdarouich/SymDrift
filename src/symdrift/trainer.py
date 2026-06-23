@@ -16,6 +16,7 @@ from symdrift.analysis import (
     get_validity,
     pca_plot,
     print_covmat_results,
+    add_predictions,
 )
 from symdrift.generative import (
     DriftingField,
@@ -47,7 +48,7 @@ class DriftingMolecules(pl.LightningModule):
         ratio: int = 2,
         threshold: Optional[float] = 0.5,
         worker_fn_type: str = "rmsd_rdkit_wo_h",
-        num_workers: int = 8,
+        num_parallel: int = 8,
         grad_norm_max_val: float = 100.0,
         **kwargs,
     ):
@@ -83,6 +84,8 @@ class DriftingMolecules(pl.LightningModule):
                 The RMSD threshold to use for evaluating coverage and matching during sampling.
             worker_fn_type: str
                 The type of function to use for parallel evaluation of coverage and matching.
+            num_parallel: int
+                The number of parallel workers/batch size to use for evaluating coverage and matching.
             grad_norm_max_val: float
                 The maximum value for the gradient norm when applying adaptive gradient clipping.
             **kwargs:
@@ -103,7 +106,7 @@ class DriftingMolecules(pl.LightningModule):
         self.ratio = ratio
         self.threshold = threshold
         self.worker_fn_type = worker_fn_type
-        self.num_workers = num_workers
+        self.num_parallel = num_parallel
         self.grad_norm_max_val = grad_norm_max_val
 
         # gradient clipping queue
@@ -229,50 +232,44 @@ class DriftingMolecules(pl.LightningModule):
         # Create batch mask treating each conformer as seperate graph
         batch_mask_pos = batch_pos.conformer_index
         y_pos = batch_pos.pos.clone()
-        z_pos = batch_pos.x_conf.clone()
         conformer_offsets = [0] + torch.cumsum(batch_pos.num_conformers, dim=0).tolist()
 
-        orbit_ids_raw = getattr(batch_pos, "orbit_ids", None)
-        if orbit_ids_raw is not None:
-            device = orbit_ids_raw.device
-            # Upper-triangle pair count per molecule: n*(n-1)//2
-            n_pairs_per_mol = (
-                batch_pos.num_atoms * (batch_pos.num_atoms - 1) // 2
-            )  # [n_graphs]
+        # Get orbit ids to define interchangeable pair interactions for the embedder
+        orbit_ids_raw = batch_pos.orbit_ids
+        device = orbit_ids_raw.device
+        # Upper-triangle pair count per molecule: n*(n-1)//2
+        n_pairs_per_mol = (
+            batch_pos.num_atoms * (batch_pos.num_atoms - 1) // 2
+        )  # [n_graphs]
 
-            # Expand to per-conformer: repeat each molecule's orbit block
-            # n_conformers_i times.
-            mol_offsets = torch.cat([
-                torch.zeros(1, dtype=torch.long, device=device),
-                n_pairs_per_mol.cumsum(0),
-            ])  # [n_graphs + 1]
-            
-            orbit_ids_pos = torch.cat([
-                orbit_ids_raw[mol_offsets[i] : mol_offsets[i + 1]].repeat(
-                    batch_pos.num_conformers[i].item()
-                )
-                for i in range(batch_pos.num_graphs)
-            ])  # [sum(n_pairs_i * n_conformers_i)]
+        # Expand to per-conformer: repeat each molecule's orbit block
+        # n_conformers_i times.
+        mol_offsets = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            n_pairs_per_mol.cumsum(0),
+        ])  # [n_graphs + 1]
+        
+        orbit_ids_pos = torch.cat([
+            orbit_ids_raw[mol_offsets[i] : mol_offsets[i + 1]].repeat(
+                batch_pos.num_conformers[i].item()
+            )
+            for i in range(batch_pos.num_graphs)
+        ])  # [sum(n_pairs_i * n_conformers_i)]
 
-            # Negative batch: orbit_ids already replicated n_neg_per_pos times
-            # per molecule.
-            orbit_ids_neg = batch_neg.orbit_ids
-        else:
-            orbit_ids_pos = None
-            orbit_ids_neg = None
+        # Negative batch: orbit_ids already replicated n_neg_per_pos times
+        # per molecule.
+        orbit_ids_neg = batch_neg.orbit_ids
 
         # Call the embedder for the whole batch. Embedding output is one flatten vector
         # and a mask indicating which embedding belong to which batch element
         y_pos_embedded, mask_pos = self.embedder(
             positions=y_pos,
-            Z=z_pos,
             batch=batch_mask_pos,
             orbit_ids=orbit_ids_pos,
         )
 
         x_embedded, mask_x = self.embedder(
             positions=x,
-            Z=batch_neg.x,
             batch=batch_neg.batch,
             orbit_ids=orbit_ids_neg,
         )
@@ -432,27 +429,21 @@ class DriftingMolecules(pl.LightningModule):
         start_time = time.time()
         x = self.model(batch_sampling)
         elapsed_time = time.time() - start_time
-
-        # Convert to ASE Atoms
+        
+        
+        # Convert predictions to ASE Atoms 
         batch_sampling.pos_generated = x
-        atoms_noise = batch_inputs_to_atoms(
-            batch_sampling, pos_key="pos", info_keys=[self.identifier]
-        )
         atoms_pred = batch_inputs_to_atoms(
             batch_sampling, pos_key="pos_generated", info_keys=[self.identifier]
         )
-        atoms_positive = self._get_pos_atoms(batch_pos)
-
-        # Compute metrics (validity)
-        metrics_val = get_validity(atoms_pred)
-
+        
         # Compute metrics (coverage and matching)
         if threshold is not None:
+            add_predictions(batch_pos, total_samples=n_samples, positions=x, key="pos_generated")
             results, _ = evaluate_covmat(
-                atoms_pred,
-                atoms_positive,
+                preds=batch_pos.to_data_list(),
                 thresholds=np.arange(0.05, 3.05, 0.05),
-                num_workers=self.num_workers,
+                num_parallel=self.num_parallel,
                 worker_fn_type=self.worker_fn_type,
                 ratio=self.ratio,
                 identifier=self.identifier,
@@ -462,7 +453,6 @@ class DriftingMolecules(pl.LightningModule):
             df, metrics_cov = None, {}
 
         metrics = {
-            **metrics_val,
             **metrics_cov,
             "sampling_time": elapsed_time / len(atoms_pred),
         }
@@ -470,6 +460,16 @@ class DriftingMolecules(pl.LightningModule):
         # Save samples
         if save_folder is not None and self.is_global_zero():
             os.makedirs(save_folder, exist_ok=True)
+            
+            # Convert to ASE Atoms
+            atoms_noise = batch_inputs_to_atoms(
+                batch_sampling, pos_key="pos", info_keys=[self.identifier]
+            )
+            
+            # Compute metrics (validity)
+            metrics_val = get_validity(atoms_pred)
+            metrics.update(metrics_val)
+        
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])
             write(f"{save_folder}/sample.png", atoms_pred[0])
@@ -484,6 +484,7 @@ class DriftingMolecules(pl.LightningModule):
                 df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
 
             if save_pca_plot:
+                atoms_positive = self._get_pos_atoms(batch_pos)
                 pca_plot(
                     atoms_positive,
                     atoms_pred,

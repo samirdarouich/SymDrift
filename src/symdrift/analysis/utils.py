@@ -10,7 +10,8 @@ __all__ = [
     "inputs_to_atoms",
     "batch_inputs_to_atoms",
     "get_mol_with_conformer",
-    "build_conformer"
+    "build_conformer",
+    "add_predictions",
 ]
 
 def inputs_to_atoms(inputs, atom_key="x", pos_key="pos", info_keys=[]):
@@ -84,3 +85,26 @@ def get_mol_with_conformer(smiles: str, positions: torch.Tensor) -> Chem.Mol:
     mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
     mol.AddConformer(build_conformer(positions))
     return mol
+
+
+def add_predictions(batch, total_samples, positions, key="pos_generated"):
+    
+    # Add pos_generated to batch and add slicing information in case loop through
+    # the dataset is done with batch_size > 1.
+    num_atoms = batch.num_atoms
+    sizes = num_atoms * total_samples
+    slices = torch.cat(
+        [
+            torch.zeros(1, device=sizes.device, dtype=torch.long),
+            torch.cumsum(sizes, dim=0),
+        ]
+    )
+    batch._slice_dict[key] = slices
+    batch._inc_dict[key] = torch.zeros_like(slices[:-1])
+    batch._slice_dict["num_samples"] = batch._slice_dict["num_conformers"]
+    batch._inc_dict["num_samples"] = batch._inc_dict["num_conformers"]
+
+    setattr(batch, key, positions)
+    batch.num_samples = torch.tensor(
+        [total_samples] * batch.num_graphs, dtype=torch.long
+    )

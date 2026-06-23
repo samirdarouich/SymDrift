@@ -11,7 +11,7 @@ from .sampler import CompositionBatchSampler
 from .toy import ToyDataset, ToyMoleculeDataset
 from .transforms import (
     BoltzmannWeightingConformers,
-    GraphAutomorphism,
+    OrbitIds,
     ConformerAugment,
     FeaturizeMolecule,
     RandomPermute,
