@@ -43,8 +43,8 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--num_workers",
-        "-nw",
+        "--num_parallel",
+        "-np",
         type=int,
         default=8,
         help="Number of workers or batch size (if using GPU) (default: 8)",
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     cli.run_covmat_evaluation(
         path_generated=args.path_generated,
         path_dataset=args.path_dataset,
-        num_workers=args.num_workers,
+        num_parallel=args.num_parallel,
         worker_fn_type=args.worker_fn_type,
         threshold=args.threshold,
         ratio=args.ratio,

@@ -151,7 +151,7 @@ def sample(cfg):
     threshold = getattr(cfg.generative_model, "threshold", None)
     ratio = getattr(cfg.generative_model, "ratio", 2.0)
     identifier = getattr(cfg.generative_model, "identifier", "smiles")
-    num_workers = getattr(cfg.generative_model, "num_workers", 8)
+    num_parallel = getattr(cfg.generative_model, "num_parallel", 8)
     worker_fn_type = getattr(cfg.generative_model, "worker_fn_type", "rmsd_rdkit_wo_h")
     skip_disconnected = getattr(cfg.generative_model, "skip_disconnected", True)
     job_kwargs = getattr(cfg.generative_model, "job_kwargs", {})
@@ -257,7 +257,7 @@ def sample(cfg):
         job_kwargs_str = ", "+", ".join(f"{k}={v}" for k, v in job_kwargs.items())
         log.info(
             f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-            f"num_workers: {num_workers}, worker_fn_type: {worker_fn_type}, "
+            f"num_parallel: {num_parallel}, worker_fn_type: {worker_fn_type}, "
             f"ratio: {ratio}{job_kwargs_str}):"
         )
 
@@ -266,7 +266,7 @@ def sample(cfg):
             data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
             worker_fn_type=worker_fn_type,
-            num_parallel=num_workers,
+            num_parallel=num_parallel,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
             skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
@@ -288,7 +288,7 @@ def sample(cfg):
 def run_covmat_evaluation(
     path_generated: str,
     path_dataset: Optional[str] = None,
-    num_workers: int = 8,
+    num_parallel: int = 8,
     worker_fn_type: str = "rmsd_rdkit_wo_h",
     threshold: float = 0.5,
     ratio: float = 2.0,
@@ -320,7 +320,7 @@ def run_covmat_evaluation(
         results, rmsd_matrix = evaluate_covmat(
             data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
-            num_parallel=num_workers,
+            num_parallel=num_parallel,
             worker_fn_type=worker_fn_type,
             ratio=ratio, # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
@@ -351,14 +351,14 @@ def run_covmat_evaluation(
         kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
         log.info(
             f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-            f"ratio: {ratio:.0f}, num_workers: {num_workers}, "
+            f"ratio: {ratio:.0f}, num_parallel: {num_parallel}, "
             f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
         )
         results, rmsd_matrix = evaluate_covmat(
             atoms_generated,
             atoms_dataset,
             thresholds=np.arange(0.05, 3.05, 0.05),
-            num_parallel=num_workers,
+            num_parallel=num_parallel,
             worker_fn_type=worker_fn_type,
             ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
             identifier=identifier,
