@@ -13,7 +13,8 @@ from rdkit.Chem import rdMolAlign
 from rdkit.Chem.rdmolops import RemoveHs
 from rdkit.Geometry import Point3D
 from tqdm import tqdm
-
+from ase import Atoms
+from torch_geometric.data import Data
 from symdrift.alignment import minimal_distance_permuted
 from symdrift.analysis import build_conformer, pymatgen_match
 from symdrift.utils import RankedLogger
@@ -474,8 +475,8 @@ def evaluate_rmsd_batched(
     return rmsd_results
 
 def evaluate_covmat(
-    preds,
-    refs=None,
+    preds: list[Atoms] | list[Data],
+    refs: list[Atoms] | None = None,
     thresholds=None,
     num_parallel=8,
     worker_fn_type="rmsd",

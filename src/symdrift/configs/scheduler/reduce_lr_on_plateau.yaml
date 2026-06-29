@@ -1,0 +1,7 @@
+_target_: symdrift.model.ReduceLROnPlateau
+_partial_: true
+factor: 0.8
+patience: 5
+min_lr: 1e-6
+monitor: "val/loss"
+interval: epoch

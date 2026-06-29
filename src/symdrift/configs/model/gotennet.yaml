@@ -1,3 +1,7 @@
+defaults:
+  - /optimizer@optimizer: adamw
+  - /scheduler@scheduler: reduce_lr_on_plateau
+  - _self_
 
 model:
   _target_: symdrift.model.GotenNet
@@ -21,22 +25,10 @@ model:
   sep_int_vec: True
   lmax: 2
 
-  # don't time embedding since we are doing one shot prediction
+  # no time embedding since we are doing one shot prediction
   use_time_emb: false
 
 optimizer:
-  _target_: torch.optim.AdamW
-  _partial_: true
   lr: 0.0005
-  weight_decay: 0.01
-
-scheduler:
-  _target_: symdrift.model.ReduceLROnPlateau
-  _partial_: true
-  factor: 0.8
-  patience: 5
-  min_lr: 1e-6
-  monitor: "val/loss"
-  interval: epoch
 
 grad_norm_max_val: 5.0

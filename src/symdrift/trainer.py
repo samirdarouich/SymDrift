@@ -237,6 +237,7 @@ class DriftingMolecules(pl.LightningModule):
         # Get orbit ids to define interchangeable pair interactions for the embedder
         orbit_ids_raw = batch_pos.orbit_ids
         device = orbit_ids_raw.device
+        
         # Upper-triangle pair count per molecule: n*(n-1)//2
         n_pairs_per_mol = (
             batch_pos.num_atoms * (batch_pos.num_atoms - 1) // 2
@@ -436,6 +437,7 @@ class DriftingMolecules(pl.LightningModule):
         atoms_pred = batch_inputs_to_atoms(
             batch_sampling, pos_key="pos_generated", info_keys=[self.identifier]
         )
+        metrics_val = get_validity(atoms_pred)
         
         # Compute metrics (coverage and matching)
         if threshold is not None:
@@ -453,6 +455,7 @@ class DriftingMolecules(pl.LightningModule):
             df, metrics_cov = None, {}
 
         metrics = {
+            **metrics_val,
             **metrics_cov,
             "sampling_time": elapsed_time / len(atoms_pred),
         }
@@ -465,10 +468,6 @@ class DriftingMolecules(pl.LightningModule):
             atoms_noise = batch_inputs_to_atoms(
                 batch_sampling, pos_key="pos", info_keys=[self.identifier]
             )
-            
-            # Compute metrics (validity)
-            metrics_val = get_validity(atoms_pred)
-            metrics.update(metrics_val)
         
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
             write(f"{save_folder}/noise.png", atoms_noise[0])

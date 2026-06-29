@@ -1,0 +1,10 @@
+_target_: symdrift.model.CosineAnnealingWarmupRestarts
+_partial_: true
+first_cycle_steps: 250_000
+cycle_mult: 1.0
+max_lr: 1.0e-3
+min_lr: 1.0e-7
+warmup_steps: 0
+gamma: 1.0
+last_epoch: -1
+interval: step
