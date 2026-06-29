@@ -316,7 +316,13 @@ def run_covmat_evaluation(
             f"Loaded {no_samples} generated conformers and {no_ref_conformers} "
             "reference conformers."
         )
-
+        
+        kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
+        log.info(
+            f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+            f"ratio: {ratio:.0f}, num_parallel: {num_parallel}, "
+            f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
+        )
         results, rmsd_matrix = evaluate_covmat(
             data_generated,
             thresholds=np.arange(0.05, 3.05, 0.05),
