@@ -29,7 +29,7 @@ model:
   embed_shortest_hops_bool: false
 
   # used to switch parity of predictions (to correct chirality)
-  parity_switch: null # post_hoc
+  parity_switch: post_hoc
 
 optimizer:
   lr: 1.0e-5

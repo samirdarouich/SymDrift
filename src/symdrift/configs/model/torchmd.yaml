@@ -25,7 +25,7 @@ model:
   so3_equivariant: false
   output_layer_norm: true
   # used to switch parity of predictions (to correct chirality)
-  parity_switch: null # post_hoc
+  parity_switch: post_hoc
   # dont use embedding for time conditioning
   use_noise_schedule_sigma_encoding: false
 

@@ -431,7 +431,6 @@ class DriftingMolecules(pl.LightningModule):
         x = self.model(batch_sampling)
         elapsed_time = time.time() - start_time
         
-        
         # Convert predictions to ASE Atoms 
         batch_sampling.pos_generated = x
         atoms_pred = batch_inputs_to_atoms(
