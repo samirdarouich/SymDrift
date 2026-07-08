@@ -17,7 +17,6 @@ from symdrift.datasets.utils import (
     get_automorphisms,
     compute_orbit_id_matrix_automorphism,
     compute_orbit_id_matrix_atom_type,
-    compute_orbit_id_matrix_atom_type_legacy,
     get_chiral_tensors,
 )
 
@@ -301,7 +300,6 @@ class OrbitIds(BaseTransform):
         perm_chunk_size: int = 512,
         max_automorphisms: int = 10_000,
         save_automorphisms: bool = False,
-        legacy=False,
     ):
         """Computes the graph automorphisms of the molecule and the orbit IDs for each
         pair of atoms."""
@@ -316,7 +314,6 @@ class OrbitIds(BaseTransform):
         self.max_automorphisms = max_automorphisms
         # Saving the automorphisms in the cache can take a lot of memory.
         self.save_automorphisms = save_automorphisms
-        self.legacy = legacy
 
     def forward(self, data):
         if hasattr(data, self.smiles_key):
@@ -379,10 +376,7 @@ class OrbitIds(BaseTransform):
             [atom.GetAtomicNum() for atom in mol.GetAtoms()],
             dtype=torch.long,
         )
-        if self.legacy:
-            orbit_ids = compute_orbit_id_matrix_atom_type_legacy(atomic_numbers) # [n_atoms, n_atoms]
-        else:
-            orbit_ids = compute_orbit_id_matrix_atom_type(atomic_numbers)  # [n_atoms, n_atoms]
+        orbit_ids = compute_orbit_id_matrix_atom_type(atomic_numbers)  # [n_atoms, n_atoms]
         n_atoms = orbit_ids.shape[0]
         triu_r, triu_c = torch.triu_indices(n_atoms, n_atoms, offset=1)
         return orbit_ids[triu_r, triu_c]

@@ -10,6 +10,9 @@ defaults:
 
 seed: 42
 
+# Run sampling on test set after training
+sample_after_training: false
+
 run:
   experiment: drifting_base
   id: ${uuid:1}

@@ -55,9 +55,9 @@ def train(cfg):
     datamodule = instantiate(cfg.dataset.datamodule)
 
     ########## Callbacks and Logger ##########
-    callbacks, loggers = [], []
+    callbacks, loggers = {}, []
     for callback_name, callback in cfg.callbacks.items():
-        callbacks.append(instantiate(callback))
+        callbacks[callback_name] = instantiate(callback)
     for logger_name, logger in cfg.loggers.items():
         loggers.append(instantiate(logger))
 
@@ -82,7 +82,7 @@ def train(cfg):
         generative_process.model.load_state_dict(state_dict)
 
     generative_trainer = pl.Trainer(
-        callbacks=callbacks,
+        callbacks=list(callbacks.values()),
         logger=loggers,
         default_root_dir=os.path.join(cfg.run.id),
         **cfg.trainer,
@@ -101,9 +101,23 @@ def train(cfg):
 
     log.info("Training completed.")
 
+    if cfg.get("sample_after_training", False):
+        last_checkpoint = callbacks.get("last_model_checkpoint")
+        if last_checkpoint is None or not last_checkpoint.best_model_path:
+            log.warning(
+                "No 'last_model_checkpoint' callback with a saved checkpoint found; "
+                "falling back to the trainer's default checkpoint callback."
+            )
+            ckpt_path = generative_trainer.checkpoint_callback.best_model_path
+        else:
+            ckpt_path = last_checkpoint.best_model_path
 
-@hydra.main(config_path="configs", version_base="1.2", config_name="base")
-def sample(cfg):
+        log.info(f"sample_after_training=True, sampling from checkpoint: <{ckpt_path}>")
+        cfg.generative_model.pretrained = ckpt_path
+        _run_sampling(cfg)
+
+
+def _run_sampling(cfg):
 
     log.info("Running on host: " + str(socket.gethostname()))
     log.info("Starting inference for run: {}".format(cfg.run.id))
@@ -283,6 +297,11 @@ def sample(cfg):
         with open(os.path.join(save_folder, "covmat_metrics.json"), "w") as f:
             json.dump({"Ratio": ratio, **metrics_cov}, f, indent=4)
     log.info("Inference completed.")
+
+
+@hydra.main(config_path="configs", version_base="1.2", config_name="base")
+def sample(cfg):
+    _run_sampling(cfg)
 
 
 def run_covmat_evaluation(
