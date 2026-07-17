@@ -409,6 +409,7 @@ class DriftingMolecules(pl.LightningModule):
         self,
         batch_pos,
         n_samples,
+        num_steps=1,
         save_folder=None,
         step=None,
         save_pca_plot=False,
@@ -425,10 +426,14 @@ class DriftingMolecules(pl.LightningModule):
 
         # Sample prior noise
         batch_sampling = self.sample_negative_batch(batch_pos, n_neg_per_pos=n_samples)
-
-        # generate samples
+        batch_sampling.pos_noise = batch_sampling.pos.clone()
+        
+        # generate samples, feeding each prediction back in as the next
+        # iteration's input until num_steps (NFE) function evaluations are done
         start_time = time.time()
-        x = self.model(batch_sampling)
+        for _ in range(num_steps):
+            x = self.model(batch_sampling)
+            batch_sampling.pos = x
         elapsed_time = time.time() - start_time
         
         # Convert predictions to ASE Atoms 
@@ -465,7 +470,7 @@ class DriftingMolecules(pl.LightningModule):
             
             # Convert to ASE Atoms
             atoms_noise = batch_inputs_to_atoms(
-                batch_sampling, pos_key="pos", info_keys=[self.identifier]
+                batch_sampling, pos_key="pos_noise", info_keys=[self.identifier]
             )
         
             write(f"{save_folder}/noise.xyz", atoms_noise, append=True)
