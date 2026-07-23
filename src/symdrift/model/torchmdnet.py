@@ -444,6 +444,7 @@ class EquivariantMultiHeadAttention(MessagePassing):
         norm_coors: bool = False,
         norm_coors_scale_init: float = 1e-2,
         so3_equivariant: bool = False,
+        use_time_embedding: bool = False,
     ):
         super(EquivariantMultiHeadAttention, self).__init__(aggr="add", node_dim=0)
         assert hidden_channels % num_heads == 0, (
@@ -468,8 +469,13 @@ class EquivariantMultiHeadAttention(MessagePassing):
         self.attn_activation = act_class_mapping[attn_activation]()
         self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
         self.qk_norm = qk_norm
+        self.use_time_embedding = use_time_embedding
 
-        input_channels = hidden_channels + (hidden_channels if node_attr_dim > 0 else 0)
+        input_channels = (
+            hidden_channels
+            + (1 if use_time_embedding else 0)
+            + (hidden_channels if node_attr_dim > 0 else 0)
+        )
         self.mixing_mlp = nn.Sequential(
             nn.Linear(input_channels, hidden_channels),
             nn.SiLU(),
@@ -526,9 +532,14 @@ class EquivariantMultiHeadAttention(MessagePassing):
             nn.init.xavier_uniform_(self.dv_proj.weight)
             self.dv_proj.bias.data.fill_(0)
 
-    def forward(self, x, vec, edge_index, r_ij, f_ij, d_ij, node_attr):
-        # Mix x with node_attr
-        x = self.mixing_mlp(torch.cat([x, node_attr], dim=1))
+    def forward(self, x, vec, edge_index, r_ij, f_ij, d_ij, node_attr, t: Optional[Tensor] = None):
+
+        # Mix x with node_attr (and raw time t, if enabled)
+        if self.use_time_embedding:
+            assert t is not None, "Time embedding is enabled but time tensor t is None."
+            x = self.mixing_mlp(torch.cat([x, t, node_attr], dim=1))
+        else:
+            x = self.mixing_mlp(torch.cat([x, node_attr], dim=1))
 
         # Input features: (num_atoms, hidden_channels)
         x = self.layernorm(x)
@@ -701,6 +712,7 @@ class TorchMD_ET_dynamics(nn.Module):
         norm_coors_scale_init: float = 1e-2,
         clip_during_norm: bool = False,
         so3_equivariant: bool = False,
+        use_time_embedding: bool = False,
     ):
         super(TorchMD_ET_dynamics, self).__init__()
 
@@ -734,6 +746,7 @@ class TorchMD_ET_dynamics(nn.Module):
         self.node_attr_dim = node_attr_dim
         self.edge_attr_dim = edge_attr_dim
         self.clip_during_norm = clip_during_norm
+        self.use_time_embedding = use_time_embedding
 
         act_class = act_class_mapping[activation]
 
@@ -778,6 +791,7 @@ class TorchMD_ET_dynamics(nn.Module):
                 norm_coors=norm_coors,
                 norm_coors_scale_init=norm_coors_scale_init,
                 so3_equivariant=so3_equivariant,
+                use_time_embedding=use_time_embedding,
             )  # .jittable() TODO: Removing for now
             self.attention_layers.append(layer)
 
@@ -801,6 +815,7 @@ class TorchMD_ET_dynamics(nn.Module):
         edge_index,
         node_attr: Optional[Tensor] = None,
         edge_attr: Optional[Tensor] = None,
+        t: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
 
         # embed atomic numbers using an embedding layer
@@ -853,6 +868,7 @@ class TorchMD_ET_dynamics(nn.Module):
                 edge_attr,
                 edge_vec,
                 node_attr=node_attr,
+                t=t,
             )
             x = x + dx
             vec = vec + dvec
@@ -954,6 +970,7 @@ class TorchMDDynamics(nn.Module):
         edge_one_hot: bool = False,
         edge_one_hot_types: int = 5,
         parity_switch=False,
+        use_time_embedding: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -962,6 +979,7 @@ class TorchMDDynamics(nn.Module):
         self.edge_one_hot = edge_one_hot
         self.edge_one_hot_types = edge_one_hot_types
         self.parity_switch = parity_switch
+        self.use_time_embedding = use_time_embedding
         self.representation_model = TorchMD_ET_dynamics(
             hidden_channels=sphere_channels,
             num_layers=num_layers,
@@ -981,6 +999,7 @@ class TorchMDDynamics(nn.Module):
             qk_norm=qk_norm,
             clip_during_norm=clip_during_norm,
             so3_equivariant=so3_equivariant,
+            use_time_embedding=use_time_embedding,
         )
         self.output_model = EquivariantVectorOutput(
             hidden_channels=sphere_channels,
@@ -1027,6 +1046,20 @@ class TorchMDDynamics(nn.Module):
             max_neighbors=self.max_neighbors,
         )
 
+        # If wanted add time embedding to node features.
+        t = None
+        if self.use_time_embedding:
+            t = data.get("t", None)
+            if t is None:
+                t = torch.zeros(
+                    data.pos.size(0), 
+                    1, 
+                    device=data.pos.device, 
+                    dtype=data.pos.dtype
+                )
+            elif t.dim() == 1:
+                t = t.unsqueeze(-1)
+
         # run the potentially wrapped representation model
         x, v, z, pos = self.representation_model(
             z=data.x.long(),
@@ -1034,6 +1067,7 @@ class TorchMDDynamics(nn.Module):
             node_attr=data.get("node_attr", None),
             edge_index=edge_index,
             edge_attr=edge_type,
+            t=t,
         )
 
         # latent representation

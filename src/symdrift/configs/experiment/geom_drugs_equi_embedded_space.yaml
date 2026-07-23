@@ -16,6 +16,12 @@ run:
 # Assuming a bz of 64 on 8 GPUS, we need 108_624 / (8*64) = 213 batches per epoch.
 # With 250 epochs, this leads to 53_250 steps for one cycle.
 model:
+
+  # Use dummy time embedding while always passing t=0 to make fine-tuning of ETFlow checkpoint possible.
+  model:
+    use_time_embedding: true
+    output_layer_norm: false
+
   optimizer:
     lr: 1.0e-3
     weight_decay: 1e-10

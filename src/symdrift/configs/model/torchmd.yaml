@@ -24,6 +24,8 @@ model:
   clip_during_norm: true
   so3_equivariant: false
   output_layer_norm: true
+  # t conditioning (not needed for drifting)
+  use_time_embedding: false
   # used to switch parity of predictions (to correct chirality)
   parity_switch: post_hoc
   # dont use embedding for time conditioning

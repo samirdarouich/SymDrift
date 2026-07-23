@@ -77,8 +77,11 @@ def train(cfg):
             state_dict = pretrained.state_dict()
         elif isinstance(pretrained, dict):
             state_dict = pretrained["state_dict"]
-            if "model" in list(state_dict.keys())[0]:
-                state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
+            if list(state_dict.keys())[0].startswith("model."):
+                state_dict = {
+                    (k[len("model."):] if k.startswith("model.") else k): v
+                    for k, v in state_dict.items()
+                }
         generative_process.model.load_state_dict(state_dict)
 
     generative_trainer = pl.Trainer(
