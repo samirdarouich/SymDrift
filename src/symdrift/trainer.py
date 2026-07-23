@@ -480,8 +480,10 @@ class DriftingMolecules(pl.LightningModule):
                 atoms.info["sampling_time"] = elapsed_time / len(atoms_pred)
             write(f"{save_folder}/sample_db.xyz", atoms_pred, append=True)
 
+            metrics["step"] = self.global_step
+            metrics["no_samples"] = n_samples
             with open(f"{save_folder}/metrics.json", "w") as f:
-                json.dump({"step": self.global_step, **metrics}, f, indent=4)
+                json.dump(metrics, f, indent=4)
 
             if df is not None:
                 df.to_csv(f"{save_folder}/covmat_results.csv", index=False)
