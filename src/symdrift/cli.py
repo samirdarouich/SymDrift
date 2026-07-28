@@ -2,7 +2,6 @@ import json
 import os
 import socket
 import uuid
-from typing import Optional
 
 import hydra
 import numpy as np
@@ -13,8 +12,9 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from symdrift.analysis import (
-    evaluate_covmat,
     add_predictions,
+    evaluate_covmat,
+    load_rmsd_predictions,
     print_covmat_results,
 )
 from symdrift.utils import RankedLogger, log_hyperparameters, print_config
@@ -30,7 +30,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def train(cfg):
 
     log.info("Running on host: " + str(socket.gethostname()))
-    log.info("Starting training for run: {}".format(cfg.run.id))
+    log.info(f"Starting training for run: {cfg.run.id}")
     if cfg.get("print_config", True):
         fields = (
             "run",
@@ -79,8 +79,7 @@ def train(cfg):
             state_dict = pretrained["state_dict"]
             if list(state_dict.keys())[0].startswith("model."):
                 state_dict = {
-                    (k[len("model."):] if k.startswith("model.") else k): v
-                    for k, v in state_dict.items()
+                    (k.removeprefix("model.")): v for k, v in state_dict.items()
                 }
         generative_process.model.load_state_dict(state_dict)
 
@@ -123,7 +122,7 @@ def train(cfg):
 def _run_sampling(cfg):
 
     log.info("Running on host: " + str(socket.gethostname()))
-    log.info("Starting inference for run: {}".format(cfg.run.id))
+    log.info(f"Starting inference for run: {cfg.run.id}")
     if cfg.get("print_config", True):
         fields = (
             "run",
@@ -136,7 +135,7 @@ def _run_sampling(cfg):
         print_config(cfg, fields=fields, resolve=False)
 
     ########## Hyperparameters and settings ##########
-    log.info("Setting random seed to {}".format(cfg.seed))
+    log.info(f"Setting random seed to {cfg.seed}")
     pl.seed_everything(cfg.seed, workers=True)
     torch.set_float32_matmul_precision("medium")
 
@@ -153,7 +152,7 @@ def _run_sampling(cfg):
         dataloader = getattr(datamodule, f"{sampling_split}_dataloader")()
 
     generative_process = instantiate(cfg.generative_model)
-    log.info("Loading model checkpoint: <{}>".format(cfg.generative_model.pretrained))
+    log.info(f"Loading model checkpoint: <{cfg.generative_model.pretrained}>")
     state_dict = torch.load(
         cfg.generative_model.pretrained, weights_only=False, map_location=device
     )["state_dict"]
@@ -246,16 +245,16 @@ def _run_sampling(cfg):
         # Add pos_generated to batch and add slicing information in case loop through
         # the dataset is done with batch_size > 1.
         add_predictions(
-            batch, 
-            total_samples=total_samples, 
-            positions=torch.cat(pos_generated, dim=0), 
-            key="pos_generated"
+            batch,
+            total_samples=total_samples,
+            positions=torch.cat(pos_generated, dim=0),
+            key="pos_generated",
         )
         data_generated.extend(batch.to_data_list())
 
     summary_metrics = {}
     for k, v in metrics.items():
-        metrics[k] = torch.tensor(v)
+        metrics[k] = torch.tensor(v).float()
         log.info(
             f"Test {k}: mean: {metrics[k].mean().item():.4f} "
             f"median: {metrics[k].median().item():.4f}"
@@ -271,7 +270,7 @@ def _run_sampling(cfg):
 
     # Evaluate coverage and matching for the whole dataset if specified
     if threshold is not None:
-        job_kwargs_str = ", "+", ".join(f"{k}={v}" for k, v in job_kwargs.items())
+        job_kwargs_str = ", " + ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
         log.info(
             f"Analysing coverage and matching (threshold: {threshold:.2f}, "
             f"num_parallel: {num_parallel}, worker_fn_type: {worker_fn_type}, "
@@ -309,7 +308,7 @@ def sample(cfg):
 
 def run_covmat_evaluation(
     path_generated: str,
-    path_dataset: Optional[str] = None,
+    path_dataset: str | None = None,
     num_parallel: int = 8,
     worker_fn_type: str = "rmsd_rdkit_wo_h",
     threshold: float = 0.5,
@@ -323,76 +322,53 @@ def run_covmat_evaluation(
         log.error(f"Generated conformers file not found: {path_generated}")
         return
 
-    if ".pt" in path_generated:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        log.info(f"Loading generated conformers from PyTorch file: {path_generated}")
-        log.info(f"Using '{device}' for RMSD computation.")
-        data_generated = torch.load(
-            path_generated, weights_only=False, map_location=device
-        )
+    if path_generated.endswith(".xyz") and not os.path.exists(path_dataset):
+        log.error(f"Dataset conformers file not found: {path_dataset}")
+        return
 
-        no_ref_conformers = sum(d.num_conformers.item() for d in data_generated)
-        no_samples = sum(d.num_samples.item() for d in data_generated)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log.info(f"Loading generated conformers from: {path_generated}")
 
+    if "batched" in worker_fn_type:
         log.info(
-            f"Loaded {no_samples} generated conformers and {no_ref_conformers} "
-            "reference conformers."
+            f"Using batched evaluation with device '{device}' for RMSD computation."
         )
-        
-        kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
+    else:
         log.info(
-            f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-            f"ratio: {ratio:.0f}, num_parallel: {num_parallel}, "
-            f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
-        )
-        results, rmsd_matrix = evaluate_covmat(
-            data_generated,
-            thresholds=np.arange(0.05, 3.05, 0.05),
-            num_parallel=num_parallel,
-            worker_fn_type=worker_fn_type,
-            ratio=ratio, # only keep at most ratio*n_conformers predictions per reference
-            identifier=identifier,
-            skip_disconnected=skip_disconnected, # skip disconnected ground truth graphs
-            **job_kwargs,
+            f"Using parallel evaluation with {num_parallel} parallel workers for RMSD computation."
         )
 
-    elif ".xyz" in path_generated:
-        if not os.path.exists(path_dataset):
-            log.error(f"Dataset conformers file not found: {path_dataset}")
-            return
+    preds, refs = load_rmsd_predictions(path_generated, path_dataset, device=device)
 
-        from ase.io import read
+    if refs is None:
+        no_ref_conformers = sum(d.num_conformers.item() for d in preds)
+        no_samples = sum(d.num_samples.item() for d in preds)
+    else:
+        no_ref_conformers = len(refs)
+        no_samples = len(preds)
 
-        log.info("Reading generated and dataset conformers from .xyz files...")
+    log.info(
+        f"Loaded {no_samples} generated conformers and {no_ref_conformers} "
+        "reference conformers."
+    )
 
-        log.info(f"Generated conformers path: {path_generated}")
-        atoms_generated = read(path_generated, ":")
-
-        log.info(f"Dataset conformers path: {path_dataset}")
-        atoms_dataset = read(path_dataset, ":")
-
-        log.info(
-            f"Loaded {len(atoms_generated)} generated conformers and {len(atoms_dataset)} "
-            "reference conformers."
-        )
-
-        kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
-        log.info(
-            f"Analysing coverage and matching (threshold: {threshold:.2f}, "
-            f"ratio: {ratio:.0f}, num_parallel: {num_parallel}, "
-            f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
-        )
-        results, rmsd_matrix = evaluate_covmat(
-            atoms_generated,
-            atoms_dataset,
-            thresholds=np.arange(0.05, 3.05, 0.05),
-            num_parallel=num_parallel,
-            worker_fn_type=worker_fn_type,
-            ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
-            identifier=identifier,
-            skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
-            **job_kwargs,
-        )
+    kwargs_str = ", ".join(f"{k}={v}" for k, v in job_kwargs.items())
+    log.info(
+        f"Analysing coverage and matching (threshold: {threshold:.2f}, "
+        f"ratio: {ratio:.0f}, num_parallel: {num_parallel}, "
+        f"worker_fn_type: {worker_fn_type}, kwargs: {kwargs_str}):"
+    )
+    results, rmsd_matrix = evaluate_covmat(
+        preds,
+        refs,
+        thresholds=np.arange(0.05, 3.05, 0.05),
+        num_parallel=num_parallel,
+        worker_fn_type=worker_fn_type,
+        ratio=ratio,  # only keep at most ratio*n_conformers predictions per reference
+        identifier=identifier,
+        skip_disconnected=skip_disconnected,  # skip disconnected ground truth graphs
+        **job_kwargs,
+    )
     df, metrics_cov = print_covmat_results(results, threshold=threshold)
 
     # Log results

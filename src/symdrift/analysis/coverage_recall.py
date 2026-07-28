@@ -14,6 +14,7 @@ from rdkit.Chem.rdmolops import RemoveHs
 from rdkit.Geometry import Point3D
 from tqdm import tqdm
 from ase import Atoms
+from ase.io import read
 from torch_geometric.data import Data
 from symdrift.alignment import minimal_distance_permuted
 from symdrift.analysis import build_conformer, pymatgen_match
@@ -37,6 +38,8 @@ __all__ = [
     "worker_fn_rmsd_wo_h",
     "worker_fn_rmsd_batched",
     "worker_fn_rmsd_wo_h_batched",
+    "load_rmsd_predictions",
+    "atoms_lists_to_data_list",
     "evaluate_rmsd_single",
     "evaluate_rmsd_batched",
     "evaluate_covmat",
@@ -322,9 +325,92 @@ WORKER_FN_DICT = {
 }
 
 
+def load_rmsd_predictions(path_generated, path_reference=None, device="cpu"):
+    """Load generated (and reference) conformers for RMSD-based evaluation.
+
+    Supports two input formats:
+      - A single ".pt" file containing a list of PyG `Data` objects, each carrying
+        both `pos` (reference conformers) and `pos_generated` (generated
+        conformers) for one molecule. `path_reference` must not be given in this
+        case.
+      - A pair of ".xyz" files: `path_generated` with generated conformers and
+        `path_reference` with reference conformers, both read via
+        `ase.io.read(path, ":")`.
+
+    Returns:
+        preds, refs: For the ".pt" case, `preds` is a `list[Data]` and `refs` is
+        `None`. For the ".xyz" case, `preds` and `refs` are both `list[Atoms]`.
+        Either return value can be passed straight into `evaluate_covmat`.
+    """
+    if path_generated.endswith(".pt"):
+        if path_reference is not None:
+            raise ValueError(
+                "path_reference must not be provided when path_generated is a .pt file."
+            )
+        preds = torch.load(path_generated, weights_only=False, map_location=device)
+        refs = None
+    elif path_generated.endswith(".xyz"):
+        if path_reference is None:
+            raise ValueError(
+                "path_reference must be provided when path_generated is a .xyz file."
+            )
+        preds = read(path_generated, ":")
+        refs = read(path_reference, ":")
+    else:
+        raise ValueError(
+            f"Unsupported file extension for path_generated: {path_generated}"
+        )
+
+    return preds, refs
+
+
+def atoms_lists_to_data_list(preds_atoms, refs_atoms, identifier="smiles"):
+    """Convert a pair of (generated, reference) `ase.Atoms` lists into the
+    canonical `list[Data]` shape expected by `evaluate_rmsd_single` and
+    `evaluate_rmsd_batched`, where each `Data` bundles all reference (`pos`) and
+    generated (`pos_generated`) conformers for one molecule.
+
+    Assumes that, for a given identifier, all reference and generated conformers
+    share the same atom count and atom ordering.
+    """
+    ref_sample_dict = defaultdict(lambda: defaultdict(list))
+    for ref in refs_atoms:
+        ref_sample_dict[ref.info[identifier]]["refs"].append(ref)
+    for pred in preds_atoms:
+        ref_sample_dict[pred.info[identifier]]["preds"].append(pred)
+
+    data_list = []
+    for identifier_value, group in ref_sample_dict.items():
+        refs = group["refs"]
+        preds = group["preds"]
+        if len(refs) == 0:
+            continue
+
+        n_atoms = len(refs[0])
+        atomic_numbers = torch.tensor(refs[0].numbers, dtype=torch.long)
+
+        data = Data()
+        data.pos = torch.tensor(
+            np.stack([ref.positions for ref in refs]).reshape(-1, 3),
+            dtype=torch.float,
+        )
+        data.pos_generated = torch.tensor(
+            np.stack([pred.positions for pred in preds]).reshape(-1, 3)
+            if len(preds) > 0
+            else np.zeros((0, 3)),
+            dtype=torch.float,
+        )
+        data.num_atoms = torch.tensor(n_atoms)
+        data.x = atomic_numbers
+        data.x_conf = atomic_numbers.repeat(len(refs))
+        setattr(data, identifier, identifier_value)
+        data_list.append(data)
+
+    return data_list
+
+
 def evaluate_rmsd_single(
-    preds,
-    refs,
+    data_list,
     num_workers=8,
     worker_fn_type="rmsd",
     ratio=None,
@@ -332,64 +418,78 @@ def evaluate_rmsd_single(
     skip_disconnected=True,
     **job_kwargs,
 ):
+    """Compute the RMSD matrix between reference and generated conformers for
+    each molecule in `data_list`, using CPU-based multiprocessing.
+
+    Arguments:
+        data_list: Iterable of PyG `Data` objects, each carrying `pos` (reference
+            conformers), `pos_generated` (generated conformers), `x` (atomic
+            numbers), `num_atoms` and the `identifier` field (e.g. `smiles`).
+    """
     assert "batched" not in worker_fn_type, (
-        "Batched worker functions are not supported in evaluate_covmat. Use evaluate_covmat_batched instead."
+        "Batched worker functions are not supported in evaluate_rmsd_single. Use evaluate_rmsd_batched instead."
     )
     assert worker_fn_type in WORKER_FN_DICT, (
         f"Unsupported worker function type: {worker_fn_type}"
     )
-    ref_sample_dict = defaultdict(lambda: defaultdict(list))
-    skipped = []
-    for ref in refs:
-        if type(ref.info[identifier]) == str and "." in ref.info[identifier] and skip_disconnected:
-            if ref.info[identifier] not in skipped:
-                logger.info(
-                    f"Skipping disconnected molecule with {identifier}={ref.info[identifier]} for covmat evaluation."
-                )
-            skipped.append(ref.info[identifier])
-            continue
-        ref_sample_dict[ref.info[identifier]]["refs"].append(ref)
-    for pred in preds:
-        smi = pred.info[identifier]
-        # Only keep a certain ratio of predictions per reference
-        if ratio is not None:
-            if (
-                len(ref_sample_dict[smi]["preds"])
-                >= len(ref_sample_dict[smi]["refs"]) * ratio
-            ):
-                continue
-        ref_sample_dict[pred.info[identifier]]["preds"].append(pred)
+    use_rdkit = worker_fn_type in ("rmsd_rdkit", "rmsd_rdkit_wo_h")
 
-    rmsd_results = {
-        smiles: np.ones(
-            (
-                len(ref_sample_dict[smiles]["refs"]),
-                len(ref_sample_dict[smiles]["preds"]),
-            )
-        )
-        * np.nan
-        for smiles in ref_sample_dict
-    }
+    rmsd_results = {}
+    jobs = []
+    skipped = []
+
+    for d in data_list:
+        identifier_value = d[identifier]
+        if (
+            type(identifier_value) == str
+            and "." in identifier_value
+            and skip_disconnected
+        ):
+            if identifier_value not in skipped:
+                logger.info(
+                    f"Skipping disconnected molecule with {identifier}={identifier_value} for covmat evaluation."
+                )
+                skipped.append(identifier_value)
+            continue
+
+        n_atoms = d.num_atoms.item()
+        refs_pos = d.pos.view(-1, n_atoms, 3)
+        preds_pos = d.pos_generated.view(-1, n_atoms, 3)
+        num_refs = refs_pos.shape[0]
+        num_preds = preds_pos.shape[0]
+
+        # Only keep a certain ratio of predictions per reference
+        if ratio is not None and num_preds > int(num_refs * ratio):
+            num_preds = int(num_refs * ratio)
+            preds_pos = preds_pos[:num_preds]
+
+        atomic_numbers = d.x.cpu().numpy()
+
+        # Use Graphautomorphism permutations defined by the SMILES to speed up RMSD
+        # computation
+        if use_rdkit:
+            mol = dm.to_mol(identifier_value, remove_hs=False, ordered=True)
+            refs_conf = [set_rdmol_positions(mol, pos) for pos in refs_pos]
+            preds_conf = [set_rdmol_positions(mol, pos) for pos in preds_pos]
+        else:
+            refs_conf = [
+                Atoms(positions=pos.cpu().numpy(), numbers=atomic_numbers)
+                for pos in refs_pos
+            ]
+            preds_conf = [
+                Atoms(positions=pos.cpu().numpy(), numbers=atomic_numbers)
+                for pos in preds_pos
+            ]
+
+        rmsd_results[identifier_value] = np.ones((num_refs, num_preds)) * np.nan
+
+        for i, refs_i in enumerate(refs_conf):
+            for j, preds_j in enumerate(preds_conf):
+                jobs.append((identifier_value, i, j, refs_i, preds_j, job_kwargs))
 
     def populate_results(res):
         smiles, i, j, rmsd_val = res
         rmsd_results[smiles][i, j] = rmsd_val
-
-    jobs = []
-    for smiles, data in ref_sample_dict.items():
-        refs = data["refs"]
-        preds = data["preds"]
-
-        # Use Graphautomorphism permutations defined by the SMILES to speed up RMSD
-        # computation
-        if worker_fn_type in ["rmsd_rdkit", "rmsd_rdkit_wo_h"]:
-            mol = dm.to_mol(smiles, remove_hs=False, ordered=True)
-            refs = [set_rdmol_positions(mol, ref.positions) for ref in refs]
-            preds = [set_rdmol_positions(mol, pred.positions) for pred in preds]
-
-        for i, refs_i in enumerate(refs):
-            for j, preds_j in enumerate(preds):
-                jobs.append((smiles, i, j, refs_i, preds_j, job_kwargs))
 
     if num_workers > 1:
         with Pool(num_workers) as p:
@@ -415,7 +515,7 @@ def evaluate_rmsd_single(
 
 
 def evaluate_rmsd_batched(
-    gen_data,
+    data_list,
     worker_fn_type="rmsd_batched",
     batch_size=64,
     ratio=None,
@@ -423,14 +523,22 @@ def evaluate_rmsd_batched(
     skip_disconnected=True,
     **job_kwargs,
 ):
+    """Compute the RMSD matrix between reference and generated conformers for
+    each molecule in `data_list`, using batched GPU tensor operations.
+
+    Arguments:
+        data_list: Iterable of PyG `Data` objects, each carrying `pos` (reference
+            conformers), `pos_generated` (generated conformers), `x`/`x_conf`
+            (atomic numbers), `num_atoms`, optionally `automorphisms`, and the
+            `identifier` field (e.g. `smiles`).
+    """
     assert worker_fn_type in ["rmsd_batched", "rmsd_wo_h_batched"], (
-        "Only batched worker functions are supported in evaluate_covmat_batched."
+        "Only batched worker functions are supported in evaluate_rmsd_batched."
     )
     batch_size = max(batch_size, 1)
-
     rmsd_results = {}
     total_rmsd_computations = 0
-    for d in gen_data:
+    for d in tqdm(data_list, desc="Processing molecules", position=0):
         identifier_value = d[identifier]
         if type(identifier_value) == str and "." in identifier_value and skip_disconnected:
             logger.info(
@@ -453,7 +561,10 @@ def evaluate_rmsd_batched(
         # samples.
         rmsd_list = []
         for i0 in tqdm(
-            range(0, num_preds, batch_size), desc="Computing RMSD in batches"
+            range(0, num_preds, batch_size),
+            desc="Computing RMSD in batches",
+            position=1,
+            leave=False,
         ):
             i1 = min(i0 + batch_size, num_preds)
             x_batch = preds[i0:i1]
@@ -474,6 +585,10 @@ def evaluate_rmsd_batched(
 
     return rmsd_results
 
+def _is_atoms_list(obj):
+    return len(obj) > 0 and isinstance(obj[0], Atoms)
+
+
 def evaluate_covmat(
     preds: list[Atoms] | list[Data],
     refs: list[Atoms] | None = None,
@@ -487,14 +602,15 @@ def evaluate_covmat(
 ):
     """Compute coverage-recall/precision and AMR metrics over a set of molecules.
 
-    For non-batched worker functions (rmsd, rmsd_wo_h, rmsd_rdkit, rmsd_rdkit_wo_h):
-        preds -- list of ASE atoms objects for generated conformers
-        refs  -- list of ASE atoms objects for reference conformers (required)
+    Accepts either data format, regardless of which worker_fn_type is chosen:
+      - A single ".pt"-style input: `preds` is a `list[Data]`, each carrying both
+        `pos` (reference conformers) and `pos_generated` (generated conformers)
+        for one molecule. `refs` is not used (pass None or omit).
+      - A ".xyz"-style input: `preds`/`refs` are both `list[Atoms]` (generated /
+        reference conformers respectively), as returned e.g. by
+        `load_rmsd_predictions`. These are converted into the `list[Data]` shape
+        above via `atoms_lists_to_data_list` before evaluation.
 
-    For batched worker functions (rmsd_batched, rmsd_wo_h_batched):
-        preds -- iterable of PyG data objects, each carrying both pos and pos_generated
-        refs  -- not used (pass None or omit)
-    
     Args:
         preds: See above.
         refs: See above.
@@ -515,11 +631,20 @@ def evaluate_covmat(
         raise ValueError("thresholds must be provided.")
     thresholds = np.asarray(thresholds)
 
+    if _is_atoms_list(preds):
+        if refs is None:
+            raise ValueError(
+                "refs (list of ase.Atoms) must be provided when preds is a list of ase.Atoms."
+            )
+        data_list = atoms_lists_to_data_list(preds, refs, identifier=identifier)
+    else:
+        data_list = preds
+
     is_batched = "batched" in worker_fn_type
 
     if is_batched:
         rmsd_results = evaluate_rmsd_batched(
-            gen_data=preds,
+            data_list,
             worker_fn_type=worker_fn_type,
             batch_size=num_parallel,
             ratio=ratio,
@@ -528,11 +653,8 @@ def evaluate_covmat(
             **job_kwargs,
         )
     else:
-        if refs is None:
-            raise ValueError("refs must be provided for non-batched worker functions.")
         rmsd_results = evaluate_rmsd_single(
-            preds=preds,
-            refs=refs,
+            data_list,
             num_workers=num_parallel,
             worker_fn_type=worker_fn_type,
             ratio=ratio,
