@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import OrderedDict
 from typing import Callable, Tuple
 
 import datamol as dm
@@ -37,6 +37,37 @@ __all__ = [
     "FeaturizeMolecule",
     "FeaturizeReaction",
 ]
+
+
+class BoundedSmilesCache(OrderedDict):
+    """A `defaultdict(dict)`-like, SMILES-keyed cache that evicts the
+    least-recently-used molecule once more than `maxsize` are stored.
+
+    Runtime transforms live inside persistent DataLoader workers for the
+    whole training job. An unbounded per-SMILES cache grows monotonically
+    as workers see new molecules across epochs, which eventually exhausts
+    system RAM. `maxsize <= 0` disables bounding (unlimited growth)."""
+
+    def __init__(self, maxsize: int = 10_000):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def __missing__(self, key):
+        value = {}
+        self[key] = value
+        return value
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if self.maxsize > 0:
+            while len(self) > self.maxsize:
+                self.popitem(last=False)
 
 
 def cache_decorator(func: Callable):
@@ -129,13 +160,14 @@ class ConformerAugment(BaseTransform):
         permute=True,
         ignore_hs=False,
         use_atom_features=True,
+        cache_size: int = 300_000,
     ):
         self.num_augs = num_augs
         self.rotate = rotate
         self.permute = permute
         self.ignore_hs = ignore_hs
         self.use_atom_features = use_atom_features
-        self.cache = defaultdict(dict)
+        self.cache = BoundedSmilesCache(cache_size)
 
     def get_random_rotation(self):
         # Sample random unit quaternion
@@ -300,12 +332,14 @@ class OrbitIds(BaseTransform):
         perm_chunk_size: int = 512,
         max_automorphisms: int = 10_000,
         save_automorphisms: bool = False,
+        cache_size: int = 300_000,
     ):
         """Computes the graph automorphisms of the molecule and the orbit IDs for each
         pair of atoms."""
         assert orbit_type in ["automorphism", "atom_type"], "orbit_type must be either 'automorphism' or 'atom_type'"
-        # smiles based cache
-        self.cache = defaultdict(dict)
+        # smiles based cache, bounded so persistent DataLoader workers don't
+        # accumulate an entry per distinct molecule seen over the whole job
+        self.cache = BoundedSmilesCache(cache_size)
         self.smiles_key = smiles_key
         self.orbit_type = orbit_type
         self.use_atom_features = use_atom_features
@@ -390,9 +424,9 @@ class OrbitIds(BaseTransform):
             raise ValueError("Invalid orbit_type. Must be either 'automorphism' or 'atom_type'")
 
 class FeaturizeMolecule(BaseTransform):
-    def __init__(self, smiles_key="smiles"):
+    def __init__(self, smiles_key="smiles", cache_size: int = 300_000):
         # smiles based cache
-        self.cache = defaultdict(dict)
+        self.cache = BoundedSmilesCache(cache_size)
         self.smiles_key = smiles_key
 
     def forward(self, data):

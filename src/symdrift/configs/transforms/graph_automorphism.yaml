@@ -16,6 +16,15 @@ subselect_top_k_conformers:
 # alignment in coordinate space). If only the orbit_ids are needed for the invariant 
 # embedding, the automorphisms do not need to be saved. Use at max 10_000 automorphisms
 # to avoid combinatorial explosion for large molecules.
+# cache_size bounds the per-worker, per-SMILES orbit-id cache (LRU eviction,
+# oldest molecule evicted once the cache holds more than cache_size entries).
+# Runtime transforms live inside persistent DataLoader workers for the whole
+# job, and each of the (num_workers * devices) worker processes keeps its own
+# copy of this cache, so total memory scales with that worker count. Set well
+# above the number of unique molecules a single worker will ever see (here:
+# comfortably above the training set size) so nothing gets evicted and the
+# expensive automorphism enumeration is never recomputed; train_geom_drugs.sh
+# requests enough --mem to cover this at full cache occupancy.
 generate_orbit_ids:
   _target_: symdrift.datasets.transforms.OrbitIds
   smiles_key: smiles
@@ -24,6 +33,7 @@ generate_orbit_ids:
   use_atom_features: true
   max_automorphisms: 10_000
   save_automorphisms: false
+  cache_size: 300_000
 
 # creates additional batch mask for each conformer. 
 follow_batch: [x_conf, automorphisms]
