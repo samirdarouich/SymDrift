@@ -45,7 +45,7 @@ generative_model:
   only_pos_drift: false 
 
   # Number of negative samples to use per positive sample
-  n_neg_per_pos: 32
+  n_neg_per_pos: 64
 
   # Model and optimizer configuration
   model: ${model.model}
@@ -91,6 +91,7 @@ generative_model:
 
 trainer:
   max_epochs: 1000
+  limit_val_batches: 1.0 # reduce to 0.1 for faster training
   strategy: auto
   accelerator: auto
 

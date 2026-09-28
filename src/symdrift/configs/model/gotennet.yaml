@@ -1,6 +1,6 @@
 defaults:
   - /optimizer@optimizer: adamw
-  - /scheduler@scheduler: reduce_lr_on_plateau
+  - /scheduler@scheduler: null
   - _self_
 
 model:

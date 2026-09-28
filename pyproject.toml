@@ -31,7 +31,6 @@ dependencies = [
     "py3Dmol",
     "einops",
     "rdkit",
-    "torch_linear_assignment",
     "scikit-learn",
     "datamol",
     "cython==3.0.11",

@@ -2,7 +2,7 @@
 # Coordinate space 
 _target_: symdrift.generative.EquivariantDriftingField
 temperatures: [0.02, 0.05, 0.2]
-normalize_over_x: false
+normalize_over_x: true
 normalize_drift: true
 # Not strictly equivariant as alignment is used on heuristic.
 aligned: true

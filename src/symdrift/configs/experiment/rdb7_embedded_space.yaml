@@ -9,11 +9,29 @@ defaults:
 run:
   experiment: rdb7
 
+model:
+
+  # Optimized L version
+  model:
+    attn_dropout: 0.05
+    num_distance_basis: 64
+    num_layers: 12
+    sphere_channels: 256
+  
+  optimizer:
+    lr: 2.7e-05
+    weight_decay: 1.24e-06
+
 generative_model:
-  sample_every_epoch: 100
+  sample_every_epoch: 650
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.5
 
+# Train with 1 GPU and bz 4 for 650 epochs
+dataset:
+  batch_size: 4
+
+
 trainer:
-  max_epochs: 1000
+  max_epochs: 650

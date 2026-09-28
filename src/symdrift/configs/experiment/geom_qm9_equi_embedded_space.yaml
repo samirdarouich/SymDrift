@@ -14,16 +14,16 @@ model:
     lr: 8.0e-4
     weight_decay: 0.0
 
-  # ETFLOW train wiht 4 GPUS and bz 128 for 200 epochs and defined 1 batch as 1 conformer.
-  # QM9 train size: 105902 graphs / (4*128) = 207 steps/epoch leading to 41_400 steps 
-  # after 200 epochs. One cycle is defined with 100 epochs --> 20_200 steps
+  # Train wiht 2 GPUS and Nc=8 for 200 epochs and defined 1 batch as 1 conformer.
+  # QM9 train size: 105902 graphs / (2*8) = 6619 steps/epoch.
+  # One cycle is defined with 100 epochs --> 661_900 steps
   scheduler:
-    first_cycle_steps: 20_200 
+    first_cycle_steps: 661_900 
     max_lr: 8.0e-4
     min_lr: 1.0e-7
 
 generative_model:
-  sample_every_epoch: 100
+  sample_every_epoch: 200
 
   # RMSD threshold to compute coverage and machting metrics
   threshold: 0.5
@@ -32,8 +32,8 @@ generative_model:
   ratio: 2.0
 
 dataset:
-  batch_size: 128
+  batch_size: 8
 
 trainer:
   max_epochs: 200
-  devices: 4
+  devices: 2

@@ -606,10 +606,9 @@ class FeaturizeReaction(BaseTransform):
             torch.from_numpy(perm_inv_r[row]).long(),
             torch.from_numpy(perm_inv_r[col]).long(),
         )
-        _, edge_attr_r, _ = compute_edge_index(
+        _, edge_attr_r = compute_edge_index(
             mol_r,
             with_edge_attr=use_edge_feat,
-            with_shortest_hops=False,
             edge_index=torch.stack([row_r, col_r]),
         )
 
@@ -617,10 +616,9 @@ class FeaturizeReaction(BaseTransform):
             torch.from_numpy(perm_inv_p[row]).long(),
             torch.from_numpy(perm_inv_p[col]).long(),
         )
-        _, edge_attr_p, _ = compute_edge_index(
+        _, edge_attr_p = compute_edge_index(
             mol_p,
             with_edge_attr=use_edge_feat,
-            with_shortest_hops=False,
             edge_index=torch.stack([row_p, col_p]),
         )
 

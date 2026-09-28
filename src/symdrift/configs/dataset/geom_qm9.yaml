@@ -1,4 +1,6 @@
 # Dataset configuration for GEOM QM9 dataset
+# conformer uses the atomic-type embedding, whereas 
+# 'graph_automorphism' uses the graph automorphism embedding
 defaults:
   - /transforms@transforms: conformer
   - _self_
@@ -46,19 +48,21 @@ datamodule:
   shuffle_train: true
   drop_last_train: false
 
-# Define seperate test loader
-test_dataloader:
-  _target_: torch_geometric.loader.DataLoader
-  dataset: 
-    _target_: symdrift.datasets.ConformerDatasetTest
-    root: ${dataset.root}
-    source: ${dataset.name}
-    identifier: ${dataset.identifier}
-    transform: ${dataset.transforms.test_transform}
-  batch_size: ${dataset.test_batch_size}
-  num_workers: ${dataset.num_workers}
-  pin_memory: ${dataset.pin_memory}
-  persistent_workers: ${dataset.persistent_workers}
-  follow_batch: ${dataset.transforms.follow_batch}
-  shuffle: false
-  drop_last: false
+# # Define test loader (this uses the 1000 test set from the original GEOM dataset.
+# # Contains molecules which are filtered by the dataset preprocessing. To reproduce 
+# # the paper, use the cleaned test set)
+# test_dataloader:
+#   _target_: torch_geometric.loader.DataLoader
+#   dataset: 
+#     _target_: symdrift.datasets.ConformerDatasetTest
+#     root: ${dataset.root}
+#     source: ${dataset.name}
+#     identifier: ${dataset.identifier}
+#     transform: ${dataset.transforms.test_transform}
+#   batch_size: ${dataset.test_batch_size}
+#   num_workers: ${dataset.num_workers}
+#   pin_memory: ${dataset.pin_memory}
+#   persistent_workers: ${dataset.persistent_workers}
+#   follow_batch: ${dataset.transforms.follow_batch}
+#   shuffle: false
+#   drop_last: false
