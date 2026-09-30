@@ -36,7 +36,7 @@ To overcome this issue, SymDrift introduces two complementary approaches:
 Clone the repository:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/samirdarouich/SymDrift.git
 cd symdrift
 ```
 
